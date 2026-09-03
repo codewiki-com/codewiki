@@ -13,6 +13,10 @@ export default {
   'nav.aiEra': 'AI era',
   'nav.search': 'Search',
   'nav.searchHint': '⌘K',
+  'nav.primary': 'Main navigation',
+  'nav.menu': 'Menu',
+
+  'a11y.skip': 'Skip to content',
 
   'theme.system': 'System',
   'theme.light': 'Light',
@@ -79,6 +83,8 @@ export default {
   'footer.contribute': 'Contribute',
   'footer.llms': 'llms.txt',
   'footer.rss': 'RSS',
+  // Always names the *other* language, in that language.
+  'footer.otherLocale': '中文',
 
   'topic.level': 'level',
   'topic.time': 'time',
