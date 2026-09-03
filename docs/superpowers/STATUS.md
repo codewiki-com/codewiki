@@ -13,6 +13,8 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-03 Translation: Codex does polish and translation; no Claude QA pass.
 - 2026-09-03 Framework: plain Astro 7 + custom design system (no Starlight). Static output, no accounts; localStorage + export/import.
 - 2026-09-03 Visual: light = "Studio Precision", dark = "Night Lab" palette; one layout, IBM Plex type; theme follows system, user-toggleable. Mockups: https://claude.ai/code/artifact/81ecf530-fd51-468d-86e2-1ba247b85067
+- 2026-09-03 AI-era integration added to spec §6.1 (content: "In the AI era" block per topic, ai-era track, rules packs, review katas; form: prompt-ready pages, JSON API, MCP server later).
+- 2026-09-03 Execution mode: subagent-driven development, one Opus subagent per plan task, Fable reviews between tasks. P1 first (Tasks 0–8), then P0 in parallel once P1 Task 6 (schemas) exists.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
 ## Where things are
@@ -20,9 +22,9 @@ Read this first in any new session. Update it at every milestone and before star
 |---|---|
 | Master spec | done, approved |
 | Design mockups (16 artboards, light/dark) | done, approved |
-| P1 plan (site foundation) | in progress |
-| P0 plan (content pipeline) | in progress |
-| Repo scaffold | not started |
+| P1 plan (site foundation) | done: `docs/superpowers/plans/2026-09-03-p1-site-foundation.md` (20 tasks) |
+| P0 plan (content pipeline) | done: `docs/superpowers/plans/2026-09-03-p0-content-pipeline.md` (14 tasks); briefs in `prompts/` |
+| Repo scaffold | not started (P1 Task 1) |
 | Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
 
 ## How to resume
