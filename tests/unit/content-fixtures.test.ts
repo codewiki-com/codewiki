@@ -46,7 +46,11 @@ describe('data fixtures', () => {
 
   it.each(files('glossary', '.yaml'))('glossary/%s is a valid term', (file) => {
     const term = termSchema.parse(yamlOf('glossary', file));
+    // Spec §4: a glossary card shows one sentence, at most 140 characters per language.
     expect(term.short.en.length).toBeGreaterThan(0);
+    expect(term.short.en.length).toBeLessThanOrEqual(140);
+    expect(term.short.zh.length).toBeGreaterThan(0);
+    expect(term.short.zh.length).toBeLessThanOrEqual(140);
     if (term.id) expect(term.id).toBe(file.replace(/\.yaml$/, ''));
   });
 
