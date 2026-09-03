@@ -29,7 +29,7 @@ Read this first in any new session. Update it at every milestone and before star
 
 ## Active work (2026-09-03)
 - P1 is being executed on branch `p1-site-foundation` in the worktree `.worktrees/p1-site-foundation/` (git-ignored). Progress ledger: `.worktrees/p1-site-foundation/.superpowers/sdd/2026-09-03-p1-site-foundation/progress.md` (first line names the plan; tasks with a `complete` line are done). Merge to `main` when the final review is clean.
-- P0 (content pipeline) starts after P1 Task 6 lands, on its own branch/worktree.
+- P0 (content pipeline) runs in parallel on branch `p0-content-pipeline` in `.worktrees/p0-content-pipeline/` (branched from p1-site-foundation after Task 6). Ledger: `.worktrees/p0-content-pipeline/.superpowers/sdd/2026-09-03-p0-content-pipeline/progress.md`. Merge order: P1 → main, then P0 rebased onto main.
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
