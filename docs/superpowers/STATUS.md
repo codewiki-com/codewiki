@@ -1,0 +1,32 @@
+# codewiki — Project Status (resume point)
+
+Read this first in any new session. Update it at every milestone and before starting any long-running job.
+
+## Roles
+- **Fable**: planning, architecture, review, all UI/visual design. Never writes bulk code or content.
+- **Opus subagents**: implement code from the plans (`model: "opus"` explicitly).
+- **Codex CLI** (`codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-sol -c model_reasoning_effort=xhigh -C <repo>`): content polish, translation, bulk edits; may implement non-visual code.
+- Language rule: all repo artefacts (docs, comments, commits, identifiers) in English; chat with the user in Chinese.
+
+## Decisions log
+- 2026-09-03 Content strategy: tiered restructure + Codex polish in waves; publish only `status: reviewed`.
+- 2026-09-03 Translation: Codex does polish and translation; no Claude QA pass.
+- 2026-09-03 Framework: plain Astro 7 + custom design system (no Starlight). Static output, no accounts; localStorage + export/import.
+- 2026-09-03 Visual: light = "Studio Precision", dark = "Night Lab" palette; one layout, IBM Plex type; theme follows system, user-toggleable. Mockups: https://claude.ai/code/artifact/81ecf530-fd51-468d-86e2-1ba247b85067
+- 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
+
+## Where things are
+| Item | State |
+|---|---|
+| Master spec | done, approved |
+| Design mockups (16 artboards, light/dark) | done, approved |
+| P1 plan (site foundation) | in progress |
+| P0 plan (content pipeline) | in progress |
+| Repo scaffold | not started |
+| Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
+
+## How to resume
+1. `git log --oneline | head` to see the last milestone.
+2. Open the active plan under `docs/superpowers/plans/` and find the first unchecked task.
+3. For content jobs, check `reports/polish/state.json` (created by the pipeline) before re-running anything.
+4. Keep this file current.
