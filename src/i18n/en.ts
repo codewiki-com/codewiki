@@ -32,6 +32,13 @@ export default {
   'home.tracks': 'Tracks',
   'home.allTracks': 'All tracks',
 
+  // The static command-palette panel in the hero. Arrows and slashes are template chrome.
+  'home.palette.query': 'closure',
+  'home.palette.move': 'move',
+  'home.palette.open': 'open',
+  'home.palette.playground': 'open in playground',
+  'home.palette.offline': 'Search runs offline',
+
   'home.feature.1.title': 'Runs in the browser',
   'home.feature.1.desc':
     'JavaScript, TypeScript, Python and SQL execute inline. Edit the example, press Run, see the output. Nothing leaves your machine.',
@@ -72,11 +79,13 @@ export default {
   'home.prompt.1': 'Explain this section as if I only know loops',
   'home.prompt.2': 'Give me three bugs to find in this example',
   'home.prompt.3': 'Quiz me on this page until I get five right',
+  'home.promptMeta': 'Claude · ChatGPT · Copy',
 
   'home.continue': 'continue',
   'home.kata': 'kata today',
   'home.recall': 'recall',
   'home.review': 'Review',
+  'home.due': '{count} flashcards due',
 
   'footer.tagline': 'codewiki · static site · progress stays in your browser',
   'footer.about': 'About',
@@ -126,6 +135,12 @@ export default {
   'code.output': 'Output',
   'code.loadingPython': 'Loading Python…',
 
+  'tracks.title': 'Tracks',
+  'tracks.sub': 'Every track on codewiki: eleven languages, nine domains and two pillars.',
+  'tracks.languages': 'Languages',
+  'tracks.domains': 'Domains',
+  'tracks.pillars': 'Pillars',
+
   'track.topics': '{count} topics',
   'track.sections': '{count} sections',
   'track.verified': 'verified {version}',
@@ -145,6 +160,7 @@ export default {
   'search.topics': 'Topics',
   'search.glossary': 'Glossary',
   'search.paths': 'Paths',
+  'search.practice': 'Practice',
 
   'settings.theme': 'Theme',
   'settings.depth': 'Default depth',
