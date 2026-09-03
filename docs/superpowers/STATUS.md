@@ -24,7 +24,7 @@ Read this first in any new session. Update it at every milestone and before star
 | Design mockups (16 artboards, light/dark) | done, approved |
 | P1 plan (site foundation) | done: `docs/superpowers/plans/2026-09-03-p1-site-foundation.md` (20 tasks) |
 | P0 plan (content pipeline) | done: `docs/superpowers/plans/2026-09-03-p0-content-pipeline.md` (14 tasks); briefs in `prompts/` |
-| Repo scaffold | not started (P1 Task 1) |
+| Repo scaffold | done (P1 Task 1): Astro 7 + Tailwind 4 + Preact, ESLint/Prettier/Vitest/Playwright, CI |
 | Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
 
 ## How to resume
