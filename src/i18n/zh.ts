@@ -75,6 +75,7 @@ export default {
   'home.recall': '回顾',
   'home.review': '复习',
   'home.due': '{count} 张闪卡待复习',
+  'home.progress': '阅读进度：{title}',
   'footer.tagline': 'codewiki · 静态网站 · 进度保存在浏览器中',
   'footer.about': '关于',
   'footer.contribute': '参与贡献',

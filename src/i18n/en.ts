@@ -86,6 +86,7 @@ export default {
   'home.recall': 'recall',
   'home.review': 'Review',
   'home.due': '{count} flashcards due',
+  'home.progress': 'Reading progress: {title}',
 
   'footer.tagline': 'codewiki · static site · progress stays in your browser',
   'footer.about': 'About',

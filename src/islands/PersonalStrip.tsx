@@ -26,6 +26,8 @@ export interface PersonalStripProps {
     review: string;
     /** Carries a `{count}` slot. */
     due: string;
+    /** Accessible name of the reading-progress bar; carries a `{title}` slot. */
+    progress: string;
   };
   /** Every public topic of this locale, keyed by `${track}/${slug}`. */
   titles: Record<string, TopicRef>;
@@ -53,13 +55,16 @@ export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStr
 
   if (!state) return null;
 
-  const cont = getContinue(state.progress);
+  // Local storage is visitor-editable, so nothing read back is trusted to have the right shape.
+  const cont = getContinue(state.progress ?? EMPTY_PROGRESS);
   const topic = cont ? titles[cont.id] : undefined;
-  const due = dueFlashcards(state.cards.cards ?? [], new Date());
+  const cards = Array.isArray(state.cards?.cards) ? state.cards.cards : [];
+  const due = dueFlashcards(cards, new Date());
 
   if (!topic && due === 0) return null;
 
-  const pct = cont ? Math.max(0, Math.min(100, Math.round(cont.readPct))) : 0;
+  const readPct = Number(cont?.readPct);
+  const pct = Number.isFinite(readPct) ? Math.max(0, Math.min(100, Math.round(readPct))) : 0;
 
   return (
     <div class="wrap pstrip">
@@ -69,7 +74,14 @@ export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStr
           <span class="pstrip-text">
             {topic.track} › <strong>{topic.title}</strong>
           </span>
-          <div class="bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+          <div
+            class="bar"
+            role="progressbar"
+            aria-label={labels.progress.replace('{title}', topic.title)}
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
             <div style={{ width: `${pct}%` }} />
           </div>
         </a>

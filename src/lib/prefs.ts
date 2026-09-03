@@ -126,30 +126,33 @@ export function writeStore<T>(key: StoreKey, value: T): void {
 /** Spec §6.2: writes are debounced by 500 ms, per key. */
 export const WRITE_DEBOUNCE_MS = 500;
 
-const timers = new Map<StoreKey, ReturnType<typeof setTimeout>>();
+/** In-flight debounced writes. The value is kept so `flushStore` can still commit it. */
+const pending = new Map<StoreKey, { timer: ReturnType<typeof setTimeout>; value: unknown }>();
 
 /**
  * Coalesces bursts of writes to one key — scroll-driven progress updates are the common case.
  * The last value within the window wins.
  */
 export function writeStoreDebounced<T>(key: StoreKey, value: T): void {
-  const pending = timers.get(key);
-  if (pending) clearTimeout(pending);
-  timers.set(
-    key,
-    setTimeout(() => {
-      timers.delete(key);
-      writeStore(key, value);
-    }, WRITE_DEBOUNCE_MS),
-  );
+  const inFlight = pending.get(key);
+  if (inFlight) clearTimeout(inFlight.timer);
+  const timer = setTimeout(() => {
+    pending.delete(key);
+    writeStore(key, value);
+  }, WRITE_DEBOUNCE_MS);
+  pending.set(key, { timer, value });
 }
 
-/** Flushes a pending debounced write immediately. Used on `pagehide`. */
+/**
+ * Commits a pending debounced write straight away. Called on `pagehide`, where waiting out the
+ * debounce window would lose the write entirely.
+ */
 export function flushStore(key: StoreKey): void {
-  const pending = timers.get(key);
-  if (!pending) return;
-  clearTimeout(pending);
-  timers.delete(key);
+  const inFlight = pending.get(key);
+  if (!inFlight) return;
+  clearTimeout(inFlight.timer);
+  pending.delete(key);
+  writeStore(key, inFlight.value);
 }
 
 /** The topic to offer as "continue reading": the one with the most recent `lastAt`. */
