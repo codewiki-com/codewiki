@@ -1015,7 +1015,7 @@ Resulting output (excerpt of `sitemap-0.xml` as printed in the docs):
 Source (all three sitemap snippets above): <https://docs.astro.build/en/guides/integrations-guide/sitemap/>
 
 For this project (`en` default, unprefixed; `zh` prefixed) the shape is
-`i18n: { defaultLocale: 'en', locales: { en: 'en-US', zh: 'zh-CN' } }` — the keys must match the URL
+`i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } }` — the keys must match the URL
 path segment, the values are the `hreflang` attributes. Other options available on the same page if
 needed later: `filter()`, `customPages`, `customSitemaps`, `entryLimit`, `changefreq`/`lastmod`/
 `priority`, `serialize()`, `chunks`, `xslURL`, `filenameBase`, `namespaces`.

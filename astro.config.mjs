@@ -20,7 +20,7 @@ export default defineConfig({
   integrations: [
     mdx(),
     preact(),
-    sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en-US', zh: 'zh-CN' } } }),
+    sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } } }),
   ],
   vite: { plugins: [tailwindcss()] },
 });
