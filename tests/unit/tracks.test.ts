@@ -7,7 +7,10 @@ describe('tracks', () => {
     expect(new Set(TRACKS.map((t) => t.slug)).size).toBe(22);
     for (const t of TRACKS) {
       expect(t.sections.length).toBeGreaterThanOrEqual(4);
-      expect(t.name.zh).not.toEqual(t.name.en);
+      expect(t.name.zh.trim().length).toBeGreaterThan(0);
+      // Language tracks keep their bare Latin name in Chinese (Python, Go, …); the rest translate.
+      if (t.kind === 'language') expect(t.name.zh).toEqual(t.name.en);
+      else expect(t.name.zh).not.toEqual(t.name.en);
     }
   });
   it('section slugs are unique within a track and kebab-case', () => {

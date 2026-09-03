@@ -29,7 +29,7 @@ export const TRACKS: Track[] = [
     slug: 'python',
     kind: 'language',
     glyph: 'py',
-    name: { en: 'Python', zh: 'Python 语言' },
+    name: { en: 'Python', zh: 'Python' },
     description: {
       en: 'Language core, the standard library, concurrency and typing',
       zh: '语言核心、标准库、并发与类型',
@@ -47,7 +47,7 @@ export const TRACKS: Track[] = [
     slug: 'javascript',
     kind: 'language',
     glyph: 'js',
-    name: { en: 'JavaScript', zh: 'JavaScript 语言' },
+    name: { en: 'JavaScript', zh: 'JavaScript' },
     description: {
       en: 'The core language, async, the browser and Node',
       zh: '语言核心、异步、浏览器与 Node',
@@ -65,7 +65,7 @@ export const TRACKS: Track[] = [
     slug: 'typescript',
     kind: 'language',
     glyph: 'ts',
-    name: { en: 'TypeScript', zh: 'TypeScript 语言' },
+    name: { en: 'TypeScript', zh: 'TypeScript' },
     description: {
       en: 'The type system, generics and migrating real codebases',
       zh: '类型系统、泛型与真实项目迁移',
@@ -82,7 +82,7 @@ export const TRACKS: Track[] = [
     slug: 'go',
     kind: 'language',
     glyph: 'go',
-    name: { en: 'Go', zh: 'Go 语言' },
+    name: { en: 'Go', zh: 'Go' },
     description: {
       en: 'Types and interfaces, goroutines and production services',
       zh: '类型与接口、goroutine 与生产级服务',
@@ -99,7 +99,7 @@ export const TRACKS: Track[] = [
     slug: 'rust',
     kind: 'language',
     glyph: 'rs',
-    name: { en: 'Rust', zh: 'Rust 语言' },
+    name: { en: 'Rust', zh: 'Rust' },
     description: {
       en: 'Ownership, traits, error handling and fearless concurrency',
       zh: '所有权、trait、错误处理与无畏并发',
@@ -118,7 +118,7 @@ export const TRACKS: Track[] = [
     slug: 'java',
     kind: 'language',
     glyph: 'jvm',
-    name: { en: 'Java', zh: 'Java 语言' },
+    name: { en: 'Java', zh: 'Java' },
     description: {
       en: 'OOP, collections and streams, concurrency and the JVM',
       zh: '面向对象、集合与流、并发与 JVM',
@@ -136,7 +136,7 @@ export const TRACKS: Track[] = [
     slug: 'kotlin',
     kind: 'language',
     glyph: 'kt',
-    name: { en: 'Kotlin', zh: 'Kotlin 语言' },
+    name: { en: 'Kotlin', zh: 'Kotlin' },
     description: {
       en: 'Modern JVM syntax, coroutines, Android and multiplatform',
       zh: '现代 JVM 语法、协程、Android 与多平台',
@@ -153,7 +153,7 @@ export const TRACKS: Track[] = [
     slug: 'cpp',
     kind: 'language',
     glyph: 'cpp',
-    name: { en: 'C++', zh: 'C++ 语言' },
+    name: { en: 'C++', zh: 'C++' },
     description: {
       en: 'Memory and ownership, templates and modern C++',
       zh: '内存与所有权、模板与现代 C++',
@@ -171,7 +171,7 @@ export const TRACKS: Track[] = [
     slug: 'csharp',
     kind: 'language',
     glyph: 'c#',
-    name: { en: 'C#', zh: 'C# 语言' },
+    name: { en: 'C#', zh: 'C#' },
     description: {
       en: 'The type system, LINQ, async and the .NET platform',
       zh: '类型系统、LINQ、异步与 .NET 平台',
@@ -188,7 +188,7 @@ export const TRACKS: Track[] = [
     slug: 'swift',
     kind: 'language',
     glyph: 'swift',
-    name: { en: 'Swift', zh: 'Swift 语言' },
+    name: { en: 'Swift', zh: 'Swift' },
     description: {
       en: 'Optionals, protocols, structured concurrency and SwiftUI',
       zh: '可选类型、协议、结构化并发与 SwiftUI',
@@ -205,7 +205,7 @@ export const TRACKS: Track[] = [
     slug: 'php',
     kind: 'language',
     glyph: 'php',
-    name: { en: 'PHP', zh: 'PHP 语言' },
+    name: { en: 'PHP', zh: 'PHP' },
     description: {
       en: 'Modern PHP, its object model, Laravel and Symfony',
       zh: '现代 PHP、对象模型、Laravel 与 Symfony',
