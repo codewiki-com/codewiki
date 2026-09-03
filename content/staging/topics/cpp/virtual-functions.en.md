@@ -1,0 +1,2005 @@
+---
+title: C++ 虚函数深入解析
+description: 全面剖析 C++ 虚函数机制，包括 virtual 关键字、虚函数表、纯虚函数、虚析构函数、override/final 关键字
+track: cpp
+section: basics
+difficulty: intermediate
+tags:
+  - C++
+  - 虚函数
+  - 多态
+  - vtable
+  - override
+  - final
+status: imported
+origin: old/src/content/docs/cpp/virtual-functions.en.md
+divergence: 0.169
+issues:
+  - title-lang-en
+  - title-language
+legacy:
+  category: Cpp
+  subcategory: 面向对象
+  order: 17
+  lastUpdated: 2026-01-07
+---
+
+## Concept Explanation
+
+Virtual functions are the core mechanism by which C++ implements runtime polymorphism. By declaring a member function as virtual in a base class, derived classes can override that function, and when called through a base class pointer or reference, the correct version belonging to the actual object's class is dynamically invoked.
+
+### Historical Background
+
+The concept of virtual functions originated from the Simula 67 language and was introduced by Bjarne Stroustrup when designing C++. It solves a core problem in object-oriented programming: how to let a program select which function implementation to call at runtime based on the actual type of the object.
+
+### The Problem It Solves
+
+Without virtual functions, function calls are determined at compile time (static binding). This means that when calling a function through a base class pointer, the base class version is always called, not the derived class version:
+
+```cpp
+#include <iostream>
+
+class Animal {
+public:
+    void speak() const {  // Non-virtual function
+        std::cout << "Animal makes a sound" << std::endl;
+    }
+};
+
+class Dog : public Animal {
+public:
+    void speak() const {  // Hides base class speak
+        std::cout << "Woof woof woof!" << std::endl;
+    }
+};
+
+int main() {
+    Dog dog;
+    Animal* ptr = &dog;
+
+    ptr->speak();   // Output: Animal makes a sound (calls base class version)
+    dog.speak();    // Output: Woof woof woof! (calls derived class version)
+
+    return 0;
+}
+```
+
+With virtual functions, the program selects the correct function version at runtime based on the actual type of the object:
+
+```cpp
+#include <iostream>
+
+class Animal {
+public:
+    virtual void speak() const {  // Virtual function
+        std::cout << "Animal makes a sound" << std::endl;
+    }
+    virtual ~Animal() = default;
+};
+
+class Dog : public Animal {
+public:
+    void speak() const override {  // Override virtual function
+        std::cout << "Woof woof woof!" << std::endl;
+    }
+};
+
+int main() {
+    Dog dog;
+    Animal* ptr = &dog;
+
+    ptr->speak();   // Output: Woof woof woof! (dynamic binding, calls derived class version)
+    dog.speak();    // Output: Woof woof woof!
+
+    return 0;
+}
+```
+
+## Core Principles
+
+### Virtual Function Table (vtable)
+
+C++ compilers implement dynamic binding of virtual functions through the Virtual Function Table (vtable or vftable). Each class containing virtual functions has a vtable that stores the addresses of all virtual functions in that class.
+
+#### vtable Structure
+
+```
++------------------+
+|   Class vtable   |
++------------------+
+| Address of vfunc1|
++------------------+
+| Address of vfunc2|
++------------------+
+| Address of vfunc3|
++------------------+
+| ...              |
++------------------+
+```
+
+Each object of a class containing virtual functions has a hidden pointer (usually called vptr) that points to the class's vtable:
+
+```cpp
+#include <iostream>
+
+class Base {
+public:
+    virtual void func1() { std::cout << "Base::func1" << std::endl; }
+    virtual void func2() { std::cout << "Base::func2" << std::endl; }
+    virtual ~Base() = default;
+private:
+    int data = 0;
+};
+
+class Derived : public Base {
+public:
+    void func1() override { std::cout << "Derived::func1" << std::endl; }
+    // func2 inherited from Base
+private:
+    int derivedData = 0;
+};
+
+int main() {
+    std::cout << "sizeof(Base): " << sizeof(Base) << std::endl;
+    std::cout << "sizeof(Derived): " << sizeof(Derived) << std::endl;
+
+    // Object memory layout (simplified):
+    // Base object:
+    // +--------+--------+
+    // |  vptr  |  data  |
+    // +--------+--------+
+    //    |
+    //    v
+    // +----------------+----------------+----------------+
+    // | Base::func1    | Base::func2    | Base::~Base    |
+    // +----------------+----------------+----------------+
+    //                  Base vtable
+
+    // Derived object:
+    // +--------+--------+-------------+
+    // |  vptr  |  data  | derivedData |
+    // +--------+--------+-------------+
+    //    |
+    //    v
+    // +------------------+----------------+------------------+
+    // | Derived::func1   | Base::func2    | Derived::~Derived|
+    // +------------------+----------------+------------------+
+    //                  Derived vtable
+
+    return 0;
+}
+```
+
+#### Virtual Function Call Process
+
+When a virtual function is called through a base class pointer, the code generated by the compiler performs the following steps:
+
+1. Find the corresponding vtable through the object's vptr
+2. Look up the virtual function's address in the vtable
+3. Call the function at that address
+
+```cpp
+// Pseudocode implementation of ptr->func1():
+// (*ptr->vptr[0])()  // Call the first virtual function in the vtable
+```
+
+### Dynamic Binding vs Static Binding
+
+```cpp
+#include <iostream>
+
+class Shape {
+public:
+    virtual void draw() const {
+        std::cout << "Drawing a shape" << std::endl;
+    }
+
+    void info() const {  // Non-virtual function
+        std::cout << "This is a shape" << std::endl;
+    }
+
+    virtual ~Shape() = default;
+};
+
+class Circle : public Shape {
+public:
+    void draw() const override {
+        std::cout << "Drawing a circle" << std::endl;
+    }
+
+    void info() const {  // Hides base class info
+        std::cout << "This is a circle" << std::endl;
+    }
+};
+
+int main() {
+    Circle circle;
+    Shape* shapePtr = &circle;
+    Shape& shapeRef = circle;
+
+    // Dynamic binding (virtual functions)
+    shapePtr->draw();    // Output: Drawing a circle
+    shapeRef.draw();     // Output: Drawing a circle
+
+    // Static binding (non-virtual functions)
+    shapePtr->info();    // Output: This is a shape
+    shapeRef.info();     // Output: This is a shape
+
+    // Direct call through object
+    circle.draw();       // Output: Drawing a circle
+    circle.info();       // Output: This is a circle
+
+    return 0;
+}
+```
+
+### Timing of vptr Initialization
+
+The vptr is initialized during object construction and is updated during the execution of each class's constructor:
+
+```cpp
+#include <iostream>
+
+class Base {
+public:
+    Base() {
+        std::cout << "Base constructing..." << std::endl;
+        // At this point, vptr points to Base's vtable
+        print();  // Calls Base::print()
+    }
+
+    virtual void print() const {
+        std::cout << "Base::print()" << std::endl;
+    }
+
+    virtual ~Base() {
+        std::cout << "Base destructing..." << std::endl;
+        // At this point, vptr still points to Base's vtable
+        print();  // Calls Base::print()
+    }
+};
+
+class Derived : public Base {
+public:
+    Derived() {
+        std::cout << "Derived constructing..." << std::endl;
+        // At this point, vptr points to Derived's vtable
+        print();  // Calls Derived::print()
+    }
+
+    void print() const override {
+        std::cout << "Derived::print()" << std::endl;
+    }
+
+    ~Derived() override {
+        std::cout << "Derived destructing..." << std::endl;
+        print();  // Calls Derived::print()
+    }
+};
+
+int main() {
+    std::cout << "=== Creating Derived object ===" << std::endl;
+    Derived d;
+
+    std::cout << "\n=== Calling through base class pointer ===" << std::endl;
+    Base* ptr = &d;
+    ptr->print();  // Calls Derived::print()
+
+    std::cout << "\n=== Destroying object ===" << std::endl;
+    return 0;
+}
+
+// Output:
+// === Creating Derived object ===
+// Base constructing...
+// Base::print()
+// Derived constructing...
+// Derived::print()
+//
+// === Calling through base class pointer ===
+// Derived::print()
+//
+// === Destroying object ===
+// Derived destructing...
+// Derived::print()
+// Base destructing...
+// Base::print()
+```
+
+## Key Points
+
+### The virtual Keyword
+
+The `virtual` keyword is used to declare virtual functions:
+
+```cpp
+class Base {
+public:
+    // Virtual function declaration
+    virtual void func();
+
+    // Virtual functions can also have implementations
+    virtual void anotherFunc() {
+        // Default implementation
+    }
+
+    // const virtual function
+    virtual void constFunc() const;
+
+    // Virtual destructor
+    virtual ~Base() = default;
+};
+```
+
+#### Key Rules
+
+1. **Override functions in derived classes are automatically virtual**: Even without the `virtual` keyword
+
+```cpp
+class Base {
+public:
+    virtual void func() {}
+};
+
+class Derived : public Base {
+public:
+    void func() {}  // Automatically virtual, equivalent to virtual void func()
+};
+```
+
+2. **Virtual functions cannot be static**: Static member functions don't belong to any object
+
+```cpp
+class Example {
+public:
+    // Error: Virtual functions cannot be static
+    // virtual static void func();
+};
+```
+
+3. **Constructors cannot be virtual**: The exact type must be known when constructing an object
+
+```cpp
+class Example {
+public:
+    // Error: Constructors cannot be virtual
+    // virtual Example();
+};
+```
+
+4. **Friend functions cannot be virtual**: Friends are not member functions
+
+```cpp
+class Example {
+    // Error: Friends cannot be virtual
+    // virtual friend void func();
+};
+```
+
+### The override Keyword (C++11)
+
+The `override` keyword explicitly indicates that a function intends to override a base class virtual function. If there's no matching base class virtual function, the compiler will report an error:
+
+```cpp
+class Base {
+public:
+    virtual void func1(int x) {}
+    virtual void func2() const {}
+    virtual void func3() {}
+    void func4() {}  // Non-virtual function
+
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    // Correct: Override func1
+    void func1(int x) override {}
+
+    // Error examples (compiler errors):
+    // void func1(double x) override {}  // Parameter type mismatch
+    // void func2() override {}           // Missing const
+    // void func5() override {}           // No func5 in base class
+    // void func4() override {}           // func4 is not virtual
+
+    // Correct:
+    void func2() const override {}
+    void func3() override {}
+};
+```
+
+### The final Keyword (C++11)
+
+The `final` keyword can:
+1. Prevent a virtual function from being further overridden
+2. Prevent a class from being inherited
+
+```cpp
+class Base {
+public:
+    virtual void func1() {}
+    virtual void func2() {}
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    // func1 cannot be overridden by Derived's subclasses
+    void func1() override final {}
+
+    // func2 can continue to be overridden
+    void func2() override {}
+};
+
+class GrandChild : public Derived {
+public:
+    // Error: func1 is final
+    // void func1() override {}
+
+    // Correct: func2 can be overridden
+    void func2() override {}
+};
+
+// final class cannot be inherited
+class FinalClass final : public Base {
+public:
+    void func1() override {}
+};
+
+// Error: FinalClass is final, cannot be inherited
+// class CannotInherit : public FinalClass {};
+```
+
+### Pure Virtual Functions
+
+Pure virtual functions are virtual functions without implementation, declared using the `= 0` syntax. Classes containing pure virtual functions become abstract classes and cannot be instantiated:
+
+```cpp
+#include <iostream>
+#include <cmath>
+#include <memory>
+#include <vector>
+
+// Abstract base class
+class Shape {
+public:
+    virtual ~Shape() = default;
+
+    // Pure virtual functions
+    virtual double area() const = 0;
+    virtual double perimeter() const = 0;
+    virtual void draw() const = 0;
+
+    // Regular virtual function (has default implementation)
+    virtual std::string name() const {
+        return "Shape";
+    }
+};
+
+// Derived classes must implement all pure virtual functions
+class Circle : public Shape {
+private:
+    double radius;
+
+public:
+    explicit Circle(double r) : radius(r) {}
+
+    double area() const override {
+        return M_PI * radius * radius;
+    }
+
+    double perimeter() const override {
+        return 2 * M_PI * radius;
+    }
+
+    void draw() const override {
+        std::cout << "Drawing circle with radius: " << radius << std::endl;
+    }
+
+    std::string name() const override {
+        return "Circle";
+    }
+};
+
+class Rectangle : public Shape {
+private:
+    double width, height;
+
+public:
+    Rectangle(double w, double h) : width(w), height(h) {}
+
+    double area() const override {
+        return width * height;
+    }
+
+    double perimeter() const override {
+        return 2 * (width + height);
+    }
+
+    void draw() const override {
+        std::cout << "Drawing rectangle, width: " << width << ", height: " << height << std::endl;
+    }
+
+    std::string name() const override {
+        return "Rectangle";
+    }
+};
+
+int main() {
+    // Shape shape;  // Error: Cannot instantiate abstract class
+
+    std::vector<std::unique_ptr<Shape>> shapes;
+    shapes.push_back(std::make_unique<Circle>(5.0));
+    shapes.push_back(std::make_unique<Rectangle>(4.0, 6.0));
+
+    for (const auto& shape : shapes) {
+        std::cout << shape->name() << ":" << std::endl;
+        shape->draw();
+        std::cout << "  Area: " << shape->area() << std::endl;
+        std::cout << "  Perimeter: " << shape->perimeter() << std::endl;
+        std::cout << std::endl;
+    }
+
+    return 0;
+}
+```
+
+#### Pure Virtual Functions Can Have Implementations
+
+Pure virtual functions can have default implementations that derived classes can choose to call:
+
+```cpp
+#include <iostream>
+
+class Base {
+public:
+    virtual ~Base() = default;
+
+    // Pure virtual function with implementation
+    virtual void process() = 0;
+};
+
+// Define the pure virtual function's implementation outside the class
+void Base::process() {
+    std::cout << "Base::process() default processing" << std::endl;
+}
+
+class Derived1 : public Base {
+public:
+    void process() override {
+        std::cout << "Derived1::process() start" << std::endl;
+        Base::process();  // Explicitly call base class implementation
+        std::cout << "Derived1::process() end" << std::endl;
+    }
+};
+
+class Derived2 : public Base {
+public:
+    void process() override {
+        std::cout << "Derived2::process() fully customized" << std::endl;
+    }
+};
+
+int main() {
+    Derived1 d1;
+    Derived2 d2;
+
+    d1.process();
+    std::cout << std::endl;
+    d2.process();
+
+    return 0;
+}
+
+// Output:
+// Derived1::process() start
+// Base::process() default processing
+// Derived1::process() end
+//
+// Derived2::process() fully customized
+```
+
+### Virtual Destructors
+
+When deleting a derived class object through a base class pointer, a virtual destructor must be used. Otherwise, the derived class's destructor won't be called, potentially causing resource leaks:
+
+```cpp
+#include <iostream>
+
+// Bad example: Non-virtual destructor
+class BadBase {
+public:
+    BadBase() { std::cout << "BadBase constructed" << std::endl; }
+    ~BadBase() { std::cout << "BadBase destructed" << std::endl; }  // Non-virtual!
+};
+
+class BadDerived : public BadBase {
+private:
+    int* data;
+public:
+    BadDerived() : data(new int[100]) {
+        std::cout << "BadDerived constructed, memory allocated" << std::endl;
+    }
+    ~BadDerived() {
+        delete[] data;
+        std::cout << "BadDerived destructed, memory freed" << std::endl;
+    }
+};
+
+// Good example: Virtual destructor
+class GoodBase {
+public:
+    GoodBase() { std::cout << "GoodBase constructed" << std::endl; }
+    virtual ~GoodBase() { std::cout << "GoodBase destructed" << std::endl; }  // Virtual!
+};
+
+class GoodDerived : public GoodBase {
+private:
+    int* data;
+public:
+    GoodDerived() : data(new int[100]) {
+        std::cout << "GoodDerived constructed, memory allocated" << std::endl;
+    }
+    ~GoodDerived() override {
+        delete[] data;
+        std::cout << "GoodDerived destructed, memory freed" << std::endl;
+    }
+};
+
+int main() {
+    std::cout << "=== Bad example (memory leak) ===" << std::endl;
+    {
+        BadBase* badPtr = new BadDerived();
+        delete badPtr;  // Only calls BadBase's destructor!
+    }
+
+    std::cout << "\n=== Good example ===" << std::endl;
+    {
+        GoodBase* goodPtr = new GoodDerived();
+        delete goodPtr;  // Correctly calls both destructors
+    }
+
+    return 0;
+}
+
+// Output:
+// === Bad example (memory leak) ===
+// BadBase constructed
+// BadDerived constructed, memory allocated
+// BadBase destructed
+// (BadDerived's destructor not called, memory leak!)
+//
+// === Good example ===
+// GoodBase constructed
+// GoodDerived constructed, memory allocated
+// GoodDerived destructed, memory freed
+// GoodBase destructed
+```
+
+#### Virtual Destructor Rules
+
+```cpp
+class Base {
+public:
+    // Rule 1: If a class has virtual functions, it should have a virtual destructor
+    virtual void func() = 0;
+    virtual ~Base() = default;
+};
+
+class PolymorphicBase {
+public:
+    // Rule 2: If a class will be used as a polymorphic base class, it should have a virtual destructor
+    virtual ~PolymorphicBase() = default;
+};
+
+class NonPolymorphicBase {
+protected:
+    // Rule 3: If you don't want to delete through base class pointer, use protected non-virtual destructor
+    ~NonPolymorphicBase() = default;
+};
+```
+
+## Code Examples
+
+### Complete Polymorphism Example: Zoo System
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <memory>
+#include <string>
+
+// Abstract base class: Animal
+class Animal {
+protected:
+    std::string name;
+    int age;
+
+public:
+    Animal(const std::string& n, int a) : name(n), age(a) {}
+    virtual ~Animal() = default;
+
+    // Pure virtual functions
+    virtual void speak() const = 0;
+    virtual void move() const = 0;
+    virtual std::string getSpecies() const = 0;
+
+    // Virtual functions (with default implementation)
+    virtual void eat() const {
+        std::cout << name << " is eating" << std::endl;
+    }
+
+    virtual void sleep() const {
+        std::cout << name << " is sleeping" << std::endl;
+    }
+
+    // Non-virtual functions
+    std::string getName() const { return name; }
+    int getAge() const { return age; }
+
+    void printInfo() const {
+        std::cout << "Species: " << getSpecies()
+                  << ", Name: " << name
+                  << ", Age: " << age << std::endl;
+    }
+};
+
+// Mammal interface
+class Mammal : virtual public Animal {
+public:
+    using Animal::Animal;
+
+    virtual void nurse() const {
+        std::cout << name << " is nursing" << std::endl;
+    }
+};
+
+// Flyable interface
+class Flyable {
+public:
+    virtual ~Flyable() = default;
+    virtual void fly() const = 0;
+    virtual double getWingspan() const = 0;
+};
+
+// Concrete class: Dog
+class Dog final : public Mammal {
+private:
+    std::string breed;
+
+public:
+    Dog(const std::string& n, int a, const std::string& b)
+        : Animal(n, a), Mammal(n, a), breed(b) {}
+
+    void speak() const override {
+        std::cout << name << " says: Woof woof woof!" << std::endl;
+    }
+
+    void move() const override {
+        std::cout << name << " is running" << std::endl;
+    }
+
+    std::string getSpecies() const override {
+        return "Dog (" + breed + ")";
+    }
+
+    void eat() const override {
+        std::cout << name << " is eating dog food" << std::endl;
+    }
+
+    // Dog-specific method
+    void fetch() const {
+        std::cout << name << " went to fetch the ball!" << std::endl;
+    }
+
+    std::string getBreed() const { return breed; }
+};
+
+// Concrete class: Cat
+class Cat final : public Mammal {
+private:
+    bool isIndoor;
+
+public:
+    Cat(const std::string& n, int a, bool indoor)
+        : Animal(n, a), Mammal(n, a), isIndoor(indoor) {}
+
+    void speak() const override {
+        std::cout << name << " says: Meow meow meow!" << std::endl;
+    }
+
+    void move() const override {
+        std::cout << name << " is walking gracefully" << std::endl;
+    }
+
+    std::string getSpecies() const override {
+        return isIndoor ? "Indoor cat" : "Stray cat";
+    }
+
+    void sleep() const override {
+        std::cout << name << " curls up into a ball to sleep" << std::endl;
+    }
+
+    // Cat-specific method
+    void purr() const {
+        std::cout << name << " is purring" << std::endl;
+    }
+};
+
+// Concrete class: Bat (both a mammal and can fly)
+class Bat final : public Mammal, public Flyable {
+private:
+    double wingspan;
+
+public:
+    Bat(const std::string& n, int a, double ws)
+        : Animal(n, a), Mammal(n, a), wingspan(ws) {}
+
+    void speak() const override {
+        std::cout << name << " emits ultrasound" << std::endl;
+    }
+
+    void move() const override {
+        fly();
+    }
+
+    std::string getSpecies() const override {
+        return "Bat";
+    }
+
+    void fly() const override {
+        std::cout << name << " is flying through the night sky" << std::endl;
+    }
+
+    double getWingspan() const override {
+        return wingspan;
+    }
+
+    void sleep() const override {
+        std::cout << name << " sleeps hanging upside down" << std::endl;
+    }
+};
+
+// Zoo class
+class Zoo {
+private:
+    std::string name;
+    std::vector<std::unique_ptr<Animal>> animals;
+
+public:
+    explicit Zoo(const std::string& n) : name(n) {}
+
+    void addAnimal(std::unique_ptr<Animal> animal) {
+        std::cout << "Welcome " << animal->getName() << " to " << name << "!" << std::endl;
+        animals.push_back(std::move(animal));
+    }
+
+    void showAllAnimals() const {
+        std::cout << "\n=== All animals in " << name << " ===" << std::endl;
+        for (const auto& animal : animals) {
+            animal->printInfo();
+        }
+    }
+
+    void makeAllSpeak() const {
+        std::cout << "\n=== All animals speak ===" << std::endl;
+        for (const auto& animal : animals) {
+            animal->speak();
+        }
+    }
+
+    void feedAll() const {
+        std::cout << "\n=== Feeding time ===" << std::endl;
+        for (const auto& animal : animals) {
+            animal->eat();
+        }
+    }
+
+    void napTime() const {
+        std::cout << "\n=== Nap time ===" << std::endl;
+        for (const auto& animal : animals) {
+            animal->sleep();
+        }
+    }
+
+    // Find animals of a specific type
+    template<typename T>
+    std::vector<T*> findAnimalsOfType() const {
+        std::vector<T*> result;
+        for (const auto& animal : animals) {
+            if (T* derived = dynamic_cast<T*>(animal.get())) {
+                result.push_back(derived);
+            }
+        }
+        return result;
+    }
+};
+
+int main() {
+    Zoo zoo("City Zoo");
+
+    // Add various animals
+    zoo.addAnimal(std::make_unique<Dog>("Buddy", 3, "Golden Retriever"));
+    zoo.addAnimal(std::make_unique<Dog>("Shadow", 2, "Labrador"));
+    zoo.addAnimal(std::make_unique<Cat>("Whiskers", 4, true));
+    zoo.addAnimal(std::make_unique<Cat>("Stray", 2, false));
+    zoo.addAnimal(std::make_unique<Bat>("Nightwing", 1, 0.3));
+
+    // Show all animals
+    zoo.showAllAnimals();
+
+    // Polymorphic calls
+    zoo.makeAllSpeak();
+    zoo.feedAll();
+    zoo.napTime();
+
+    // Find specific types
+    std::cout << "\n=== Find all dogs ===" << std::endl;
+    auto dogs = zoo.findAnimalsOfType<Dog>();
+    for (Dog* dog : dogs) {
+        dog->fetch();
+    }
+
+    std::cout << "\n=== Find all flyable animals ===" << std::endl;
+    auto flyables = zoo.findAnimalsOfType<Flyable>();
+    for (Flyable* f : flyables) {
+        f->fly();
+        std::cout << "Wingspan: " << f->getWingspan() << " meters" << std::endl;
+    }
+
+    return 0;
+}
+```
+
+### Visualizing the Virtual Function Table
+
+```cpp
+#include <iostream>
+#include <cstdint>
+
+class Base {
+public:
+    virtual void func1() { std::cout << "Base::func1" << std::endl; }
+    virtual void func2() { std::cout << "Base::func2" << std::endl; }
+    virtual void func3() { std::cout << "Base::func3" << std::endl; }
+    virtual ~Base() { std::cout << "Base::~Base" << std::endl; }
+
+    int baseData = 10;
+};
+
+class Derived : public Base {
+public:
+    void func1() override { std::cout << "Derived::func1" << std::endl; }
+    // func2 inherited from Base
+    void func3() override { std::cout << "Derived::func3" << std::endl; }
+    ~Derived() override { std::cout << "Derived::~Derived" << std::endl; }
+
+    int derivedData = 20;
+};
+
+void inspectVTable(void* obj, const char* className) {
+    std::cout << "\n=== " << className << " vtable inspection ===" << std::endl;
+
+    // vptr is usually located at the beginning of the object
+    void** vptr = *reinterpret_cast<void***>(obj);
+
+    std::cout << "Object address: " << obj << std::endl;
+    std::cout << "vptr value: " << vptr << std::endl;
+
+    // Print the first few function pointers in the vtable (note: this is platform-dependent)
+    for (int i = 0; i < 4; ++i) {
+        std::cout << "vtable[" << i << "] = " << vptr[i] << std::endl;
+    }
+}
+
+int main() {
+    Base base;
+    Derived derived;
+
+    inspectVTable(&base, "Base");
+    inspectVTable(&derived, "Derived");
+
+    std::cout << "\n=== Calling through base class pointer ===" << std::endl;
+    Base* ptr = &derived;
+    ptr->func1();  // Derived::func1
+    ptr->func2();  // Base::func2
+    ptr->func3();  // Derived::func3
+
+    std::cout << "\n=== Object sizes ===" << std::endl;
+    std::cout << "sizeof(Base): " << sizeof(Base) << std::endl;
+    std::cout << "sizeof(Derived): " << sizeof(Derived) << std::endl;
+    std::cout << "sizeof(void*): " << sizeof(void*) << std::endl;
+
+    std::cout << "\n=== Destruction ===" << std::endl;
+    return 0;
+}
+```
+
+## Best Practices
+
+### Base Classes Should Have Virtual Destructors
+
+```cpp
+// Good practice
+class Base {
+public:
+    virtual ~Base() = default;
+    // or
+    // virtual ~Base() {}
+};
+
+// If you don't intend to delete through base class pointer, use protected non-virtual destructor
+class NonDeletableBase {
+protected:
+    ~NonDeletableBase() = default;
+};
+```
+
+### Use the override Keyword
+
+```cpp
+class Base {
+public:
+    virtual void process(int x) {}
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    // Good: Use override to let the compiler check
+    void process(int x) override {}
+
+    // Bad: Easy to make mistakes that are hard to detect
+    // void process(double x) {}  // This is not an override!
+};
+```
+
+### Use final to Prevent Improper Inheritance
+
+```cpp
+// Performance-critical classes can use final
+class OptimizedWidget final {
+    // Compiler can perform devirtualization optimization
+};
+
+// Prevent a specific virtual function from being further overridden
+class Base {
+public:
+    virtual void criticalOperation() = 0;
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    void criticalOperation() override final {
+        // This implementation should not be changed
+    }
+};
+```
+
+### Use Pure Virtual Functions to Define Interfaces
+
+```cpp
+// Pure interface class
+class ISerializer {
+public:
+    virtual ~ISerializer() = default;
+
+    virtual void serialize(const std::string& data) = 0;
+    virtual std::string deserialize() = 0;
+};
+
+class JsonSerializer : public ISerializer {
+public:
+    void serialize(const std::string& data) override {
+        // JSON serialization implementation
+    }
+
+    std::string deserialize() override {
+        // JSON deserialization implementation
+        return "";
+    }
+};
+```
+
+### Avoid Calling Virtual Functions in Constructors/Destructors
+
+```cpp
+class Base {
+public:
+    Base() {
+        // Bad: Virtual function call won't dispatch to derived class
+        // init();
+    }
+
+    virtual void init() {}
+    virtual ~Base() = default;
+
+    // Good: Use factory method
+    static std::unique_ptr<Base> create() {
+        auto obj = std::make_unique<Base>();
+        obj->init();
+        return obj;
+    }
+};
+```
+
+### Prefer Composition Over Inheritance
+
+```cpp
+// Not recommended: Overusing inheritance
+class Engine {
+public:
+    virtual void start() {}
+    virtual ~Engine() = default;
+};
+
+class Car : public Engine {  // Car is not an Engine
+    // ...
+};
+
+// Recommended: Use composition
+class Car {
+private:
+    std::unique_ptr<Engine> engine;
+
+public:
+    Car(std::unique_ptr<Engine> e) : engine(std::move(e)) {}
+
+    void start() {
+        engine->start();
+    }
+};
+```
+
+## Common Pitfalls
+
+### Forgetting Virtual Destructor
+
+```cpp
+class Base {
+public:
+    ~Base() {}  // Non-virtual destructor - dangerous!
+};
+
+class Derived : public Base {
+    std::vector<int> data;
+public:
+    ~Derived() {}
+};
+
+void bug() {
+    Base* ptr = new Derived();
+    delete ptr;  // Undefined behavior! Derived's destructor won't be called
+}
+```
+
+### Function Signature Mismatch
+
+```cpp
+class Base {
+public:
+    virtual void process(int x) {}
+    virtual void handle(const std::string& s) const {}
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    // Error: Different parameter type, this is hiding not overriding
+    void process(double x) {}  // Should use int
+
+    // Error: Missing const, this is hiding not overriding
+    void handle(const std::string& s) {}  // Should add const
+
+    // Correct approach: Use override
+    void process(int x) override {}
+    void handle(const std::string& s) const override {}
+};
+```
+
+### Slicing Problem
+
+```cpp
+class Base {
+public:
+    virtual void print() const {
+        std::cout << "Base" << std::endl;
+    }
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    void print() const override {
+        std::cout << "Derived" << std::endl;
+    }
+};
+
+void slicingProblem() {
+    Derived d;
+
+    // Object slicing: Derived class part is "sliced off"
+    Base b = d;  // Copy, not reference
+    b.print();   // Outputs "Base", not "Derived"
+
+    // Correct: Use reference or pointer
+    Base& ref = d;
+    ref.print(); // Outputs "Derived"
+
+    Base* ptr = &d;
+    ptr->print(); // Outputs "Derived"
+}
+```
+
+### Calling Virtual Functions in Constructors/Destructors
+
+```cpp
+class Base {
+public:
+    Base() {
+        // Dangerous: At this point, vptr points to Base's vtable
+        doSomething();  // Always calls Base::doSomething
+    }
+
+    virtual void doSomething() {
+        std::cout << "Base::doSomething" << std::endl;
+    }
+
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    Derived() : Base() {
+        // At this point, Derived::doSomething is available
+    }
+
+    void doSomething() override {
+        std::cout << "Derived::doSomething" << std::endl;
+    }
+};
+
+// Solution: Use two-phase construction
+class BetterBase {
+public:
+    BetterBase() = default;
+
+    void initialize() {
+        doSomething();  // Now dispatches correctly
+    }
+
+    virtual void doSomething() = 0;
+    virtual ~BetterBase() = default;
+};
+```
+
+### Default Arguments and Virtual Functions
+
+```cpp
+class Base {
+public:
+    virtual void print(int x = 10) {
+        std::cout << "Base: " << x << std::endl;
+    }
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    void print(int x = 20) override {
+        std::cout << "Derived: " << x << std::endl;
+    }
+};
+
+void defaultArgProblem() {
+    Derived d;
+    Base* ptr = &d;
+
+    ptr->print();  // Outputs "Derived: 10"!
+    // Function body comes from Derived, but default argument comes from Base (static binding)
+
+    d.print();     // Outputs "Derived: 20"
+}
+```
+
+### Misunderstanding Private Virtual Functions
+
+```cpp
+class Base {
+private:
+    virtual void doWork() {  // Private virtual functions are legal
+        std::cout << "Base::doWork" << std::endl;
+    }
+
+public:
+    void work() {
+        doWork();  // Calls virtual function
+    }
+
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+private:
+    void doWork() override {  // Can override private virtual functions
+        std::cout << "Derived::doWork" << std::endl;
+    }
+};
+
+void privateVirtualDemo() {
+    Derived d;
+    // d.doWork();  // Error: doWork is private
+    d.work();       // Correct: Call through public interface, outputs "Derived::doWork"
+}
+```
+
+## Performance Considerations
+
+### Virtual Function Call Overhead
+
+Virtual function calls have additional overhead compared to regular function calls:
+
+1. **Indirect addressing**: Need to look up vtable through vptr
+2. **Cannot be inlined**: Compilers typically cannot inline virtual function calls
+3. **Branch prediction**: May cause branch prediction failures
+
+```cpp
+#include <iostream>
+#include <chrono>
+#include <vector>
+
+class Base {
+public:
+    virtual int compute(int x) { return x * 2; }
+    int computeNonVirtual(int x) { return x * 2; }
+    virtual ~Base() = default;
+};
+
+class Derived : public Base {
+public:
+    int compute(int x) override { return x * 3; }
+    int computeNonVirtual(int x) { return x * 3; }
+};
+
+void benchmarkVirtualCall() {
+    const int iterations = 100000000;
+    Derived obj;
+    Base* ptr = &obj;
+
+    // Virtual function call
+    auto start = std::chrono::high_resolution_clock::now();
+    volatile int sum1 = 0;
+    for (int i = 0; i < iterations; ++i) {
+        sum1 += ptr->compute(i);
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    auto virtualTime = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+    // Non-virtual function call
+    start = std::chrono::high_resolution_clock::now();
+    volatile int sum2 = 0;
+    for (int i = 0; i < iterations; ++i) {
+        sum2 += obj.computeNonVirtual(i);
+    }
+    end = std::chrono::high_resolution_clock::now();
+    auto nonVirtualTime = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+    std::cout << "Virtual function call: " << virtualTime.count() << " ms" << std::endl;
+    std::cout << "Non-virtual function call: " << nonVirtualTime.count() << " ms" << std::endl;
+}
+```
+
+### Optimization Suggestions
+
+#### Use final to Help Compiler Optimization
+
+```cpp
+class Base {
+public:
+    virtual void process() {}
+    virtual ~Base() = default;
+};
+
+// final class allows compiler to perform devirtualization
+class OptimizedDerived final : public Base {
+public:
+    void process() override {}
+};
+
+void callProcess(OptimizedDerived& obj) {
+    obj.process();  // Compiler can inline this call
+}
+```
+
+#### Avoid Unnecessary Virtual Functions
+
+```cpp
+class Widget {
+public:
+    // Only declare functions that need to be overridden as virtual
+    virtual void render() = 0;
+
+    // Utility functions don't need to be virtual
+    int getWidth() const { return width; }
+    int getHeight() const { return height; }
+
+    virtual ~Widget() = default;
+
+protected:
+    int width = 0;
+    int height = 0;
+};
+```
+
+#### Use CRTP Instead of Virtual Functions (Static Polymorphism)
+
+```cpp
+#include <iostream>
+
+// CRTP: Curiously Recurring Template Pattern
+template<typename Derived>
+class Shape {
+public:
+    void draw() const {
+        // Static dispatch, no virtual function overhead
+        static_cast<const Derived*>(this)->drawImpl();
+    }
+
+    double area() const {
+        return static_cast<const Derived*>(this)->areaImpl();
+    }
+};
+
+class Circle : public Shape<Circle> {
+private:
+    double radius;
+
+public:
+    explicit Circle(double r) : radius(r) {}
+
+    void drawImpl() const {
+        std::cout << "Drawing circle" << std::endl;
+    }
+
+    double areaImpl() const {
+        return 3.14159 * radius * radius;
+    }
+};
+
+class Rectangle : public Shape<Rectangle> {
+private:
+    double width, height;
+
+public:
+    Rectangle(double w, double h) : width(w), height(h) {}
+
+    void drawImpl() const {
+        std::cout << "Drawing rectangle" << std::endl;
+    }
+
+    double areaImpl() const {
+        return width * height;
+    }
+};
+
+// Use templates to achieve static polymorphism
+template<typename ShapeType>
+void renderShape(const Shape<ShapeType>& shape) {
+    shape.draw();  // Determined at compile time which function to call
+}
+
+int main() {
+    Circle c(5.0);
+    Rectangle r(4.0, 6.0);
+
+    renderShape(c);  // Compile-time dispatch
+    renderShape(r);
+
+    std::cout << "Circle area: " << c.area() << std::endl;
+    std::cout << "Rectangle area: " << r.area() << std::endl;
+
+    return 0;
+}
+```
+
+#### Consider Object Size Impact
+
+```cpp
+#include <iostream>
+
+class NoVirtual {
+    int data;
+};
+
+class WithVirtual {
+    int data;
+public:
+    virtual void func() {}
+    virtual ~WithVirtual() = default;
+};
+
+int main() {
+    std::cout << "sizeof(NoVirtual): " << sizeof(NoVirtual) << std::endl;
+    std::cout << "sizeof(WithVirtual): " << sizeof(WithVirtual) << std::endl;
+    std::cout << "sizeof(void*): " << sizeof(void*) << std::endl;
+
+    // On 64-bit systems:
+    // NoVirtual: 4 bytes (only int)
+    // WithVirtual: 16 bytes (vptr 8 bytes + int 4 bytes + padding 4 bytes)
+
+    return 0;
+}
+```
+
+## Practical Scenarios
+
+### Scenario 1: Plugin System
+
+```cpp
+#include <iostream>
+#include <memory>
+#include <vector>
+#include <string>
+#include <map>
+
+// Plugin interface
+class IPlugin {
+public:
+    virtual ~IPlugin() = default;
+
+    virtual std::string getName() const = 0;
+    virtual std::string getVersion() const = 0;
+    virtual void initialize() = 0;
+    virtual void shutdown() = 0;
+    virtual void execute(const std::string& command) = 0;
+};
+
+// Logger plugin
+class LoggerPlugin : public IPlugin {
+private:
+    bool initialized = false;
+
+public:
+    std::string getName() const override { return "Logger"; }
+    std::string getVersion() const override { return "1.0.0"; }
+
+    void initialize() override {
+        std::cout << "[Logger] Initializing logging system..." << std::endl;
+        initialized = true;
+    }
+
+    void shutdown() override {
+        std::cout << "[Logger] Shutting down logging system..." << std::endl;
+        initialized = false;
+    }
+
+    void execute(const std::string& command) override {
+        if (initialized) {
+            std::cout << "[Logger] Logging: " << command << std::endl;
+        }
+    }
+};
+
+// Network plugin
+class NetworkPlugin : public IPlugin {
+private:
+    bool connected = false;
+
+public:
+    std::string getName() const override { return "Network"; }
+    std::string getVersion() const override { return "2.1.0"; }
+
+    void initialize() override {
+        std::cout << "[Network] Establishing network connection..." << std::endl;
+        connected = true;
+    }
+
+    void shutdown() override {
+        std::cout << "[Network] Disconnecting network..." << std::endl;
+        connected = false;
+    }
+
+    void execute(const std::string& command) override {
+        if (connected) {
+            std::cout << "[Network] Sending data: " << command << std::endl;
+        }
+    }
+};
+
+// Plugin manager
+class PluginManager {
+private:
+    std::vector<std::unique_ptr<IPlugin>> plugins;
+
+public:
+    void registerPlugin(std::unique_ptr<IPlugin> plugin) {
+        std::cout << "Registering plugin: " << plugin->getName()
+                  << " v" << plugin->getVersion() << std::endl;
+        plugins.push_back(std::move(plugin));
+    }
+
+    void initializeAll() {
+        std::cout << "\n=== Initializing all plugins ===" << std::endl;
+        for (auto& plugin : plugins) {
+            plugin->initialize();
+        }
+    }
+
+    void shutdownAll() {
+        std::cout << "\n=== Shutting down all plugins ===" << std::endl;
+        for (auto it = plugins.rbegin(); it != plugins.rend(); ++it) {
+            (*it)->shutdown();
+        }
+    }
+
+    void executeCommand(const std::string& command) {
+        for (auto& plugin : plugins) {
+            plugin->execute(command);
+        }
+    }
+};
+
+int main() {
+    PluginManager manager;
+
+    manager.registerPlugin(std::make_unique<LoggerPlugin>());
+    manager.registerPlugin(std::make_unique<NetworkPlugin>());
+
+    manager.initializeAll();
+
+    std::cout << "\n=== Executing commands ===" << std::endl;
+    manager.executeCommand("Hello, World!");
+    manager.executeCommand("Data packet #1");
+
+    manager.shutdownAll();
+
+    return 0;
+}
+```
+
+### Scenario 2: Factory Pattern
+
+```cpp
+#include <iostream>
+#include <memory>
+#include <map>
+#include <functional>
+#include <string>
+
+// Product interface
+class Document {
+public:
+    virtual ~Document() = default;
+    virtual void open() = 0;
+    virtual void save() = 0;
+    virtual void close() = 0;
+    virtual std::string getType() const = 0;
+};
+
+// Concrete products
+class TextDocument : public Document {
+public:
+    void open() override {
+        std::cout << "Opening text document" << std::endl;
+    }
+
+    void save() override {
+        std::cout << "Saving text document" << std::endl;
+    }
+
+    void close() override {
+        std::cout << "Closing text document" << std::endl;
+    }
+
+    std::string getType() const override {
+        return "text";
+    }
+};
+
+class SpreadsheetDocument : public Document {
+public:
+    void open() override {
+        std::cout << "Opening spreadsheet" << std::endl;
+    }
+
+    void save() override {
+        std::cout << "Saving spreadsheet" << std::endl;
+    }
+
+    void close() override {
+        std::cout << "Closing spreadsheet" << std::endl;
+    }
+
+    std::string getType() const override {
+        return "spreadsheet";
+    }
+};
+
+class PresentationDocument : public Document {
+public:
+    void open() override {
+        std::cout << "Opening presentation" << std::endl;
+    }
+
+    void save() override {
+        std::cout << "Saving presentation" << std::endl;
+    }
+
+    void close() override {
+        std::cout << "Closing presentation" << std::endl;
+    }
+
+    std::string getType() const override {
+        return "presentation";
+    }
+};
+
+// Document factory
+class DocumentFactory {
+private:
+    using Creator = std::function<std::unique_ptr<Document>()>;
+    std::map<std::string, Creator> creators;
+
+public:
+    void registerType(const std::string& type, Creator creator) {
+        creators[type] = std::move(creator);
+    }
+
+    std::unique_ptr<Document> create(const std::string& type) {
+        auto it = creators.find(type);
+        if (it != creators.end()) {
+            return it->second();
+        }
+        throw std::runtime_error("Unknown document type: " + type);
+    }
+};
+
+int main() {
+    DocumentFactory factory;
+
+    // Register document types
+    factory.registerType("text", []() {
+        return std::make_unique<TextDocument>();
+    });
+    factory.registerType("spreadsheet", []() {
+        return std::make_unique<SpreadsheetDocument>();
+    });
+    factory.registerType("presentation", []() {
+        return std::make_unique<PresentationDocument>();
+    });
+
+    // Create documents
+    std::vector<std::unique_ptr<Document>> documents;
+    documents.push_back(factory.create("text"));
+    documents.push_back(factory.create("spreadsheet"));
+    documents.push_back(factory.create("presentation"));
+
+    // Operate on all documents
+    for (auto& doc : documents) {
+        std::cout << "\nProcessing " << doc->getType() << " document:" << std::endl;
+        doc->open();
+        doc->save();
+        doc->close();
+    }
+
+    return 0;
+}
+```
+
+### Scenario 3: Strategy Pattern
+
+```cpp
+#include <iostream>
+#include <memory>
+#include <vector>
+#include <algorithm>
+
+// Sorting strategy interface
+class SortStrategy {
+public:
+    virtual ~SortStrategy() = default;
+    virtual void sort(std::vector<int>& data) = 0;
+    virtual std::string getName() const = 0;
+};
+
+// Bubble sort
+class BubbleSort : public SortStrategy {
+public:
+    void sort(std::vector<int>& data) override {
+        for (size_t i = 0; i < data.size(); ++i) {
+            for (size_t j = 0; j < data.size() - i - 1; ++j) {
+                if (data[j] > data[j + 1]) {
+                    std::swap(data[j], data[j + 1]);
+                }
+            }
+        }
+    }
+
+    std::string getName() const override {
+        return "Bubble Sort";
+    }
+};
+
+// Quick sort
+class QuickSort : public SortStrategy {
+private:
+    void quickSort(std::vector<int>& data, int low, int high) {
+        if (low < high) {
+            int pivot = data[high];
+            int i = low - 1;
+
+            for (int j = low; j < high; ++j) {
+                if (data[j] < pivot) {
+                    ++i;
+                    std::swap(data[i], data[j]);
+                }
+            }
+            std::swap(data[i + 1], data[high]);
+
+            int pi = i + 1;
+            quickSort(data, low, pi - 1);
+            quickSort(data, pi + 1, high);
+        }
+    }
+
+public:
+    void sort(std::vector<int>& data) override {
+        if (!data.empty()) {
+            quickSort(data, 0, static_cast<int>(data.size()) - 1);
+        }
+    }
+
+    std::string getName() const override {
+        return "Quick Sort";
+    }
+};
+
+// Standard library sort
+class StdSort : public SortStrategy {
+public:
+    void sort(std::vector<int>& data) override {
+        std::sort(data.begin(), data.end());
+    }
+
+    std::string getName() const override {
+        return "Standard Library Sort";
+    }
+};
+
+// Sorter context
+class Sorter {
+private:
+    std::unique_ptr<SortStrategy> strategy;
+
+public:
+    void setStrategy(std::unique_ptr<SortStrategy> s) {
+        strategy = std::move(s);
+    }
+
+    void sort(std::vector<int>& data) {
+        if (strategy) {
+            std::cout << "Using " << strategy->getName() << std::endl;
+            strategy->sort(data);
+        }
+    }
+};
+
+void printVector(const std::vector<int>& v) {
+    std::cout << "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        std::cout << v[i];
+        if (i < v.size() - 1) std::cout << ", ";
+    }
+    std::cout << "]" << std::endl;
+}
+
+int main() {
+    std::vector<int> data = {64, 34, 25, 12, 22, 11, 90};
+
+    Sorter sorter;
+
+    // Use bubble sort
+    auto data1 = data;
+    sorter.setStrategy(std::make_unique<BubbleSort>());
+    sorter.sort(data1);
+    std::cout << "Result: ";
+    printVector(data1);
+
+    // Use quick sort
+    auto data2 = data;
+    sorter.setStrategy(std::make_unique<QuickSort>());
+    sorter.sort(data2);
+    std::cout << "Result: ";
+    printVector(data2);
+
+    // Use standard library sort
+    auto data3 = data;
+    sorter.setStrategy(std::make_unique<StdSort>());
+    sorter.sort(data3);
+    std::cout << "Result: ";
+    printVector(data3);
+
+    return 0;
+}
+```
+
+## Interview Key Points
+
+### What are virtual functions? Why do we need them?
+
+**Answer**: Virtual functions are member functions declared with the `virtual` keyword that allow derived classes to override the base class implementation. We need virtual functions to implement runtime polymorphism, which means that when calling a function through a base class pointer or reference, the correct function version is called based on the actual object type.
+
+### Explain vtable and vptr
+
+**Answer**:
+- **vtable** (virtual function table): Each class containing virtual functions has a vtable that stores the addresses of all virtual functions in that class
+- **vptr** (virtual function table pointer): Each object of a class containing virtual functions has a hidden vptr that points to its class's vtable
+- During virtual function calls, the vtable is found through vptr, then the function address is looked up in the vtable and called
+
+### What's the difference between pure virtual functions and virtual functions?
+
+**Answer**:
+- Virtual functions can have implementations; derived classes can choose whether to override them
+- Pure virtual functions use the `= 0` syntax, making the class abstract and unable to be instantiated
+- Derived classes must implement all pure virtual functions to be instantiated
+- Pure virtual functions can also have implementations, but they must be defined outside the class
+
+### Why do base classes need virtual destructors?
+
+**Answer**: When deleting a derived class object through a base class pointer, if the destructor is not virtual, only the base class's destructor will be called, and the derived class's destructor won't be called, potentially causing resource leaks. Virtual destructors ensure that destructors throughout the entire inheritance chain are called correctly during destruction.
+
+### What are the purposes of override and final?
+
+**Answer**:
+- `override`: Explicitly indicates that a function intends to override a base class virtual function; the compiler will report an error if the signature doesn't match
+- `final`: When used on a virtual function, prevents derived classes from further overriding; when used on a class, prevents that class from being inherited
+
+### Can virtual functions be called in constructors?
+
+**Answer**: They can be called, but there won't be polymorphic behavior. During constructor execution, the derived class portion hasn't been initialized yet, and vptr points to the vtable of the class currently being constructed, so virtual function calls won't dispatch to the derived class's version. The same rule applies to destructors.
+
+### What is the performance overhead of virtual functions?
+
+**Answer**:
+- Each object stores an additional vptr (typically 4 or 8 bytes)
+- Each class stores an additional vtable
+- Virtual function calls require additional indirect addressing
+- Virtual functions typically cannot be inlined
+- Using `final` can help the compiler optimize
+
+### Do private virtual functions make sense?
+
+**Answer**: Yes, they do. Private virtual functions can be overridden by derived classes (because access control and virtual function mechanisms are independent), but cannot be directly called by derived classes. This is the foundation of the NVI (Non-Virtual Interface) pattern, where the base class calls private virtual functions through public non-virtual functions to control the timing and context of the call.
+
+### Where is the virtual function table stored?
+
+**Answer**: The vtable is typically stored in the program's read-only data segment (.rodata) because it is determined at compile time and doesn't change. The vptr is stored in each object, usually at the beginning of the object's memory.
+
+### Can virtual functions be called directly through the vtable?
+
+**Answer**: Technically possible, but this is undefined behavior and should not be used in normal code. The vtable structure is a compiler implementation detail and may differ between compilers.
+
+## Further Reading
+
+### Official Documentation and Standards
+- [C++ Reference - Virtual Functions](https://en.cppreference.com/w/cpp/language/virtual)
+- [C++ Reference - Abstract Classes](https://en.cppreference.com/w/cpp/language/abstract_class)
+- [C++ Reference - override](https://en.cppreference.com/w/cpp/language/override)
+- [C++ Reference - final](https://en.cppreference.com/w/cpp/language/final)
+
+### Classic Books
+- "Effective C++" - Scott Meyers (Items 7, 33, 34, 35, 36)
+- "C++ Primer" 5th Edition - Stanley Lippman (Chapter 15: Object-Oriented Programming)
+- "Inside the C++ Object Model" - Stanley Lippman (Deep understanding of object model and vtable)
+
+### Technical Articles
+- [Polymorphism in C++](https://isocpp.org/wiki/faq/virtual-functions) - ISO C++ FAQ
+- [C++ Virtual Functions Demystified](https://www.learncpp.com/cpp-tutorial/the-virtual-table/)
+- [Understanding Virtual Tables](https://pabloariasal.github.io/2017/06/10/understanding-virtual-tables/)
+
+### Related Topics
+- RTTI (Runtime Type Identification): dynamic_cast and typeid
+- Virtual Inheritance: Solving the diamond inheritance problem
+- CRTP: Compile-time polymorphism alternative
+- Type Erasure: Another approach to implementing polymorphism
