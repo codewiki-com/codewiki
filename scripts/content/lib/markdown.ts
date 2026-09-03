@@ -169,7 +169,7 @@ const LATIN_WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
  * excluded so that samples do not inflate the count.
  */
 export function wordCount(md: string): number {
-  const prose = withoutCode(md)
+  const prose = stripFences(md)
     .replace(/`[^`]*`/g, ' ')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
@@ -181,7 +181,7 @@ export function wordCount(md: string): number {
 }
 
 /** Drop every fenced code block, keeping the surrounding prose lines. */
-function withoutCode(md: string): string {
+export function stripFences(md: string): string {
   const out: string[] = [];
   let fence: OpenFence | null = null;
   for (const line of md.split('\n')) {
