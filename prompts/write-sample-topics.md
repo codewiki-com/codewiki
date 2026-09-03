@@ -31,9 +31,10 @@ Required beats, in this order (on top of the editorial standard's structure):
 - `## What a closure is` — definition, why the language has it, when you meet it.
 - A runnable example with the exact fence meta ` ```python run title="make_counter.py" `. The code
   builds a counter with a closure; **run it** and paste its real output into a ` ```text ` block.
-  The output must be `1 2 3` on one line (or one per line, matching the code you actually run),
-  followed by `3` from a second, independent counter — i.e. the example must show that each closure
-  gets its own cell.
+  The output must be `1 2 3` on one line (three calls of one counter printed together), followed by a
+  second line `3` from `print(tick.__closure__[0].cell_contents)` — peeking at the captured cell.
+  Then show, in the same or a following example, that a second `make_counter()` call starts again at
+  `1` — each closure gets its own cell.
 - `## Late binding: the trap` — the loop-variable capture problem, with the fix
   (default argument or `functools.partial`), each shown as runnable code with real output.
 - At least one `> [!PITFALL]` callout followed by the fix (the standard asks for three to six
