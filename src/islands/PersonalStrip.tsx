@@ -31,10 +31,7 @@ export interface PersonalStripProps {
   };
   /** Every public topic of this locale, keyed by `${track}/${slug}`. */
   titles: Record<string, TopicRef>;
-  /**
-   * Where the "Review" link goes. Left out while the flashcard page is unbuilt (`P2_NAV`), and
-   * then the card states the due count without offering a link to nowhere.
-   */
+  /** Where the "Review" link goes. */
   reviewUrl?: string;
 }
 
