@@ -65,6 +65,10 @@ export interface FlashcardsLabels {
   loading: string;
   loadFailed: string;
   flip: string;
+  cueTerm: string;
+  cueQuiz: string;
+  flashcardsTag: string;
+  trackNames: Record<string, string>;
   on: string;
   off: string;
   sourceNote: string;
@@ -306,7 +310,9 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
     );
   const current = queue[0];
   const parsed = current ? parseRef(current.ref) : undefined;
-  const face = current ? faceOf(current, glossary ?? [], banks) : undefined;
+  const face = current
+    ? faceOf(current, glossary ?? [], banks, { term: labels.cueTerm, quiz: labels.cueQuiz })
+    : undefined;
   const due = visible.filter((card) => isDue(card, now)).length;
   const total = done + queue.length;
 
@@ -465,7 +471,7 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
             {labels.practice}
           </a>
           <span class="lbl">/</span>
-          <span class="tag acc">flashcards</span>
+          <span class="tag acc">{labels.flashcardsTag}</span>
         </div>
         <h1>{labels.title}</h1>
         <span class="lbl flashcards-summary">
@@ -526,7 +532,11 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
       <article class="panel flashcard-card" data-card-id={current.id} data-side={flipped ? 'back' : 'front'}>
         <header class="flashcard-meta">
           <div>
-            <span class="tag acc">{parsed?.kind === 'quiz' ? parsed.bank.split('/')[0] : 'term'}</span>
+            <span class="tag acc">
+              {parsed?.kind === 'quiz'
+                ? (labels.trackNames[parsed.bank.split('/')[0] ?? ''] ?? parsed.bank.split('/')[0])
+                : labels.terms}
+            </span>
             <span class="tag">{current.kind === 'term' ? labels.terms : labels.missedQuiz}</span>
             <span class="lbl">
               {current.reps} ·{' '}

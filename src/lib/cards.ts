@@ -53,6 +53,11 @@ export interface CardFace {
   back: { text: string; textZh?: string; code?: string; links: CardFaceLink[] };
 }
 
+export interface CardCues {
+  term: string;
+  quiz: string;
+}
+
 /** Parses a stable card id, including ReviewKata's optional per-issue line suffix. */
 export function parseRef(ref: string): CardRef | undefined {
   const term = /^glossary:([^:#]+)$/.exec(ref);
@@ -131,6 +136,7 @@ export function faceOf(
   card: Flashcard,
   glossary: readonly GlossaryCardTerm[],
   banks: QuizCardBanks,
+  cues: CardCues,
 ): CardFace | undefined {
   const parsed = parseRef(card.ref);
   if (!parsed) return undefined;
@@ -143,7 +149,7 @@ export function faceOf(
       front: {
         title: term.en,
         alt: term.zh,
-        cue: 'Define this term before you flip.',
+        cue: cues.term,
       },
       back: {
         text: term.short.en,
@@ -169,7 +175,7 @@ export function faceOf(
     front: {
       title: prompt.en,
       alt: prompt.zh,
-      cue: 'Answer before you flip.',
+      cue: cues.quiz,
       ...(publicItem?.code || answerItem.code ? { code: publicItem?.code ?? answerItem.code } : {}),
     },
     back: {

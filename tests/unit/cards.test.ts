@@ -4,6 +4,7 @@ import { faceOf, parseRef, visibleDeck, type GlossaryCardTerm, type QuizCardBank
 import { DEFAULT_PREFS, type Flashcard, type Flashcards } from '@/lib/prefs';
 
 const now = new Date('2026-09-04T10:00:00.000Z');
+const cues = { term: 'Define this term.', quiz: 'Answer this question.' };
 const term = (id: string, due: string, source: Flashcard['source'] = 'terms'): Flashcard => ({
   id,
   kind: 'term',
@@ -110,7 +111,7 @@ describe('faceOf', () => {
   };
 
   it('builds a bilingual glossary face with section and glossary links', () => {
-    const face = faceOf(term('closure', now.toISOString()), glossary, banks);
+    const face = faceOf(term('closure', now.toISOString()), glossary, banks, cues);
     expect(face?.front).toMatchObject({ title: 'Closure', alt: '闭包' });
     expect(face?.back).toMatchObject({
       text: 'A function plus captured bindings.',
@@ -129,7 +130,7 @@ describe('faceOf', () => {
       ref: 'quiz:python/closures#binding',
       source: 'quiz',
     };
-    const face = faceOf(card, glossary, banks);
+    const face = faceOf(card, glossary, banks, cues);
     expect(face?.front).toMatchObject({ title: 'What prints?', alt: '输出什么？', code: 'print(read())' });
     expect(face?.back.text).toBe('2\n\nThe binding is resolved later.');
     expect(face?.back.textZh).toBe('2\n\n绑定会在之后解析。');
@@ -142,7 +143,7 @@ describe('faceOf', () => {
       ref: 'quiz:python/closures#review:14',
       source: 'quiz',
     };
-    const face = faceOf(card, glossary, banks);
+    const face = faceOf(card, glossary, banks, cues);
     expect(face?.back.text).toBe('This call is unsafe.\n\nUse the safe call.');
     expect(face?.back.textZh).toBe('这个调用不安全。\n\n应使用安全调用。');
   });

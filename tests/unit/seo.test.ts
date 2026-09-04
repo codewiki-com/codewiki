@@ -88,7 +88,7 @@ describe('buildHead', () => {
         description: 'd',
         kind: 'practice',
       }).title,
-    ).toBe('会输出什么？ · Practice · codewiki');
+    ).toBe('会输出什么？ · 练习 · codewiki');
   });
 
   it('omits the middle segment when no track name is given', () => {

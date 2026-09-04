@@ -104,6 +104,6 @@ test('the Chinese practice hub renders its localized shell', async ({ page }) =>
   await page.goto('/zh/practice/');
 
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');
-  await expect(page.locator('h1')).toHaveText('Practice');
+  await expect(page.locator('h1')).toHaveText('练习');
   await expect(page.locator('[data-practice-card]')).toHaveCount(5);
 });
