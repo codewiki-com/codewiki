@@ -1,0 +1,400 @@
+---
+title: 'Generated change review'
+description: 'Review generated diffs across files for correctness, edge cases, maintainability, and unintended behavior.'
+track: ai-era
+section: reviewing-ai-code
+difficulty: intermediate
+tags: [generated-code, code-review, diff, verification]
+prerequisites: [ai-era/unfamiliar-code-reading, foundations/git-deep-dive]
+related: [ai-era/code-provenance-and-verification, ai-era/tests-as-agent-guardrails, ai-era/generated-code-security, ai-era/ai-assisted-debugging]
+terms: [api-contract, architecture-boundary, backward-compatibility, breaking-change, characterization-test, class-invariant]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: ai-era/generated-change-review
+sources:
+  - { title: 'Git - git-diff documentation', url: 'https://git-scm.com/docs/git-diff' }
+  - { title: 'GitHub Docs - Reviewing proposed changes in a pull request', url: 'https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests' }
+  - { title: 'Google Engineering Practices - How to do a code review', url: 'https://google.github.io/eng-practices/review/reviewer/' }
+  - { title: 'OWASP Code Review Guide', url: 'https://owasp.org/www-project-code-review-guide/' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Generated change review tests a patch's repository-wide behavior, not whether each edited hunk looks plausible in isolation.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A green generated test can miss stale callers, falsy and empty inputs, shared-state changes, deleted checks, and files outside the model's context.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Reconstruct the contract, trace every affected boundary, challenge it with counterexamples, and tie approval to independent evidence.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Generated change review is the examination of an AI-produced patch as a change to a running repository. You compare the patch with its stated task, then follow its effects through callers, data, state, configuration, tests, and operational paths. The unit of review is the behavior changed by the diff, not the prose that generated it and not one file at a time.
+
+Generated patches are often locally convincing. A function can be syntactically valid, neatly named, and covered by a new happy-path test while its caller still expects the old return type. The model has optimized a visible fragment; the reviewer has to restore the surrounding system.
+
+Start from the <Term id="api-contract">API contract</Term>: accepted inputs, returned values, thrown errors, mutations, ordering, timing, and side effects. A type signature captures only part of that contract. `number` doesn't say whether zero is meaningful, and `Promise<Result>` doesn't say whether rejection or `{ ok: false }` represents failure.
+
+Repository conventions are contracts too. A service may require transactions around two writes, stable sort order for pagination, a specific error class at an <Term id="architecture-boundary">architecture boundary</Term>, or a generated file that must be refreshed from its source. Code that ignores those rules can pass an isolated unit test and still be wrong for the repository.
+
+Review generated changes whenever a tool edits code, tests, configuration, schemas, dependencies, or build files. The method matters most for multi-file patches, public interfaces, persistent data, authorization, concurrency, and cleanup. Small patches deserve the same questions in a smaller review, because one altered condition can still reverse a guarantee.
+
+The reviewer isn't trying to prove that generated code is uniquely unreliable. Human patches produce the same classes of defects. Generation changes the prior: consistent formatting and confident explanations arrive cheaply, so visual polish is weaker evidence of understanding than it once was.
+
+Approval means the remaining risk is understood and proportionate, not that every conceivable defect has been excluded. A useful review makes its evidence and residual uncertainty explicit. If a required environment, migration rehearsal, or domain decision is unavailable, record that gap instead of converting it into confidence.
+
+## How it works
+
+Review moves from intent to impact to evidence. Each stage narrows a different source of uncertainty: what should change, where the change propagates, which behaviors could break, and what observations support the final decision. Skipping directly to test execution loses the reasoning that tells you whether those are the right tests.
+
+### Establish the baseline and task contract
+
+Identify the exact baseline commit or worktree state before interpreting the diff. List every changed, added, deleted, renamed, and generated path, including lockfiles and snapshots. If the change list doesn't match the authorized scope, stop and explain the extra path before judging implementation details.
+
+Rewrite the request as observable acceptance criteria. Separate required behavior from implementation suggestions, and name explicit non-goals. A request such as “support an optional limit” is incomplete until you decide what omitted, zero, negative, fractional, and oversized limits mean.
+
+Compare the implementation with the request rather than with the model's summary. A summary is a navigation aid, not evidence: it can omit a deleted guard or describe intended behavior that the patch doesn't implement. Read the actual baseline-to-final diff, including deletions and apparently mechanical changes.
+
+### Read whole changes, not isolated hunks
+
+Expand each hunk until you understand the containing function, its inputs, state, error handling, and cleanup. Then read the whole changed file to catch imports, module initialization, exports, and conventions that a hunk view hides. A one-line edit can change control flow established dozens of lines away.
+
+Classify every semantic edit before discussing style. Useful categories are contract, control flow, data transformation, state mutation, persistence, permissions, concurrency, observability, dependency, configuration, and test. This inventory exposes unrelated behavior bundled into a plausible “refactor.”
+
+Formatting and renames can obscure semantic changes. Review a whitespace-insensitive diff when the repository tooling can produce one, but return to the normal diff before approval. You still need to inspect changed comments, strings, configuration, and deletions that whitespace filters can conceal.
+
+### Review absence and non-code surfaces
+
+What disappeared can matter more than what was added. Look for removed validation, logging, metrics, cleanup, retries, authorization, and assertions. Ask which former behavior replaces each deletion; “the new helper handles it” needs a path to that helper.
+
+Generated artifacts need two-sided review. Inspect the human-owned source and the generated output, run the repository's generator, and confirm that a clean rerun produces no further diff. A hand-edited artifact may pass locally but disappear during the next build.
+
+Configuration and dependency changes alter behavior without an obvious call site. Check default values, environment-specific overrides, scripts, lockfile resolution, and runtime requirements. A source change that uses a new API is incomplete when the declared runtime still permits an older version.
+
+Before moving on, account for these quiet surfaces:
+
+- Deleted branches and assertions that no longer guard behavior.
+- Renames whose old strings survive in registration or configuration.
+- Generated files whose source or regeneration command didn't change.
+- Lockfiles, build scripts, and defaults changed outside the main implementation.
+
+### Build the impact cone
+
+For every changed definition, find direct callers, re-exports, adapters, implementations, tests, and configuration. Continue across boundaries until the contract is translated into a stable external behavior or storage representation. This reachable set is the change's impact cone.
+
+Use both semantic and textual search. Language-server references find statically connected consumers; text search finds reflection, dependency injection keys, routes, serializers, shell invocations, fixtures, and documentation examples. Neither search alone proves completeness in a dynamic system.
+
+Trace in both directions. Upstream, ask who supplies each input and what validation has already occurred. Downstream, ask who observes return values, exceptions, mutations, emitted events, database writes, metrics, or ordering.
+
+A boundary table makes mismatches visible:
+
+| Boundary | Before | After | Consumer checked |
+| --- | --- | --- | --- |
+| Input | omitted limit means default | zero is accepted | HTTP adapter and CLI |
+| Return | Boolean | result object | checkout and tests |
+| State | input preserved | input sorted in place | audit and cache |
+| Failure | throws `StockError` | returns `{ ok: false }` | error middleware |
+
+Any unexplained cell is unfinished review work. “No callers found” is a search result that needs a stated search method, not a guarantee. Public packages and externally consumed schemas may have callers outside the repository.
+
+### Recover invariants and construct counterexamples
+
+An invariant is a property that must remain true across supported operations. A <Term id="class-invariant">class invariant</Term> might require a balance never to become negative; a repository invariant might require every tenant query to carry a tenant identifier. Write these properties before looking for individual bugs.
+
+Turn each changed condition into a behavior matrix. Include the boundary itself and one value on each side, plus empty, missing, duplicate, malformed, maximum-size, and permission-denied cases where meaningful. For stateful code, add repeated calls, interleaved owners, retries, partial failures, and cancellation.
+
+Use counterexamples that distinguish the intended contract from the generated implementation. If both produce the same output, the test teaches little. Zero distinguishes `limit ?? 20` from `limit || 20`; a failed reservation distinguishes checking `result.ok` from checking whether the result object is truthy.
+
+Existing behavior may be undocumented. A <Term id="characterization-test">characterization test</Term> records what the baseline actually does before the patch changes it. The test doesn't declare that old behavior is ideal; it forces the reviewer to identify an intentional <Term id="breaking-change">breaking change</Term> instead of accepting an accidental one.
+
+### Match verification to risk
+
+Run the narrowest check that reproduces the changed behavior first, then broaden outward. A common order is focused regression test, affected package tests, type checking and linting, integration or contract tests, build, and repository-wide checks. The correct set comes from the impact cone, not from a universal command list.
+
+Inspect tests as carefully as production code. Generated tests may repeat the implementation, weaken an assertion, update a snapshot without interpretation, mock away the broken boundary, or silently replace a regression with a happy path. A test is independent evidence only when its oracle comes from the contract.
+
+Record the exact command, working directory, runtime, exit status, and meaningful output. Note skipped, flaky, truncated, cached, or unavailable checks. “Tests pass” without this context can't be reproduced and may refer to the wrong package or no executed command at all.
+
+Static analysis and runtime tests answer different questions. Type checking can find stale typed callers but not a validly typed zero-value mistake. An integration test can exercise wiring but still miss a rare error path; manual reasoning remains necessary to select the path.
+
+### Decide and communicate
+
+Rank findings by consequence and confidence. Correctness, data loss, security, privacy, compatibility, and operational hazards come before naming preferences. Don't bury a negative inventory balance beneath ten minor formatting comments.
+
+A useful finding contains the location, violated contract, triggering input or sequence, observed consequence, and smallest acceptable direction for a fix. “This looks risky” is hard to act on. “At `checkout`, `{ ok: false }` is truthy, so quantity three against stock two stores `-1`; branch on `result.ok` and update from `result.remaining`” is testable.
+
+Choose one decision: approve, request changes, or approve with an explicitly tracked follow-up allowed by team policy. List the commands run and gaps that remain. A generated patch should never approve itself, and an author summary should never substitute for reviewer ownership.
+
+## Examples
+
+The examples use Node 24 and isolate small failure patterns that commonly span larger repositories. Each program is self-contained so you can reproduce the observation before mapping it back to files and callers in a real change.
+
+### A falsy boundary hidden by a happy path
+
+The generated helper looks idiomatic and its default and positive-limit examples work. The contract also allows zero to mean “return no products,” but `||` treats zero as absence and substitutes the default.
+
+<Depth level="quick">
+
+```js run title="catalog_limit.js"
+function visibleProducts(products, limit = 20) {
+  const published = products.filter((product) => product.published);
+  return published.slice(0, limit || 20);
+}
+
+const catalog = [
+  { sku: "A", published: true },
+  { sku: "B", published: false },
+  { sku: "C", published: true },
+];
+
+console.log("default:", visibleProducts(catalog).map((p) => p.sku));
+console.log("one:", visibleProducts(catalog, 1).map((p) => p.sku));
+console.log("zero:", visibleProducts(catalog, 0).map((p) => p.sku));
+```
+
+```text
+default: [ 'A', 'C' ]
+one: [ 'A' ]
+zero: [ 'A', 'C' ]
+```
+
+<TryToBreak items={['an empty product list', 'a zero limit', 'a negative limit', 'a non-integer limit']} />
+
+</Depth>
+
+The first two outputs support the model's likely happy-path reasoning; the third disproves the stated zero contract. Replace `limit || 20` with `limit ?? 20` only after defining validation for negative and fractional values. A focused zero test should accompany that fix.
+
+In a real repository, also inspect the HTTP or CLI adapter that parses the limit. The adapter may turn an omitted string into `undefined`, `0`, `NaN`, or an exception. Testing only the helper leaves that translation boundary unreviewed.
+
+### A return change with a stale caller
+
+Suppose `reserve` used to return a Boolean and a generated refactor returns a richer result object. The new function is internally coherent, but the unchanged caller treats every object as success.
+
+```js run title="reservation_contract.js"
+function reserve(stock, quantity) {
+  return {
+    ok: quantity <= stock,
+    remaining: quantity <= stock ? stock - quantity : stock,
+  };
+}
+
+function checkout(inventory, sku, quantity) {
+  const result = reserve(inventory.get(sku), quantity);
+
+  // This caller still expects the old Boolean return value.
+  if (result) {
+    inventory.set(sku, inventory.get(sku) - quantity);
+    return "reserved";
+  }
+  return "out of stock";
+}
+
+const inventory = new Map([["battery", 2]]);
+console.log("status:", checkout(inventory, "battery", 3));
+console.log("remaining:", inventory.get("battery"));
+```
+
+```text
+status: reserved
+remaining: -1
+```
+
+The defect belongs to the cross-file contract, even if `reserve` and `checkout` usually live in different modules. Update the caller to branch on `result.ok` and use `result.remaining`, then search every other consumer of `reserve`. Keeping both return conventions temporarily may be necessary for <Term id="backward-compatibility">backward compatibility</Term>, but that bridge needs an explicit removal plan.
+
+A unit test for `reserve(2, 3)` could pass while checkout still corrupts inventory. The regression test must cross the changed boundary and assert both the user-visible status and the stored quantity. Those two assertions protect control flow and state.
+
+### An unintended mutation that escapes the function
+
+Sorting a shipment plan by weight is correct for packing, but `.sort()` also reorders the caller's array. The reviewed version uses Node 24's copying `.toSorted()` method to preserve input ownership.
+
+```js run title="shipment_sort.js"
+function generatedPlan(lines) {
+  return lines.sort((left, right) => left.weight - right.weight);
+}
+
+function reviewedPlan(lines) {
+  return lines.toSorted((left, right) => left.weight - right.weight);
+}
+
+const generatedInput = [
+  { sku: "battery", weight: 8 },
+  { sku: "cable", weight: 1 },
+];
+const reviewedInput = structuredClone(generatedInput);
+
+console.log("generated plan:", generatedPlan(generatedInput).map((x) => x.sku));
+console.log("generated input:", generatedInput.map((x) => x.sku));
+console.log("reviewed plan:", reviewedPlan(reviewedInput).map((x) => x.sku));
+console.log("reviewed input:", reviewedInput.map((x) => x.sku));
+```
+
+```text
+generated plan: [ 'cable', 'battery' ]
+generated input: [ 'cable', 'battery' ]
+reviewed plan: [ 'cable', 'battery' ]
+reviewed input: [ 'battery', 'cable' ]
+```
+
+Both implementations return the same plan, so an assertion on the return value alone can't detect the regression. The differentiating assertion checks the input after the call. That follows the mutation part of the contract rather than only its return-value part.
+
+Copying is not automatically the right fix. If the repository documents ownership transfer and the array is large, in-place sorting may be intentional. Review the caller contract first, then choose mutation, shallow copying, or deeper cloning based on the data's ownership and nesting.
+
+## Pitfalls
+
+### Reviewing only the changed lines
+
+> [!PITFALL]
+> A hunk can look correct while relying on an import, invariant, cleanup block, or caller behavior outside its visible context. Deleted checks are particularly easy to miss when attention follows the added code.
+
+**Fix:** read the containing function and full file, inspect every deletion, then trace the changed symbol to its callers and effects. Write down the old and new contract before commenting on implementation.
+
+### Trusting generated tests as independent evidence
+
+> [!PITFALL]
+> A model can change code and tests to make the same mistaken assumption. It may assert a snapshot it just updated, mirror a branch condition, or remove the assertion that would fail.
+
+**Fix:** derive expected results from requirements, baseline behavior, protocol documentation, or a domain oracle. Review test diffs first when assertions changed, and add a counterexample that would fail under the generated interpretation.
+
+### Searching only for typed references
+
+> [!PITFALL]
+> Reference search misses string keys, routes, serializers, reflection, templates, shell scripts, fixtures, and external consumers. A clean language-server result can therefore leave a stale runtime caller.
+
+**Fix:** combine semantic references with text search for symbol names, exported strings, route names, schema fields, and error codes. State which dynamic or external consumers couldn't be searched and cover their boundary with contract tests where possible.
+
+### Accepting refactoring noise around behavior
+
+> [!PITFALL]
+> Generated patches often rename, reorder, reformat, and alter behavior together. The volume makes a one-character condition change or removed guard harder to see and harder to revert.
+
+**Fix:** ask for behavior-preserving cleanup and semantic change in separate commits or patches. When separation isn't available, normalize whitespace, classify semantic edits, and demand explicit justification for every changed behavior.
+
+### Treating a green command as complete proof
+
+> [!PITFALL]
+> One passing suite may exclude the affected package, reuse a cache, skip integration tests, or exercise only default inputs. It says nothing about untested migrations, permissions, latency, or operational cleanup.
+
+**Fix:** map each identified risk to a specific check and retain command evidence. Combine types, lint, focused tests, affected integration tests, builds, migration rehearsals, and manual inspection according to the impact cone.
+
+### Spending the review budget on style first
+
+> [!PITFALL]
+> A long list of naming preferences can obscure a correctness or security defect and encourage superficial patch churn. Generated code can satisfy stylistic comments without repairing the violated contract.
+
+**Fix:** review in risk order: scope and intent, contracts and invariants, security and data effects, edge cases, evidence, then maintainability. Label optional suggestions so they don't compete with blocking findings.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models commonly update a callee but miss a re-export or dynamic caller, interpret zero and empty values as missing, replace a thrown error with a result object without updating control flow, or introduce mutation while simplifying a transformation. They also generate tests that encode the same assumption, weaken assertions to achieve green output, or omit configuration and migrations that weren't in context. A broad patch may quietly mix requested behavior with dependency upgrades, formatting, or speculative cleanup.
+
+**Ask your AI to check**
+
+- Produce an old-versus-new contract table for inputs, outputs, errors, mutation, ordering, and side effects, citing each source path.
+- Build an impact cone with direct callers, dynamic or string-based consumers, persistence and configuration boundaries, and state which searches cannot cover external use.
+- Generate differentiating counterexamples for nullish, falsy, empty, boundary, repeated, interleaved, and partial-failure cases, then map each risk to an exact verification command.
+
+**Review checklist**
+
+- Compare the complete baseline-to-final diff and changed-file list with the authorized task, including deletions, tests, generated files, configuration, and lockfiles.
+- Trace every changed contract through callers and state effects; test at least one case that the old and generated implementations handle differently.
+- Independently run the risk-matched checks, inspect their assertions and outputs, and record skipped coverage or unresolved assumptions before deciding.
+
+**Prompt vocabulary**
+
+Use `baseline-to-final diff`, `task contract`, `semantic diff`, `impact cone`, `call-site audit`, `contract delta`, `invariant`, `behavior matrix`, `differentiating counterexample`, `characterization test`, `mutation and ownership`, `failure semantics`, `compatibility surface`, and `verification evidence`. Ask for path-and-line citations and explicit unknowns; “review this code carefully” doesn't define a review procedure or acceptance threshold.
+
+<Depth level="deep">
+
+## From hunks to repository behavior
+
+The difficult part of generated change review is proving that a finite inspection covers the behavior at risk. You can't read every execution path in a large repository. You can construct a defensible review boundary from the changed contracts, reachable effects, invariants, and evidence.
+
+### Model the patch as a change graph
+
+Treat each changed symbol, schema, configuration key, dependency, or persistent representation as a node. Add directed edges for calls, imports, data flow, registration, serialization, shared state, deployment, and code generation. The graph is conceptual; a short table is often more useful than a diagram committed to the review.
+
+Start with nodes directly touched by the diff, then expand one edge at a time. Stop a branch when it reaches an unchanged boundary whose contract still holds, or an external boundary whose risk is explicitly recorded. “The tests passed” isn't a stop rule because it doesn't explain which graph edges the tests traverse.
+
+Different edges require different discovery methods. Static calls favor language tools, event registration favors text search and runtime tests, persisted schemas favor migration and fixture inspection, and generated artifacts favor their source and regeneration command. Record the method beside the edge so missing coverage is visible.
+
+The graph also reveals coupled edits. If a return type node changes, caller and test nodes should usually change or prove that adapters isolate them. If a schema changes but no migration, compatibility adapter, or versioned reader changes, the absence itself becomes a review finding.
+
+### Separate contract deltas from implementation deltas
+
+A contract delta changes behavior observable outside the edited unit. An implementation delta changes how the same contract is achieved. The distinction controls both compatibility analysis and the strength of evidence you need.
+
+| Delta | Review question | Typical evidence |
+| --- | --- | --- |
+| Input domain | Which new values are accepted or rejected? | boundary matrix and adapter test |
+| Output shape | Which consumers parse or branch on it? | call-site audit and contract test |
+| Mutation | Who else holds the same object or state? | alias test and ownership documentation |
+| Failure semantics | Throw, reject, return, retry, or swallow? | negative-path integration test |
+| Ordering or timing | Which consumer assumes stability? | deterministic sequence assertion |
+| Implementation only | Is behavior truly unchanged? | characterization tests and diff inspection |
+
+A generated summary often labels a change “internal” because no exported name changed. That conclusion is unsafe when timing, SQL queries, emitted events, cache keys, or mutation are observable. Review observability, not visibility modifiers.
+
+If the change intentionally alters a contract, name the compatibility strategy. Options include an atomic repository-wide change, a versioned endpoint, an adapter period, a feature flag, a dual reader, or a staged data migration. Each strategy creates its own removal condition and tests.
+
+### Use proof obligations at risky boundaries
+
+A proof obligation is a concrete statement the review must support before approval. For authorization code, it may be “every query is scoped by the authenticated tenant.” For inventory, it may be “failed reservations don't change stock.” The obligation directs both inspection and tests.
+
+Derive obligations from assets and failure consequences, not just edited filenames. Changes near authentication, money, persistent data, concurrency, untrusted input, or irreversible operations need stronger evidence. A two-line generated patch at one of these boundaries can deserve more review than a hundred-line isolated formatter.
+
+For each obligation, record the supporting source and observation. A source may be a requirement, interface definition, existing test, schema constraint, or owner decision. An observation may be a test output, static-analysis result, migration rehearsal, or manual path trace.
+
+An unsupported obligation remains a warning or blocker. Don't turn absence of a failing test into proof. The right outcome may be to reduce the patch, add observability, request a domain decision, or test in a representative environment.
+
+### Judge test independence
+
+Tests provide stronger evidence when their expected value comes from a source independent of the implementation. A protocol example, product rule, previous production case, or hand-computed invariant is stronger than copying the generated expression into the assertion. This is oracle independence.
+
+Mutation and state bugs need observations beyond return values. Capture the input before and after, query persistent state, inspect emitted events, or interleave two owners. For error paths, assert both the failure signal and the absence of forbidden side effects.
+
+Property-oriented checks can cover a family of inputs: stock never becomes negative, sorting preserves the multiset, retries don't duplicate an idempotent write, and serialization round-trips supported values. They complement specific regressions rather than replacing them, because a property can omit a business rule.
+
+Rerun a focused check against the baseline when feasible. If a new regression test passes before the fix, it doesn't distinguish the patch unless the task is adding previously unspecified behavior. If a changed test fails only because its oracle was rewritten, inspect the requirement that authorized that rewrite.
+
+### Review maintainability as future correctness
+
+Maintainability findings should connect structure to a likely failure, not to personal taste. Duplicated validation can drift, an unnamed Boolean can invert at a caller, a broad catch can erase failure semantics, and a hidden mutation can violate ownership. Explain that mechanism in the finding.
+
+Generated code tends to repeat locally visible patterns even when the repository has a central abstraction. Search for the existing validator, adapter, error type, transaction helper, or test fixture before accepting a parallel implementation. Reuse is valuable when the abstraction's contract actually matches; resemblance alone isn't enough.
+
+Avoid demanding a new abstraction for one small case. Generated patches can over-generalize just as easily as they duplicate. Prefer the smallest design that states ownership and invariants clearly, and wait for a second real use case before adding extension points with no consumer.
+
+Comments and names should preserve why the edge case exists. A comment that restates `if (limit === 0)` adds little; a comment that zero comes from a public pagination contract protects a future simplification. Require documentation where it carries information unavailable from the expression.
+
+### Close the review with a risk ledger
+
+A compact risk ledger keeps reasoning auditable:
+
+| Risk | Trigger | Consequence | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| zero treated as absent | `limit = 0` | extra products returned | focused output and regression test | fixed |
+| stale result caller | failed reservation | negative inventory | integration test across caller | fixed |
+| input alias mutated | caller reuses lines | audit order changes | before-and-after assertion | fixed |
+| external consumer unknown | old Boolean contract | downstream breakage | release-note review only | open |
+
+The ledger isn't a substitute for code comments or issue tracking. It is a review artifact that connects a plausible failure to a concrete check and makes open risk hard to hide in a long conversation. Keep it short enough to update when the patch changes.
+
+Re-review the final diff after fixes. A repair can introduce new files, weaken a test, or leave dead compatibility code. Approval attaches to the final repository state and recorded evidence, not to an earlier version that received most of the attention.
+
+</Depth>
+
+<Checkpoint id="ai-era/generated-change-review" />
+
+## Further reading
+
+- [Git documentation: `git diff`](https://git-scm.com/docs/git-diff)
+- [GitHub Docs: Reviewing proposed changes in a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests)
+- [Google Engineering Practices: How to do a code review](https://google.github.io/eng-practices/review/reviewer/)
+- [OWASP Code Review Guide](https://owasp.org/www-project-code-review-guide/)
