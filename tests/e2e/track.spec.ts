@@ -27,9 +27,10 @@ test('the Python hub links only the related pages that now exist', async ({ page
     '/practice/interview/python/',
   );
   await expect(page.locator('.shortcuts .quick[aria-disabled="true"]', { hasText: 'Compare' })).toBeVisible();
-  await expect(
-    page.locator('.shortcuts .quick[aria-disabled="true"]', { hasText: 'Playground' }),
-  ).toBeVisible();
+  await expect(page.locator('.shortcuts a.quick', { hasText: 'Playground' })).toHaveAttribute(
+    'href',
+    '/playground/?lang=python',
+  );
 
   const also = page.locator('.also');
   await expect(also.getByRole('link', { name: 'Python cheatsheet' })).toHaveAttribute(

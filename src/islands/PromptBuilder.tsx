@@ -253,8 +253,6 @@ export default function PromptBuilder({ locale, labels, trackNames }: Props) {
                 value={query}
                 placeholder={labels.searchPlaceholder}
                 aria-label={labels.steps.topic}
-                aria-controls="prompt-topic-results"
-                aria-expanded={searchState === 'ready'}
                 onFocus={() => void loadIndex().catch(() => undefined)}
                 onInput={(event) => setQuery(event.currentTarget.value)}
               />

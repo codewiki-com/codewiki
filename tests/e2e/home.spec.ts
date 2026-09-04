@@ -40,7 +40,7 @@ test('the English home page renders its headline', async ({ page }) => {
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://codewiki.com/');
 });
 
-test('the P2a navigation and path call to action point at public routes', async ({ page }) => {
+test('the P2 navigation and path call to action point at public routes', async ({ page }) => {
   await page.goto('/');
 
   const desktop = page.locator('.links');
@@ -54,12 +54,16 @@ test('the P2a navigation and path call to action point at public routes', async 
     '/cheatsheets/',
   );
   await expect(desktop.getByRole('link', { name: 'Compare', exact: true })).toHaveCount(0);
-  await expect(desktop.getByRole('link', { name: 'Playground', exact: true })).toHaveCount(0);
+  await expect(desktop.getByRole('link', { name: 'Playground', exact: true })).toHaveAttribute(
+    'href',
+    '/playground/',
+  );
 
   const mobile = page.locator('.menu-links');
   await expect(mobile.locator('a[href="/paths/"]')).toHaveText('Paths');
   await expect(mobile.locator('a[href="/practice/"]')).toHaveText('Practice');
   await expect(mobile.locator('a[href="/cheatsheets/"]')).toHaveText('Cheatsheets');
+  await expect(mobile.locator('a[href="/playground/"]')).toHaveText('Playground');
 
   await expect(page.getByRole('link', { name: 'Start a path' })).toHaveAttribute('href', '/paths/');
 });

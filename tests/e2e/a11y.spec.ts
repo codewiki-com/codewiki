@@ -20,6 +20,8 @@ const PAGES = [
   '/practice/flashcards/',
   '/cheatsheets/',
   '/cheatsheets/python/',
+  '/playground/',
+  '/ai/prompt-builder/',
   '/settings/',
 ];
 const THEMES = ['light', 'dark'] as const;
