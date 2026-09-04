@@ -1,4 +1,4 @@
-import { estimateMinutes } from '@/lib/reading-time';
+import { computeReadingTime, estimateMinutes } from '@/lib/reading-time';
 
 describe('estimateMinutes', () => {
   it('counts English words at 220 a minute', () => {
@@ -22,5 +22,18 @@ describe('estimateMinutes', () => {
   it('rounds to the nearest minute', () => {
     expect(estimateMinutes('word '.repeat(330).trim(), 'en')).toBe(2);
     expect(estimateMinutes('word '.repeat(320).trim(), 'en')).toBe(1);
+  });
+});
+
+describe('computeReadingTime', () => {
+  it('rounds up and never returns 0', () => {
+    expect(computeReadingTime(0, 'en')).toBe(1);
+    expect(computeReadingTime(660, 'en')).toBe(3);
+    expect(computeReadingTime(760, 'zh')).toBe(2);
+  });
+
+  it('rounds a part-minute up to the next whole minute', () => {
+    expect(computeReadingTime(221, 'en')).toBe(2);
+    expect(computeReadingTime(381, 'zh')).toBe(2);
   });
 });

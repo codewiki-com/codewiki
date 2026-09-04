@@ -128,6 +128,15 @@ export default {
   'topic.path': 'your path',
   'topic.milestone': 'milestone {done} of {total} · {left} topics left',
 
+  // Labels the markdown pipeline emits in English and `Base.astro` swaps per locale.
+  'callout.pitfall': 'Pitfall',
+  'callout.note': 'Note',
+  'callout.tip': 'Tip',
+  'callout.warning': 'Warning',
+  'callout.ai': 'AI tip',
+
+  'checkpoint.soon': 'Checkpoint available in Practice',
+
   'code.copy': 'Copy',
   'code.copied': 'Copied',
   'code.run': 'Run',

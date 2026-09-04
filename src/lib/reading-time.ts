@@ -17,3 +17,28 @@ export function estimateMinutes(body: string, locale: Locale): number {
       : text.split(/\s+/).length / WORDS_PER_MINUTE;
   return Math.max(1, Math.round(minutes));
 }
+
+/**
+ * Words a code line is worth. Code is read line by line rather than scanned, so
+ * `remark-depth` bills each fence line at this many words. Spec §5.3.
+ */
+export const WORDS_PER_CODE_LINE = 4;
+
+/**
+ * Minutes for an already-counted body, rounded up and never below one.
+ * `words` is whatever unit the locale reads in: English words, Chinese characters.
+ */
+export function computeReadingTime(words: number, locale: Locale): number {
+  const perMinute = locale === 'zh' ? CHARS_PER_MINUTE : WORDS_PER_MINUTE;
+  return Math.max(1, Math.ceil(words / perMinute));
+}
+
+/**
+ * Counts one string in the unit its locale reads in: whitespace-separated words
+ * for English, non-whitespace characters for Chinese.
+ */
+export function countWords(text: string, locale: Locale): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return locale === 'zh' ? trimmed.replace(/\s+/g, '').length : trimmed.split(/\s+/).length;
+}
