@@ -15,7 +15,7 @@ You are writing one approved topic from scratch. Work autonomously from reposito
 - Why this topic exists: {{WHY}}
 - Review date: `{{TODAY}}`
 
-The plan values above are authoritative. Copy its titles, descriptions, section, difficulty, and prerequisites into frontmatter exactly, using safe YAML quoting. Do not add or remove prerequisites.
+The plan's id, section, difficulty and prerequisites are authoritative: copy them into frontmatter exactly, using safe YAML quoting, and do not add or remove prerequisites. The plan's titles and descriptions are drafts: keep their meaning, but rewrite them so they satisfy `src/schemas/topic.ts` (a title is a noun phrase of at most 40 characters; a description is 40–160 characters in each language) and read naturally.
 
 Sibling topics in this track (the only choices for `related`; omit this topic itself):
 
