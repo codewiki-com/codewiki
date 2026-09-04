@@ -19,23 +19,21 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-04 P2 sub-spec `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (user: “你自己决策，选最佳的”); decisions: 4 flashcard ratings, 2-column print, paired bilingual default, kata with line comments, CodeMirror 6 lazy. Next: P2 plan.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are (updated 2026-09-04, 06:30)
+## Where things are (updated 2026-09-04 17:20 local)
 | Item | State |
 |---|---|
-| Master spec | done, approved |
-| P2 sub-spec | `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (decisions §7) |
-| Design mockups | P1: `docs/design/mockups/`; P2: `docs/design/mockups/p2/` (build with `p2/src/build.py`), canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137 |
-| P1 plan (20 tasks) | Tasks 0–18 merged into `p1-site-foundation` (faabc37). Task 19 implemented at `a734c3e` on the same branch — **review pending**. Visual sweep branch `p1-visual-sweep` (9080d23, worktree `.worktrees/p1-visual-sweep`) — **review running**; merge it into `p1-site-foundation` after Task 19 (expect conflicts in TrackHub.astro, 404.astro, Nav/Footer, global.css; keep both sides). Then: contrast token pass (Fable, see ledger ruling), final whole-branch review (opus), merge to `main` |
-| P0 plan (14 tasks) | Tasks 1–11 and 13 complete on `p0-content-pipeline` (89e811b + tier pins df2d3c5). Task 12 calibration **started**: `pnpm content:polish --only backend/jwt-authentication` running in the background from the P0 worktree (log: scratchpad `polish/jwt.log`; journal `reports/polish/state.json`; the runner commits on success). Next: inspect the produced pair + `reports/polish/backend__jwt-authentication/`, then the other four with `--n 4`, then tune `prompts/polish-topic.md`, then Task 14 wave 1 |
-| P2 plan | `docs/superpowers/plans/2026-09-04-p2-learning-layer.md` written (17 tasks; P2a = 1–11, P2b = 12–17). Execution starts on branch `p2-learning-layer` from `main` after the P1 merge |
-| Content | 4 sample topics + 7 glossary terms + 1 quiz; 918 staged pairs; tiers 257/423/238 after the calibration pins |
+| Master spec / P2 sub-spec | approved |
+| Design mockups | P1 `docs/design/mockups/`, P2 `docs/design/mockups/p2/` (canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137) |
+| **P1 site foundation** | **complete and merged into `main` (3644c06)**: Tasks 0–20 incl. Mermaid diagrams, visual sweep, WCAG AA contrast pass, final review + fix round (224 unit tests, 99 e2e, Lighthouse ≥ 0.99 perf, 1,112 internal targets resolve). Branches `p1-*` can be deleted (`git worktree remove` + `git branch -d`) |
+| P0 content pipeline | Tasks 1–13 complete on `p0-content-pipeline`; Task 14 wave 1 in progress (tier 1: 25 + batch 2 running; 0 failures). P0 branch still needs `main` merged in after the current batch (it carries the P1 code from before Task 19) |
+| P2 learning layer | plan `docs/superpowers/plans/2026-09-04-p2-learning-layer.md`; worktree `.worktrees/p2-learning-layer` (branch from main 3644c06); ledger `.worktrees/p2-learning-layer/.superpowers/sdd/2026-09-04-p2-learning-layer/progress.md`; Task 1 dispatching to Codex |
+| Content | 45+ reviewed topic pairs in `src/content/topics` on the P0 branch, 115+ glossary terms, 20 interview banks, quiz banks per topic |
 
-## Active work (updated 2026-09-04 14:00 local)
-- **Routing (user, 2026-09-04):** implementation and routine reviews go to Codex via `scripts/dev/codex-task.sh <worktree> <brief> <log>`; Fable plans, designs, rules, reviews results, merges. Opus only as fallback.
-- **P1** `p1-site-foundation` (795af17): Tasks 0–20 complete, sweep and Task 20 merged, D1 contrast applied. Final whole-branch review (Codex) → Not ready with 6 Important findings (sandbox CSP merge on Cloudflare, missing OG images, search indexable, prefs null-safety, tooltip link a11y, four English labels on /zh/); fix round running on Codex (brief `final-fix1-codex.md`, log `codex-final-fix1.log`). Then: scoped re-review (Codex), merge to `main`, start P2 on `p2-learning-layer`.
-- **P0** `p0-content-pipeline`: Task 12 calibration complete — 5 topics polished (`reports/polish/calibration.md`), prompt v3 landed. Task 14 wave 1 in progress — 25/257 tier-1 topics polished (batch 1 done 2026-09-04, batch 2 running): `pnpm content:polish --tier 1 --n 4 --max 20` per batch from the P0 worktree; journal `reports/polish/state.json`; the runner commits every 10 topics. ~46 M Codex tokens / ~18 h for the 257 tier-1 topics.
-- **P2**: plan ready (`docs/superpowers/plans/2026-09-04-p2-learning-layer.md`); starts after the P1 merge on `p2-learning-layer`, Codex per task with Fable review.
-- Resume rule: `git log --oneline -3` per branch; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; a wave that was interrupted is resumed by re-running the same `content:polish` command.
+## Active work (updated 2026-09-04 17:20 local)
+- **Routing:** Codex implements and does routine reviews (`scripts/dev/codex-task.sh`, brief template `prompts/codex-task-template.md`); Fable plans, designs, rules, reviews, merges.
+- **P0 wave 1**: `pnpm content:polish --tier 1 --n 4 --max 20` per batch from `.worktrees/p0-content-pipeline` (logs scratchpad `polish/wave1-bN.log`; journal `reports/polish/state.json`; runner commits per 10). Follow-ups after wave 1 (Codex): v3 conformance pass on the 5 calibration topics; polish the two P1 sample topics; merge `main` into `p0-content-pipeline`.
+- **P2**: Task 1 (SRS scheduler, scoring, pref fields) → Codex; then Tasks 2–11 (P2a) one at a time with Fable review; merge P2a to `main`; Tasks 12–17 (P2b).
+- Resume rule: `git log --oneline -3` per branch; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; an interrupted wave is resumed by re-running the same `content:polish` command.
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
