@@ -16,6 +16,10 @@ export const interviewItemSchema = z.object({
   answer: localized,
   topics: z.array(topicRef).min(1),
   level: difficulty,
+  /** The heading the question is grouped under on the track's interview page. */
+  section: localized.optional(),
+  /** How often the question actually comes up, which is how a reader prioritises. */
+  frequency: z.enum(['common', 'occasional', 'rare']).optional(),
   tags: z.array(z.string()).default([]),
 });
 

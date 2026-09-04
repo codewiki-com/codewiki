@@ -27,12 +27,19 @@ async function fixture(
     path.join(staging, 'python/closures.zh.md'),
     frontmatter('闭包', options.zhSection ?? fallback),
   );
+  await writeFile(path.join(staging, 'python/decorators.en.md'), frontmatter('Decorators', fallback));
+  await writeFile(path.join(staging, 'python/decorators.zh.md'), frontmatter('装饰器', fallback));
+  await writeFile(path.join(staging, 'python/generators.en.md'), '---\ntrack: python\n---\n\nbody\n');
+  await writeFile(path.join(staging, 'python/generators.zh.md'), frontmatter('生成器', fallback));
+  const topics = path.join(root, 'topics');
+  await mkdir(path.join(topics, 'python'), { recursive: true });
+  await writeFile(path.join(topics, 'python/scope-legb.en.mdx'), frontmatter('Scope and LEGB', fallback));
   const report = path.join(root, 'python__closures.json');
   await writeFile(
     report,
     JSON.stringify({ id: 'python/closures', canonicalHint: options.canonicalHint ?? 'zh' }),
   );
-  return { root, staging, report };
+  return { root, staging, topics, report };
 }
 
 describe('renderBrief', () => {
@@ -77,6 +84,34 @@ describe('briefVarsFor', () => {
     expect(vars.EN_PATH.endsWith('python/closures.en.md')).toBe(true);
     expect(vars.ZH_PATH.endsWith('python/closures.zh.md')).toBe(true);
     expect(vars.LINT_REPORT).toContain('python__closures.json');
+  });
+
+  it('lists the sibling topics of the track and leaves the topic itself out', async () => {
+    const { staging, topics, report } = await fixture();
+    const vars = await briefVarsFor('python/closures', {
+      lintReportPath: report,
+      root: staging,
+      topicsRoot: topics,
+    });
+    expect(vars.SIBLINGS.split('\n')).toEqual([
+      '- python/decorators — Decorators',
+      '- python/generators — 生成器',
+      '- python/scope-legb — Scope and LEGB',
+    ]);
+  });
+
+  it('says so in words when a track holds nothing but the topic itself', async () => {
+    const { staging, topics, report } = await fixture();
+    await mkdir(path.join(staging, 'rust'), { recursive: true });
+    const only = '---\ntitle: Ownership\ntrack: rust\nsection: basics\n---\n\nbody\n';
+    await writeFile(path.join(staging, 'rust/ownership.en.md'), only);
+    await writeFile(path.join(staging, 'rust/ownership.zh.md'), only);
+    const vars = await briefVarsFor('rust/ownership', {
+      lintReportPath: report,
+      root: staging,
+      topicsRoot: topics,
+    });
+    expect(vars.SIBLINGS).toBe('- (none)');
   });
 
   it('takes the canonical language from the lint report and lets the caller override it', async () => {

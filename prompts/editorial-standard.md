@@ -83,9 +83,14 @@ origin: old/src/content/docs/python/closures.zh.md
 
 ## 9. Sidecars
 
-- **Quiz** `src/content/quizzes/{track}/{slug}.yaml`: three to eight items; at least one `predict` (code + three or four candidate outputs) and, where the topic allows, one `review` item (a realistic generated snippet with two or three subtle issues, each with `line`, `kind` in `bug | security | performance | style | api`, and a bilingual `note`). Every item has `prompt`, `explanation` and option texts in both languages.
-- **Interview** `src/content/interview/{track}.yaml`: append two to five questions with concise model answers in both languages and `topics: [{track}/{slug}]`.
+- **Quiz** `src/content/quizzes/{track}/{slug}.yaml`: `predict` items pair code with three or four candidate outputs; `spotbug` and `review` items carry a realistic snippet whose issues each name a `line`, a `kind` and a bilingual `note`. Every item has `prompt`, `explanation` and option texts in both languages.
+- **Interview** `src/content/interview/{track}.yaml`: append questions with model answers in both languages and `topics: [{track}/{slug}]`.
 - **Glossary proposals** `content/glossary-proposals/{track}-{slug}.yaml`: any term used in `terms:` that does not exist yet in `src/content/glossary/`, with `id`, `en`, `zh`, `short` (both languages, ≤ 140 chars).
+
+How many, how long, how hard:
+
+- Quiz banks: 4–8 items; at least one predict and one spotbug when the topic has runnable code; one review item per topic (15–25 lines of realistic generated code for a stated task, 3–5 issues with distinct kinds from security | correctness | edge-case | readability | performance, plus task, right (what the generated code did well) and a 3–4 item checklist the learner should run). Distractors are real misconceptions; explanations are one or two sentences per language.
+- Interview items: 3–5 per topic, each with section (the heading it is grouped under, e.g. "Language core"), level, frequency (common | occasional | rare) and an answer of 60–120 words in each language — the length you would say aloud.
 
 ## 10. What to drop from the old articles
 

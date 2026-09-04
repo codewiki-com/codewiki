@@ -15,11 +15,11 @@
  * [--canonical en|zh] [--template path]` prints the rendered brief on stdout, which is
  * what `scripts/content/polish.sh` pipes into `codex exec`.
  */
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontmatter } from './lib/frontmatter';
-import { REPO_ROOT, repoPath, STAGING_ROOT } from './lib/paths';
+import { REPO_ROOT, repoPath, STAGING_ROOT, TOPICS_ROOT } from './lib/paths';
 
 /** The two languages of every topic. */
 const LANGS = ['en', 'zh'] as const;
@@ -31,6 +31,15 @@ const LINT_REPORTS_ROOT = 'reports/lint';
 
 /** The prompt this runner renders by default. */
 export const POLISH_TEMPLATE = 'prompts/polish-topic.md';
+
+/**
+ * How many sibling ids the brief lists before it stops.
+ *
+ * The list exists so Codex can fill `prerequisites` and `related` with ids that resolve;
+ * a track with hundreds of staged topics would spend more of the context window on the
+ * list than on the article, so the tail is summarised instead of printed.
+ */
+const MAX_SIBLINGS = 150;
 
 /** A `{{NAME}}` hole. Names are upper snake case, so prose braces are left alone. */
 const PLACEHOLDER = /\{\{([A-Z0-9_]+)\}\}/g;
@@ -65,6 +74,8 @@ export interface BriefVarOptions {
   canonical?: Lang;
   /** Staging root; defaults to `content/staging/topics`. */
   root?: string;
+  /** Published topics root; defaults to `src/content/topics`. */
+  topicsRoot?: string;
   /** ISO date stamped into the brief; defaults to today. */
   today?: string;
 }
@@ -124,6 +135,69 @@ async function readSection(files: Record<Lang, string>, id: string): Promise<str
   throw new Error(`${id}: no staged files under ${displayPath(path.dirname(files.en))}`);
 }
 
+/**
+ * The `title` of a topic file, or an empty string when the file or the field is missing.
+ *
+ * A staged pair is often lopsided, so the caller tries the languages in turn rather than
+ * failing: a sibling with no readable title is still a usable id.
+ */
+async function readTitle(file: string): Promise<string> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    return '';
+  }
+  const { data } = parseFrontmatter(text);
+  return typeof data.title === 'string' ? data.title.trim() : '';
+}
+
+/**
+ * Every topic id in `track`, staged or published, with the title that goes with it.
+ *
+ * Codex writes `prerequisites` and `related` from this list, so it has to describe what
+ * exists rather than what is polished: a staged pair is a legitimate target because the
+ * whole track is being polished in the same campaign. Slugs seen in staging win over the
+ * published copy, which is the same topic at an earlier stage.
+ */
+async function siblingsIn(
+  track: string,
+  self: string,
+  stagingRoot: string,
+  topicsRoot: string,
+): Promise<string[]> {
+  const sources: { dir: string; suffix: string; other: string }[] = [
+    { dir: path.join(stagingRoot, track), suffix: '.en.md', other: '.zh.md' },
+    { dir: path.join(topicsRoot, track), suffix: '.en.mdx', other: '.zh.mdx' },
+  ];
+  const titles = new Map<string, string>();
+  for (const { dir, suffix, other } of sources) {
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names.sort()) {
+      if (!name.endsWith(suffix)) continue;
+      const slug = name.slice(0, -suffix.length);
+      if (slug === self || titles.has(slug)) continue;
+      const title =
+        (await readTitle(path.join(dir, name))) || (await readTitle(path.join(dir, `${slug}${other}`)));
+      titles.set(slug, title || slug);
+    }
+  }
+  return [...titles.keys()].sort().map((slug) => `- ${track}/${slug} — ${titles.get(slug)}`);
+}
+
+/** The sibling list as the brief prints it: one id per line, with a summarised tail. */
+function formatSiblings(lines: string[]): string {
+  if (lines.length === 0) return '- (none)';
+  if (lines.length <= MAX_SIBLINGS) return lines.join('\n');
+  const shown = lines.slice(0, MAX_SIBLINGS);
+  return [...shown, `- … and ${lines.length - MAX_SIBLINGS} more`].join('\n');
+}
+
 /** The variables `prompts/polish-topic.md` asks for, for one topic. */
 export async function briefVarsFor(
   id: string,
@@ -139,11 +213,13 @@ export async function briefVarsFor(
   };
   const lintReport = options.lintReportPath ?? repoPath(LINT_REPORTS_ROOT, `${flat}.json`);
   const canonical = options.canonical ?? (await readCanonicalHint(lintReport));
+  const topicsRoot = options.topicsRoot ?? repoPath(TOPICS_ROOT);
   return {
     TOPIC_ID: id,
     TRACK: track,
     SLUG: slug,
     SECTION: await readSection(files, id),
+    SIBLINGS: formatSiblings(await siblingsIn(track, slug, root, topicsRoot)),
     EN_PATH: displayPath(files.en),
     ZH_PATH: displayPath(files.zh),
     LINT_REPORT: displayPath(lintReport),

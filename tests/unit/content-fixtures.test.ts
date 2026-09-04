@@ -25,6 +25,8 @@ describe('topic fixtures', () => {
 
   it('ships both languages of every sample topic', () => {
     expect(mdx).toEqual([
+      'backend/jwt-authentication.en.mdx',
+      'backend/jwt-authentication.zh.mdx',
       'javascript/event-loop.en.mdx',
       'javascript/event-loop.zh.mdx',
       'python/closures.en.mdx',
