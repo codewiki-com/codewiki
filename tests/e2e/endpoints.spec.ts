@@ -85,6 +85,32 @@ test('the settings page remembers the font size', async ({ page }) => {
   );
 });
 
+test('the font size scales the whole prose column, not only its paragraphs', async ({ page }) => {
+  const sizes = async () =>
+    page.evaluate(() => {
+      const size = (selector: string) => {
+        const node = document.querySelector(selector);
+        return node ? getComputedStyle(node).fontSize : '';
+      };
+      return {
+        p: size('#article div[data-depth] > p'),
+        li: size('#article li'),
+        // Smaller type of its own, which the preference must not flatten.
+        tldr: size('#article .tldr-text p'),
+      };
+    });
+
+  await page.goto('/python/closures/');
+  expect(await sizes()).toEqual({ p: '16px', li: '16px', tldr: '14px' });
+
+  await page.goto('/settings/');
+  await page.locator('[data-setting="font"] [data-value="l"]').click();
+
+  await page.goto('/python/closures/');
+  await expect(page.locator('html')).toHaveAttribute('data-font', 'l');
+  expect(await sizes()).toEqual({ p: '17.5px', li: '17.5px', tldr: '14px' });
+});
+
 test('the settings page exports and clears this browser', async ({ page }) => {
   await page.goto('/settings/');
   await page.evaluate(() => localStorage.setItem('cw:v1:recents', JSON.stringify({ pages: ['/python/'] })));

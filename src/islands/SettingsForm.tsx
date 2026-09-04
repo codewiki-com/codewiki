@@ -109,6 +109,20 @@ function Row(props: { label: string; hint?: string; children: ComponentChildren 
   );
 }
 
+/**
+ * Local storage, or `null` where it is unavailable: a private window, a browser with site data
+ * blocked, or the server render. `readStore`/`writeStore` guard themselves the same way, but the
+ * backup helpers and `readThemePref` take a store as an argument, so this page has to do the
+ * guarding for them — an unavailable store must not break hydration or a button.
+ */
+function store(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
 /** Today, as `2026-09-04`, for the backup filename. */
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -133,14 +147,16 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
   // what puts the controls in step with the document.
   useEffect(() => {
     const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
-    setTheme(readThemePref(localStorage));
+    const local = store();
+    if (local) setTheme(readThemePref(local));
     setDepth(prefs.depth ?? DEFAULT_PREFS.depth);
     setFont(prefs.fontSize ?? DEFAULT_PREFS.fontSize);
   }, []);
 
   const selectTheme = useCallback((next: ThemePref) => {
     setTheme(next);
-    writeThemePref(next, localStorage);
+    const local = store();
+    if (local) writeThemePref(next, local);
     const root = document.documentElement;
     root.setAttribute(
       'data-theme',
@@ -162,7 +178,10 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
 
   /** A download of a Blob the page just built: an `<a download>` clicked once and thrown away. */
   const onExport = useCallback(() => {
-    const blob = new Blob([`${JSON.stringify(exportAll(localStorage), null, 2)}\n`], {
+    const local = store();
+    // Nothing is stored, so there is nothing to hand the visitor.
+    if (!local) return;
+    const blob = new Blob([`${JSON.stringify(exportAll(local), null, 2)}\n`], {
       type: 'application/json',
     });
     const href = URL.createObjectURL(blob);
@@ -177,14 +196,19 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
 
   const onImport = useCallback(
     async (event: Event) => {
-      const chosen = (event.currentTarget as HTMLInputElement).files?.[0];
-      if (!chosen) return;
+      const input = event.currentTarget as HTMLInputElement;
+      const chosen = input.files?.[0];
+      const local = store();
+      if (!chosen || !local) return;
       setError('');
       try {
-        importAll(localStorage, JSON.parse(await chosen.text()), mode);
+        importAll(local, JSON.parse(await chosen.text()), mode);
       } catch {
         // A wrong file, a truncated one or a hand-edited one all land here; nothing was written.
         setError(labels.importFailed);
+        // Clearing the input is what lets the visitor pick the same file again after fixing it:
+        // re-choosing an unchanged value fires no `change` event.
+        input.value = '';
         return;
       }
       // Every island on the site reads storage once, at hydration, so a reload is the honest way
@@ -195,8 +219,9 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
   );
 
   const onClear = useCallback(() => {
-    if (!confirm(labels.confirmClear)) return;
-    clearAll(localStorage);
+    const local = store();
+    if (!local || !confirm(labels.confirmClear)) return;
+    clearAll(local);
     location.reload();
   }, [labels.confirmClear]);
 
