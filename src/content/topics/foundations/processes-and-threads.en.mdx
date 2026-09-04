@@ -1,0 +1,419 @@
+---
+title: 'Processes and threads'
+description: 'Distinguish processes and threads, trace their lifecycle and shared state, and reason about scheduling and synchronization.'
+track: 'foundations'
+section: 'operating-systems'
+difficulty: 'intermediate'
+tags: [processes, threads, scheduling, synchronization]
+prerequisites: [foundations/linux]
+related: [foundations/linux, foundations/virtual-memory, foundations/pipes-and-redirection, foundations/network-programming]
+terms: [process, thread, context-switch, race-condition, mutex]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: 'reviewed'
+aligned: true
+quiz: 'foundations/processes-and-threads'
+sources:
+  - { title: 'Node.js v24 documentation - Child process', url: 'https://nodejs.org/docs/latest-v24.x/api/child_process.html' }
+  - { title: 'Node.js v24 documentation - Worker threads', url: 'https://nodejs.org/docs/latest-v24.x/api/worker_threads.html' }
+  - { title: 'POSIX pthread_create', url: 'https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_create.html' }
+  - { title: 'POSIX pthread_mutex_lock', url: 'https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_lock.html' }
+  - { title: 'Linux manual - sched(7)', url: 'https://man7.org/linux/man-pages/man7/sched.7.html' }
+  - { title: 'Linux manual - pthreads(7)', url: 'https://man7.org/linux/man-pages/man7/pthreads.7.html' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="process">process</Term> owns an isolated resource context; a <Term id="thread">thread</Term> is a schedulable execution path inside that context.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Threads can share memory cheaply, so an unsynchronized check followed by an update can corrupt shared state even when each line looks harmless.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Choose the failure and sharing boundary first, then make ownership, joining, cancellation, and synchronization explicit.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A program is passive code and data on storage. A process is one running instance with an operating-system identity, a virtual address space, credentials, open handles, and lifecycle state. Starting the same executable twice creates two processes whose mutable memory is normally isolated.
+
+A thread is one sequence of instructions that the scheduler can run inside a process. Threads in one process share code, heap objects, and process resources, while each thread has its own instruction position, register state, and stack. A process starts with at least one thread and may create more.
+
+The split answers two different needs. Process boundaries limit accidental memory access and contain many failures; thread boundaries allow concurrent work to communicate through shared memory without serializing every value. Neither boundary makes concurrency correct by itself.
+
+You meet processes when a shell starts a command, a service manager supervises a daemon, or a worker pool delegates work to child programs. You meet threads inside language runtimes, web servers, database clients, GUI applications, and libraries that perform blocking or CPU-bound work concurrently.
+
+The useful question is not “which one is faster?” It is which state must be shared, which failures must be contained, which resources need separate ownership, and what communication cost the workload can accept. Those choices determine the right boundary more reliably than a blanket rule.
+
+### The practical distinction
+
+The operating system and runtime expose different details, but this model is a reliable starting point:
+
+| Property | Separate processes | Threads in one process |
+| --- | --- | --- |
+| Virtual address space | Normally separate | Shared |
+| Heap mutation | Not directly visible across the boundary | Visible when the runtime exposes shared memory |
+| Execution state | Separate | Separate per thread |
+| Open resources | Separate tables, sometimes inherited or transferred | Usually process-wide and shared |
+| Communication | Pipes, sockets, messages, shared mappings | Shared memory, messages, synchronization primitives |
+| Typical crash scope | Often one process | Often the entire process |
+
+“Shared” does not mean “simultaneously safe.” Two threads can address the same bytes, but the program still needs a rule for who may read or modify them and when. A mutex, atomic operation, immutable snapshot, or single-owner queue expresses that rule.
+
+“Isolated” also has limits. Processes can deliberately share memory, inherit descriptors, operate on the same files, and affect the same external service. Isolation narrows the default memory boundary; it does not create authorization or transaction guarantees.
+
+## How it works
+
+An operating system represents execution with kernel-managed records that hold identity, scheduling state, memory mappings, and resource references. The names differ across systems. On Linux, each thread is a schedulable task, and threads in one process share selected kernel structures.
+
+The scheduler chooses a runnable thread, assigns it to a processor, and later may replace it with another runnable thread. That replacement is a <Term id="context-switch">context switch</Term>. The switch preserves the old execution state and restores the new one; it does not decide whether application data is consistent.
+
+### Lifecycle states
+
+The exact state machine varies, but these conceptual states explain most observations:
+
+1. Creation allocates an identity and the execution resources needed to start.
+2. A runnable thread is eligible for processor time but may be waiting in a run queue.
+3. A running thread is currently executing on a processor.
+4. A blocked thread waits for an event such as I/O, a timer, a lock, or a message.
+5. A stopped thread is deliberately suspended and cannot run until continued.
+6. Termination ends execution; another owner may still need to collect its exit result.
+
+A thread moves from running to blocked when it cannot make progress. When the awaited event occurs, it usually becomes runnable, not immediately running. Scheduler policy, priority, processor availability, and other runnable work determine when it runs again.
+
+Termination is not the same as cleanup completion. A parent process may need to wait for a child to avoid leaving an uncollected exit record, and a thread owner may need to join a thread before using its final result or releasing dependent state. Detaching or `unref()` changes who waits; it does not cancel the work.
+
+### Creation and replacement
+
+Unix-like systems commonly create a process with `fork()` and replace its program image with an `exec` operation. `fork()` begins with a logically separate child address space, often implemented with copy-on-write pages until either side modifies them. File descriptors and other resources can be inherited under defined rules.
+
+Threads are created inside an existing process and begin at a chosen entry function. They immediately live within the process resource boundary. Runtime abstractions may add stronger separation: Node.js workers use separate JavaScript isolates, so ordinary objects in `workerData` are cloned even though `SharedArrayBuffer` memory can be shared.
+
+Creation has a failure path. Process IDs, thread stacks, address-space mappings, handles, and scheduler capacity are finite. Code must handle creation errors and place a bound on concurrency rather than assuming every requested worker can start.
+
+### Scheduling is not ordering
+
+Preemption can pause a thread between two source-level operations. Multiple processors can also execute different threads at the same time. A test that “always” prints one order on a quiet laptop has not established an ordering contract.
+
+Scheduler fairness does not guarantee a particular thread will run next or within an application deadline. Priorities can influence selection, but priority inversion, CPU quotas, blocking calls, and overloaded run queues still matter. Correctness must come from synchronization, not timing guesses.
+
+Sleeping is therefore not a coordination primitive. `sleep(10)` establishes only that a thread is ineligible to run for at least some interval; it does not prove that another thread finished initialization. Wait for an explicit completion event, condition, message, or join instead.
+
+### Shared state and synchronization
+
+A <Term id="race-condition">race condition</Term> exists when correctness depends on an uncontrolled ordering of concurrent events. The familiar read-modify-write sequence can lose updates: two threads read the same old counter, both compute the next value, and both store it.
+
+A <Term id="mutex">mutex</Term> gives one owner at a time access to a critical region. The protected invariant matters more than the individual variable: if a balance and ledger must change together, both changes belong under the same ownership rule. Every access that relies on that invariant must follow the rule.
+
+Atomic operations make one supported memory operation indivisible and provide defined visibility ordering. They are useful for counters, flags, and building lower-level protocols, but a series of atomic operations is not automatically one atomic transaction. For larger invariants, prefer a lock or single-owner message loop unless a reviewed lock-free design is required.
+
+Condition variables and event primitives let a thread sleep until state may have changed. The waiter rechecks its predicate after waking because notifications can be coalesced, another thread can consume the condition first, or the API can permit spurious wakeups. The predicate, not the notification count, defines progress.
+
+## Examples
+
+These examples use Node 24 on Linux. Child processes demonstrate isolated heaps and explicit messaging; worker threads demonstrate the difference between cloned JavaScript objects and deliberately shared bytes. Every output below comes from the shown scratch file.
+
+### Isolating mutable state in a child process
+
+The parent sends a small command over an IPC channel. The child changes its own object and reports the result, while the parent's object remains unchanged.
+
+<Depth level="quick">
+
+```javascript run title="process_isolation.mjs"
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+if (process.argv[2] === "child") {
+  const localState = { queue: "billing", pending: 1 };
+
+  process.once("message", ({ add }) => {
+    localState.pending += add;
+    process.send(localState);
+    process.disconnect();
+  });
+} else {
+  const parentState = { queue: "billing", pending: 1 };
+  const child = fork(fileURLToPath(import.meta.url), ["child"], {
+    stdio: ["ignore", "inherit", "inherit", "ipc"],
+  });
+
+  console.log(`parent before: ${parentState.pending}`);
+  child.send({ add: 2 });
+  child.once("message", (childState) => {
+    console.log(`child reports: ${childState.pending}`);
+    console.log(`parent after: ${parentState.pending}`);
+  });
+  child.once("exit", (code) => console.log(`child exit: ${code}`));
+}
+```
+
+```text
+parent before: 1
+child reports: 3
+parent after: 1
+child exit: 0
+```
+
+<TryToBreak items={['send a second command', 'disconnect before the reply', 'send a value the IPC serializer cannot represent']} />
+
+</Depth>
+
+The message transfers data according to the IPC serialization contract; it does not expose `parentState` to the child. The `message` event is the communication boundary, and the `exit` event is the lifecycle boundary. Production code must also handle `error`, abnormal exit, and a response deadline.
+
+Calling `disconnect()` closes the IPC channel after the reply. It does not forcibly kill the child. The parent separately observes exit status, which is why request completion and process termination should not be collapsed into one event.
+
+### Separating cloned objects from shared bytes
+
+A Node worker is a thread, but its JavaScript objects live in a separate isolate. `workerData.copiedState` is cloned; the `SharedArrayBuffer` names the memory that both threads may access.
+
+```javascript run title="thread_sharing.mjs"
+import {
+  Worker,
+  isMainThread,
+  parentPort,
+  workerData,
+} from "node:worker_threads";
+
+if (isMainThread) {
+  const copiedState = { pending: 1 };
+  const sharedBytes = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: { copiedState, sharedBytes },
+  });
+
+  worker.once("message", ({ workerPending }) => {
+    const sharedState = new Int32Array(sharedBytes);
+    console.log(`copy in worker: ${workerPending}`);
+    console.log(`copy in parent: ${copiedState.pending}`);
+    console.log(`shared in parent: ${Atomics.load(sharedState, 0)}`);
+  });
+} else {
+  const sharedState = new Int32Array(workerData.sharedBytes);
+  workerData.copiedState.pending += 1;
+  Atomics.store(sharedState, 0, 7);
+  parentPort.postMessage({ workerPending: workerData.copiedState.pending });
+}
+```
+
+```text
+copy in worker: 2
+copy in parent: 1
+shared in parent: 7
+```
+
+The ordinary object behaves like a message payload, so changing the worker's copy does not mutate the parent's copy. The typed-array views point at the same shared bytes. `Atomics.store()` and `Atomics.load()` state the visibility rule instead of relying on incidental timing.
+
+This runtime design is more restrictive than the general statement “threads share memory.” Always inspect the abstraction in use. Native threads, Java threads, browser workers, Node workers, and async tasks expose different sharing and scheduling contracts.
+
+### Joining workers after atomic updates
+
+Four workers increment one shared counter. `Atomics.add()` prevents lost updates, and waiting for every `exit` event provides the join point before the parent reads the final value.
+
+```javascript run title="atomic_counter.mjs"
+import { Worker, isMainThread, workerData } from "node:worker_threads";
+
+const workerCount = 4;
+const incrementsPerWorker = 25_000;
+
+if (isMainThread) {
+  const sharedBytes = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const counter = new Int32Array(sharedBytes);
+  const workers = Array.from(
+    { length: workerCount },
+    () => new Worker(new URL(import.meta.url), { workerData: sharedBytes }),
+  );
+
+  await Promise.all(
+    workers.map(
+      (worker) =>
+        new Promise((resolve, reject) => {
+          worker.once("error", reject);
+          worker.once("exit", (code) =>
+            code === 0 ? resolve() : reject(new Error(`exit ${code}`)),
+          );
+        }),
+    ),
+  );
+
+  console.log(`expected: ${workerCount * incrementsPerWorker}`);
+  console.log(`actual: ${Atomics.load(counter, 0)}`);
+} else {
+  const counter = new Int32Array(workerData);
+  for (let index = 0; index < incrementsPerWorker; index += 1) {
+    Atomics.add(counter, 0, 1);
+  }
+}
+```
+
+```text
+expected: 100000
+actual: 100000
+```
+
+Replacing `Atomics.add(counter, 0, 1)` with `counter[0] += 1` turns one atomic update into a read followed by a write. Concurrent workers can then overwrite one another's progress. One successful run of the unsafe form would still not prove it correct.
+
+The exit handlers reject abnormal termination instead of treating every exit as success. In a service, add a bounded deadline and terminate remaining workers on failure. Joining without a deadline can wait forever when a worker is blocked.
+
+## Pitfalls
+
+### Treating shared memory as thread safety
+
+> [!PITFALL]
+> A generated worker updates a shared map or typed array because all threads can reach it, but no ownership or synchronization rule protects a multi-step invariant. Tests pass until a different interleaving loses an update or exposes partial state.
+
+**Fix:** enumerate every shared mutable object and its invariant. Assign one owner, guard all related accesses with the same mutex, or use an atomic operation whose contract covers the entire update. Add stress tests, but do not treat their success as a proof that no race exists.
+
+### Coordinating with sleep
+
+> [!PITFALL]
+> Code sleeps for a guessed interval before reading a result or shutting down. Faster machines waste time, while slower or loaded machines still race because elapsed time does not establish completion or memory visibility.
+
+**Fix:** wait for a join, message, condition predicate, or completion future. Put a deadline around that explicit event and report timeout separately from worker failure. Tests should control the event rather than stretching the delay.
+
+### Forgetting lifecycle ownership
+
+> [!PITFALL]
+> A function starts a child or thread and returns without defining who joins, cancels, times out, or closes inherited resources. The work can outlive its request, hold the process open, or leave an exit status uncollected.
+
+**Fix:** make the creator responsible for cleanup unless ownership is explicitly transferred. Define normal completion, cancellation, deadline, abnormal exit, and shutdown behavior together. Use a `finally` path that closes channels and terminates work still inside the boundary.
+
+### Assuming a thread is a failure boundary
+
+> [!PITFALL]
+> A thread is described as an isolated sandbox for untrusted or crash-prone work. It shares the host process's authority and resources, and a native memory fault or unrecoverable runtime error can terminate or corrupt the entire process.
+
+**Fix:** use a separately constrained process or stronger sandbox when failure or trust isolation matters. Validate messages at the boundary, grant only required resources, and supervise exit. A process boundary still needs operating-system permissions and resource limits.
+
+### Creating one worker per item
+
+> [!PITFALL]
+> Generated code maps an unbounded input array directly to processes or threads. Creation consumes stacks, handles, memory, scheduler time, and downstream capacity, so a burst can make every worker slower or prevent new workers from starting.
+
+**Fix:** use a bounded pool or admission queue sized from measured work and resource limits. Propagate backpressure to the producer, define queue overflow behavior, and measure queue delay separately from execution time. Prefer batching when setup dominates useful work.
+
+### Locking without a global order
+
+> [!PITFALL]
+> One path locks `accounts` then `ledger`, while another locks `ledger` then `accounts`. Each mutex works as designed, but the two paths can wait forever for each other.
+
+**Fix:** define and document one lock acquisition order, keep critical sections bounded, and avoid calling unknown code while holding a lock. Where ordering is impractical, use timed acquisition with rollback or redesign ownership to remove nested locks.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate one worker per input, mutate shared counters with `value += 1`, and use `setTimeout()` as if it joined the work. They may resolve a parent promise after the first worker message, omit abnormal-exit handling, or call `unref()` believing it cancels the thread. Another common failure is recommending a thread as a security boundary for untrusted code or adding a mutex around only the write while leaving reads outside the invariant.
+
+**Ask your AI to check**
+
+- Produce an ownership table for every mutable object, descriptor, channel, process, and thread, including who closes or joins it.
+- Draw the happens-before relationships for creation, publication, updates, cancellation, and final reads; identify every check-then-act sequence.
+- Calculate the maximum live workers, queued items, stack memory, inherited handles, and shutdown duration under peak input and partial failure.
+
+**Review checklist**
+
+- Run race-aware tests and adversarial scheduling cases, then inspect every shared invariant that the tests cannot prove.
+- Exercise empty input, creation failure, worker crash, timeout, cancellation, partial result, and shutdown while work is blocked.
+- Verify that concurrency is bounded and that isolation matches the required failure, trust, and resource boundary.
+
+**Prompt vocabulary**
+
+Use the exact terms `process isolation`, `thread`, `address space`, `scheduler`, `runnable`, `blocked`, `context switch`, `race condition`, `critical section`, `mutex`, `atomic read-modify-write`, `memory visibility`, `happens-before`, `join`, `cancellation`, `bounded worker pool`, and `lock ordering`. Ask for an ownership table and a lifecycle state diagram; “make this concurrent” leaves the essential contracts unspecified.
+
+<Depth level="deep">
+
+## Scheduling, synchronization, and failure boundaries
+
+The simple process-versus-thread table hides the mechanisms that produce real bugs. Scheduling decides when execution can advance, synchronization constrains which observations are legal, and a failure boundary decides what can be stopped or corrupted together. Review all three dimensions for each concurrency design.
+
+### Schedulable identities
+
+A scheduler works with runnable execution entities rather than source-language promises or business jobs. On Linux, threads are represented as tasks with individual scheduling attributes, while a thread group supplies the process view. Monitoring only process count can therefore miss hundreds of runnable or blocked threads.
+
+A runtime can multiplex many language-level tasks onto fewer operating-system threads. Async functions usually pause at runtime-managed suspension points and do not each own a native stack. Conversely, a library may create native helper threads even when application code never calls a thread API.
+
+CPU-bound work becomes parallel only when it can run on different processors and the runtime permits simultaneous execution. Concurrency still helps I/O-bound work when one execution path can block while another advances. State the goal—latency hiding, throughput, parallel computation, or isolation—before selecting the primitive.
+
+### Context switches and blocking
+
+A context switch saves enough execution state to resume one thread and loads another. It may also disturb caches and translation lookaside buffers, but the cost depends on hardware, kernel path, working set, and whether the switch crosses address spaces. Use measurements from the target workload instead of quoting one universal duration.
+
+Blocking can be voluntary, such as waiting on a pipe, or forced by preemption. A thread holding a mutex while it performs blocking I/O extends the critical section for an unbounded external delay. Copy the needed state under the lock, release it, and then perform the slow operation when the invariant allows that split.
+
+A large runnable queue means work is competing for processors. A large blocked population means work is waiting for events or capacity. Both can increase latency, but they need different remedies, so collect per-state thread counts and wait reasons rather than reporting only total thread count.
+
+### Publication and memory visibility
+
+One thread constructing an object and assigning it to a shared location does not, in every language memory model, guarantee that another thread sees all earlier field writes without a defined publication mechanism. Locks, message queues, joins, and appropriate atomic operations create ordering guarantees specified by the runtime.
+
+The phrase <Term id="race-condition">race condition</Term> is broader than “two writes at once.” A check that permission is valid followed by opening a path can race with a rename; checking a queue is nonempty before removing an item can race with another consumer. Protect the decision and action as one invariant or use an API that combines them atomically.
+
+Atomics require a width, alignment, operation, and memory-order contract. Node's `Atomics` methods operate on supported shared typed arrays and provide the runtime-defined ordering. They do not make ordinary objects reachable across isolates, and they do not protect a business invariant spread across several array elements.
+
+### Mutexes, conditions, and deadlock
+
+A mutex establishes exclusive ownership for a region and ordering between unlock and a later successful lock. Keep the protected state and invariant documented beside the mutex. A “locks” folder or one lock per field often obscures which combinations must change together.
+
+A condition wait is normally written as a loop: acquire the mutex, test the predicate, wait while it is false, and retest after waking. The wait operation releases the mutex while sleeping and reacquires it before returning. Signaling without updating the predicate under the associated ownership rule creates missed or meaningless wakeups.
+
+Deadlock needs a cycle of waiting dependencies. Consistent lock ordering breaks the cycle, while single-owner queues can remove shared-lock dependencies entirely. Detection and timeouts can make failure visible, but they do not restore a partially completed operation; rollback or idempotent retry remains an application concern.
+
+### Process creation in a multithreaded program
+
+Forking a multithreaded process requires special care. The child begins with only the calling thread, while memory may reflect locks held by threads that no longer exist in the child. Between `fork()` and `exec()`, only the operations allowed by the platform contract are safe.
+
+Higher-level process APIs often steer users toward a spawn-and-exec path that avoids running substantial child code in that fragile state. If a library starts background threads, a previously harmless manual `fork()` can become unsafe. Treat process creation behavior as part of the runtime and library compatibility contract.
+
+Descriptor inheritance is another boundary decision. A child that unintentionally keeps a pipe end open can prevent readers from ever observing end-of-file. Mark unrelated descriptors close-on-exec, pass only the handles the child needs, and test shutdown while children fail at different stages.
+
+### Joining, detaching, and cancellation
+
+Joining waits for termination and creates a point at which final results can be consumed safely under the API's memory model. It does not request termination. Cancellation asks work to stop, but cooperative cancellation only progresses when the worker checks the signal or reaches a cancellable operation.
+
+Detached threads and unreferenced workers remove an obligation from one owner or allow a runtime to exit without waiting. They do not make resource use free, suppress side effects, or guarantee cleanup. Use them only when another owner truly supervises the lifetime or abandoning the work is part of the contract.
+
+Graceful process shutdown is a protocol: stop admitting work, request cancellation, let in-flight operations reach safe points, close channels, wait within a deadline, and then escalate if necessary. Record which phase timed out. A single “terminated” log line hides whether data was drained or discarded.
+
+### Choosing a boundary
+
+| Requirement | Usually favor | Reason to verify |
+| --- | --- | --- |
+| Contain crashes or untrusted code | Constrained process | Shared files, credentials, and kernel attack surface may remain |
+| Share a large mutable working set | Threads | Synchronization and runtime memory rules may dominate |
+| Run CPU work in parallel | Runtime-dependent threads or processes | Global runtime locks and serialization costs differ |
+| Supervise independent services | Processes | Startup, health, restart, and version boundaries become explicit |
+| Coordinate many waiting operations | Async tasks or a bounded thread pool | Blocking libraries can still consume threads |
+
+Hybrid designs are normal. A service may use several processes for failure containment, a bounded thread pool for CPU work, and async tasks for network concurrency. Each layer needs its own capacity limit and shutdown path; multiplying defaults can create far more total concurrency than intended.
+
+Choose message contents as deliberately as shared state. Large copied payloads can dominate process communication, while shared buffers require versioning, ownership, and synchronization. Measure serialization, queue delay, useful work, and cleanup separately so the boundary cost is visible.
+
+### Diagnosing concurrency failures
+
+Start from a timeline rather than a stack trace alone. Collect process and thread identities, state transitions, message identifiers, lock waits, cancellation requests, deadlines, exits, and the owner responsible for each resource. Preserve monotonic timestamps for durations so wall-clock adjustments do not distort order.
+
+Use this sequence when a failure is intermittent:
+
+1. State the violated invariant and the smallest externally visible wrong outcome.
+2. Identify all execution paths that read or modify the relevant state.
+3. Mark the synchronization or message edge that should order each conflicting access.
+4. Force creation failure, delayed messages, worker exit, and cancellation at each boundary.
+5. Reduce the trace to one reproducible schedule, then keep it as a regression test.
+
+Thread sanitizers, race detectors, lock diagnostics, and scheduler tracing can reveal evidence that ordinary tests miss. They still observe only exercised paths and supported operations. Combine tool output with a written ownership and happens-before argument.
+
+Process failures need boundary-level evidence too. Capture exit status or signal, stderr, resource-limit events, and whether the last request may have committed an external side effect. Retrying a crashed process is safe only when the application operation is replay-safe or protected by idempotency.
+
+</Depth>
+
+<Checkpoint id="foundations/processes-and-threads" />
+
+## Further reading
+
+- [Node.js v24 documentation: child processes](https://nodejs.org/docs/latest-v24.x/api/child_process.html)
+- [Node.js v24 documentation: worker threads](https://nodejs.org/docs/latest-v24.x/api/worker_threads.html)
+- [POSIX: `pthread_create()`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_create.html)
+- [POSIX: `pthread_mutex_lock()`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_lock.html)
+- [Linux manual: scheduling overview](https://man7.org/linux/man-pages/man7/sched.7.html)
+- [Linux manual: POSIX threads](https://man7.org/linux/man-pages/man7/pthreads.7.html)
