@@ -5,7 +5,8 @@
  *
  * Output goes to .cache/fonts/, which is git-ignored: run `pnpm fonts` once
  * per checkout. Files that already exist are left alone, so re-runs are cheap
- * and offline-safe.
+ * and offline-safe. `src/lib/og.ts` imports `fetchFonts()` from here and calls
+ * it lazily during the build, so a fresh checkout needs no separate step.
  *
  * Nothing in the shipped site depends on these files — the runtime webfonts
  * are the self-hosted woff2 subsets in public/fonts/.
@@ -16,17 +17,41 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUT_DIR = path.join(ROOT, '.cache', 'fonts');
 
-const PLEX_SANS = 'https://github.com/IBM/plex/raw/master/packages/plex-sans/fonts/complete/ttf/';
+/** Default download target. `fetchFonts()` takes an override so tests can point elsewhere. */
+export const FONT_CACHE_DIR = path.join(ROOT, '.cache', 'fonts');
 
-/** @type {{ file: string; url: string }[]} */
-const FONTS = [
-  { file: 'IBMPlexSans-Regular.ttf', url: `${PLEX_SANS}IBMPlexSans-Regular.ttf` },
-  { file: 'IBMPlexSans-SemiBold.ttf', url: `${PLEX_SANS}IBMPlexSans-SemiBold.ttf` },
+// raw.githubusercontent.com rather than github.com/.../raw/: same bytes, one fewer redirect,
+// and it is the host that stays reachable from locked-down CI and container networks.
+const PLEX = 'https://raw.githubusercontent.com/IBM/plex/master/packages';
+const NOTO = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF';
+
+/**
+ * The four faces the OG renderer asks for. `optional` faces degrade to Plex Sans when the
+ * download fails, so a blocked network costs polish rather than a broken build.
+ *
+ * @type {{ file: string; url: string; optional: boolean }[]}
+ */
+export const FONTS = [
+  {
+    file: 'IBMPlexSans-Regular.ttf',
+    url: `${PLEX}/plex-sans/fonts/complete/ttf/IBMPlexSans-Regular.ttf`,
+    optional: false,
+  },
+  {
+    file: 'IBMPlexSans-SemiBold.ttf',
+    url: `${PLEX}/plex-sans/fonts/complete/ttf/IBMPlexSans-SemiBold.ttf`,
+    optional: false,
+  },
+  {
+    file: 'IBMPlexMono-SemiBold.ttf',
+    url: `${PLEX}/plex-mono/fonts/complete/ttf/IBMPlexMono-SemiBold.ttf`,
+    optional: true,
+  },
   {
     file: 'NotoSansSC-Regular.otf',
-    url: 'https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf',
+    url: `${NOTO}/SimplifiedChinese/NotoSansCJKsc-Regular.otf`,
+    optional: true,
   },
 ];
 
@@ -40,11 +65,15 @@ async function exists(file) {
   }
 }
 
-/** @param {{ file: string; url: string }} font */
-async function download({ file, url }) {
-  const dest = path.join(OUT_DIR, file);
+/**
+ * @param {{ file: string; url: string }} font
+ * @param {string} outDir
+ * @param {boolean} quiet
+ */
+async function download({ file, url }, outDir, quiet) {
+  const dest = path.join(outDir, file);
   if (await exists(dest)) {
-    console.log(`skip  ${file} (already present)`);
+    if (!quiet) console.log(`skip  ${file} (already present)`);
     return;
   }
 
@@ -63,12 +92,29 @@ async function download({ file, url }) {
   console.log(`saved ${file} (${bytes.byteLength.toLocaleString('en-US')} bytes)`);
 }
 
-async function main() {
-  await mkdir(OUT_DIR, { recursive: true });
+/**
+ * Fills `outDir` with every missing font. Required faces throw when they cannot be fetched;
+ * optional ones only warn, which is what keeps an offline build alive.
+ *
+ * @param {string} [outDir]
+ * @param {{ quiet?: boolean }} [options]
+ */
+export async function fetchFonts(outDir = FONT_CACHE_DIR, options = {}) {
+  const quiet = options.quiet ?? false;
+  await mkdir(outDir, { recursive: true });
   for (const font of FONTS) {
-    await download(font);
+    try {
+      await download(font, outDir, quiet);
+    } catch (error) {
+      if (!font.optional) throw error;
+      console.warn(`warn  ${font.file} unavailable — ${error instanceof Error ? error.message : error}`);
+    }
   }
-  console.log(`\nFonts ready in ${path.relative(ROOT, OUT_DIR)}/`);
+  return outDir;
 }
 
-await main();
+// CLI: `pnpm fonts`. Importing this module runs nothing.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await fetchFonts();
+  console.log(`\nFonts ready in ${path.relative(ROOT, FONT_CACHE_DIR)}/`);
+}
