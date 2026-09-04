@@ -25,8 +25,8 @@ Read this first in any new session. Update it at every milestone and before star
 | Master spec / P2 sub-spec | approved |
 | Design mockups | P1 `docs/design/mockups/`, P2 `docs/design/mockups/p2/` (canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137) |
 | **P1 site foundation** | **complete and merged into `main` (3644c06)**: Tasks 0–20 incl. Mermaid diagrams, visual sweep, WCAG AA contrast pass, final review + fix round (224 unit tests, 99 e2e, Lighthouse ≥ 0.99 perf, 1,112 internal targets resolve). Branches `p1-*` can be deleted (`git worktree remove` + `git branch -d`) |
-| P0 content pipeline | Tasks 1–13 complete on `p0-content-pipeline`; Task 14 wave 1 in progress (tier 1: 25 + batch 2 running; 0 failures). P0 branch still needs `main` merged in after the current batch (it carries the P1 code from before Task 19) |
-| P2 learning layer | plan `docs/superpowers/plans/2026-09-04-p2-learning-layer.md`; worktree `.worktrees/p2-learning-layer` (branch from main 3644c06); ledger `.worktrees/p2-learning-layer/.superpowers/sdd/2026-09-04-p2-learning-layer/progress.md`; Task 1 dispatching to Codex |
+| P0 content pipeline | Tasks 1–13 complete on `p0-content-pipeline`; Task 14 wave 1 in progress (tier 1: 44/257 polished after batches 1–2, batch 3 running; 1 transient dead-link failure queued for retry). P0 branch still needs `main` merged in after the current batch (it carries the P1 code from before Task 19) |
+| P2 learning layer | plan `docs/superpowers/plans/2026-09-04-p2-learning-layer.md`; worktree `.worktrees/p2-learning-layer` (branch from main 3644c06); ledger `.worktrees/p2-learning-layer/.superpowers/sdd/2026-09-04-p2-learning-layer/progress.md`; Tasks 1–2 complete, Task 3 running on Codex |
 | Content | 45+ reviewed topic pairs in `src/content/topics` on the P0 branch, 115+ glossary terms, 20 interview banks, quiz banks per topic |
 
 ## Active work (updated 2026-09-04 17:20 local)
