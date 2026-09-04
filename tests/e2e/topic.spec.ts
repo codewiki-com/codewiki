@@ -100,6 +100,24 @@ test('reading to the checkpoint completes the topic at any depth', async ({ page
   await expect(page.locator('.tree a[data-topic-id="python/closures"]')).toHaveClass(/done/);
 });
 
+test('a term in the article defines itself on hover', async ({ page }) => {
+  await page.goto('/python/closures/');
+  // The card is built when the island hydrates, so waiting for it keeps the hover from arriving first.
+  const tip = page.locator('#cw-term-tip');
+  await expect(tip).toBeAttached();
+
+  const term = page.locator('.term').first();
+  await term.hover();
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText('Free variable');
+  await expect(tip).toContainText('自由变量');
+  await expect(tip.locator('.term-tip-link')).toHaveAttribute('href', '/glossary/free-variable/');
+  await expect(term).toHaveAttribute('aria-describedby', 'cw-term-tip');
+
+  await page.keyboard.press('Escape');
+  await expect(tip).toBeHidden();
+});
+
 test('the breadcrumb and the JSON-LD trail agree', async ({ page }) => {
   await page.goto('/python/closures/');
   const pills = await page.locator('.crumbs .tag').allTextContents();

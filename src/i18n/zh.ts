@@ -205,4 +205,12 @@ export default {
   'ai.openClaude': '在 Claude 中打开',
   'ai.openChatGPT': '在 ChatGPT 中打开',
   'ai.copy': '复制提示词',
+  // Task 14
+  'glossary.sub': '主题中用到的术语，中英文各定义一次。',
+  'glossary.count': '{count} 个术语',
+  'glossary.aliases': '别名',
+  'glossary.usedIn': '用到的主题',
+  'glossary.open': '查看术语',
+  'glossary.prevTerm': '上一个术语',
+  'glossary.nextTerm': '下一个术语',
 } satisfies Record<keyof typeof en, string>;
