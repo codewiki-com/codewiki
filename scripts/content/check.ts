@@ -2,20 +2,22 @@
  * The gate a polished topic has to pass before it counts as done.
  *
  * `pnpm content:check {track}/{slug}` reads both languages of one topic out of
- * `src/content/topics` and runs the eight checks the content standard asks for, in a
+ * `src/content/topics` and runs the nine checks the content standard asks for, in a
  * fixed order so a failure always carries the same number: frontmatter, Chinese
  * typography, code samples, links, bilingual alignment, article structure, the quiz
- * sidecar and the review status. Everything is reported, not just the first problem, so
- * one run tells an author (or the polish agent) the whole list of what to fix.
+ * sidecar, the review status and MDX compilation. Everything is reported, not just the
+ * first problem, so one run tells an author (or the polish agent) the whole list of what
+ * to fix.
  *
  * Checks that cost network time are skippable with `--no-links`; the book-title part of
  * the link check still runs, because it needs no network and catches the "further
  * reading" entries nobody has verified. `--relaxed` lowers the length floor for the short
  * reference samples that predate the 400-line standard.
  */
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compile } from '@mdx-js/mdx';
 import YAML from 'yaml';
 import type { z } from 'astro/zod';
 import { getSection, getTrack } from '@/data/tracks';
@@ -93,7 +95,7 @@ export interface KindCheckOptions {
 }
 
 /** Both languages of a topic: the raw file and its parsed frontmatter and body. */
-type Documents = Record<Lang, ParsedFrontmatter & { text: string; offset: number }>;
+type Documents = Record<Lang, ParsedFrontmatter & { file: string; text: string; offset: number }>;
 
 /**
  * Run every check on one topic and collect the findings.
@@ -105,9 +107,10 @@ export async function checkTopic(id: string, options: CheckOptions = {}): Promis
   const root = options.root ?? repoPath(TOPICS_ROOT);
   const documents = {} as Documents;
   for (const lang of LANGS) {
-    const text = await readFile(path.join(root, `${id}.${lang}.mdx`), 'utf8');
+    const file = path.join(root, `${id}.${lang}.mdx`);
+    const text = await readFile(file, 'utf8');
     const parsed = parseFrontmatter(text);
-    documents[lang] = { ...parsed, text, offset: bodyOffset(text, parsed.body) };
+    documents[lang] = { ...parsed, file, text, offset: bodyOffset(text, parsed.body) };
   }
 
   const failures: string[] = [];
@@ -122,6 +125,7 @@ export async function checkTopic(id: string, options: CheckOptions = {}): Promis
   record(6, structureFindings(documents, options.relaxed === true));
   record(7, await sidecarFindings(id, documents, options));
   record(8, statusFindings(documents));
+  record(9, await mdxFindings(documents));
   return { ok: failures.length === 0, failures };
 }
 
@@ -131,6 +135,35 @@ export async function checkTopic(id: string, options: CheckOptions = {}): Promis
  */
 function bodyOffset(text: string, body: string): number {
   return text.split('\n').length - body.split('\n').length;
+}
+
+// ---------------------------------------------------------------------------
+// 9. MDX compilation
+// ---------------------------------------------------------------------------
+
+/** Compile authored MDX after frontmatter, padding the body so diagnostics keep source line numbers. */
+export async function compileMdx(text: string, file: string): Promise<string | null> {
+  const parsed = parseFrontmatter(text);
+  const offset = bodyOffset(text, parsed.body);
+  try {
+    await compile(`${'\n'.repeat(offset)}${parsed.body}`, { format: 'mdx' });
+    return null;
+  } catch (error) {
+    const issue = error as { column?: number; line?: number; message?: string; reason?: string };
+    const relative = path.relative(repoPath('.'), file);
+    const displayFile = relative === '..' || relative.startsWith(`..${path.sep}`) ? file : relative;
+    const position = issue.line && issue.column ? `:${issue.line}:${issue.column}` : '';
+    return `${displayFile}${position}: ${issue.reason ?? issue.message ?? String(error)}`;
+  }
+}
+
+async function mdxFindings(documents: Documents): Promise<string[]> {
+  const out: string[] = [];
+  for (const lang of LANGS) {
+    const finding = await compileMdx(documents[lang].text, documents[lang].file);
+    if (finding) out.push(`${lang} MDX compile: ${finding}`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,6 +685,8 @@ async function checkWrittenCheatsheet(id: string, options: KindCheckOptions): Pr
     }
     const parsed = parseFrontmatter(text);
     documents[lang] = { ...parsed, sheets: sheetShapes(parsed.body) };
+    const mdxFailure = await compileMdx(text, path.join(root, `${slug}.${lang}.mdx`));
+    if (mdxFailure) failures.push(`9. cheatsheet "${slug}" (${lang}) MDX compile: ${mdxFailure}`);
     const schema = cheatsheetSchema.safeParse(parsed.data);
     failures.push(...schemaFailures(`cheatsheet "${slug}" (${lang})`, schema));
     if (schema.success) {
@@ -699,6 +734,7 @@ async function checkWrittenCheatsheet(id: string, options: KindCheckOptions): Pr
 // ---------------------------------------------------------------------------
 
 interface Args {
+  all: boolean;
   ids: string[];
   noLinks: boolean;
   relaxed: boolean;
@@ -707,10 +743,11 @@ interface Args {
 
 /** Parse topic checks or `--kind quiz|kata|interview|path|cheatsheet <id>`. */
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { ids: [], noLinks: false, relaxed: false };
+  const args: Args = { all: false, ids: [], noLinks: false, relaxed: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === '--no-links') args.noLinks = true;
+    if (arg === '--all') args.all = true;
+    else if (arg === '--no-links') args.noLinks = true;
     else if (arg === '--relaxed') args.relaxed = true;
     else if (arg === '--kind') {
       const kind = argv[index + 1];
@@ -721,16 +758,44 @@ export function parseArgs(argv: string[]): Args {
     } else if (arg.startsWith('-')) throw new Error(`unknown flag: ${arg}`);
     else args.ids.push(arg);
   }
-  if (args.ids.length === 0)
-    throw new Error('usage: content:check [--kind quiz|kata|interview|path|cheatsheet] <id> [...]');
+  if (args.all && args.ids.length > 0) throw new Error('--all cannot be combined with explicit ids');
+  if (args.all && args.kind && args.kind !== 'cheatsheet') {
+    throw new Error('--all supports topics and --kind cheatsheet');
+  }
+  if (!args.all && args.ids.length === 0)
+    throw new Error('usage: content:check [--all] [--kind quiz|kata|interview|path|cheatsheet] <id> [...]');
   return args;
+}
+
+/** List every localized MDX stem below a root, including stems with a missing counterpart. */
+async function listMdxIds(root: string): Promise<string[]> {
+  const ids = new Set<string>();
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(full);
+        continue;
+      }
+      const match = /^(.*)\.(?:en|zh)\.mdx$/.exec(entry.name);
+      if (!entry.isFile() || !match) continue;
+      ids.add(path.join(path.relative(root, directory), match[1]).split(path.sep).join('/'));
+    }
+  };
+  await visit(root);
+  return [...ids].sort();
 }
 
 /** CLI: check every named topic, printing `OK {id}` or the numbered findings. */
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const ids = args.all
+    ? await listMdxIds(
+        args.kind === 'cheatsheet' ? repoPath('src/content/cheatsheets') : repoPath(TOPICS_ROOT),
+      )
+    : args.ids;
   let failed = 0;
-  for (const id of args.ids) {
+  for (const id of ids) {
     let result: CheckResult;
     try {
       result = args.kind
@@ -746,6 +811,9 @@ async function main(): Promise<void> {
     failed += 1;
     console.log(`FAIL ${id}`);
     for (const failure of result.failures) console.log(`  ${failure}`);
+  }
+  if (args.all) {
+    console.log(`SUMMARY ${ids.length} checked: ${ids.length - failed} passed, ${failed} failed`);
   }
   if (failed > 0) process.exitCode = 1;
 }

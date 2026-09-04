@@ -34,6 +34,7 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 - English: native, direct, present tense, second person where natural. Contractions are fine. Prefer short sentences. Technical terms are used precisely and consistently with the glossary.
 - Chinese: 地道的中文技术写作，不是翻译腔。段落同样以两到五句为一段，围绕一个意思展开；不要一句一段。用短句，主谓宾清楚。术语以术语表为准；首次出现的术语给出英文原文，例如「闭包（closure）」。中西文之间加一个空格（「Python 3.14 的 `asyncio`」），全角标点（，。；：？！「」），代码、数字、英文单词之间不用全角标点。不用「本文将」「让我们」「值得注意的是」。
 - Both: no emoji, no exclamation marks, no marketing adjectives.
+- MDX: raw `<` or `>` in prose must be escaped as an HTML entity or placed in inline code.
 
 ## 5. Currency
 

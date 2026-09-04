@@ -27,7 +27,7 @@ You are the editor for one topic on codewiki.com. Work autonomously, verify ever
    - Write the **In the AI era** section from real failure modes of this concept in generated code; be specific, not generic.
 4. Translate to the other language at `src/content/topics/{{TRACK}}/{{SLUG}}.{{OTHER_LANG}}.mdx` following §7 and §4. Same headings, same number of paragraphs and list items, identical code (translate comments only). `title` and `description` translated; all other frontmatter identical.
 5. Write the sidecars per §9: `src/content/quizzes/{{TRACK}}/{{SLUG}}.yaml`, append to `src/content/interview/{{TRACK}}.yaml` (create if missing, keep it valid YAML), and `content/glossary-proposals/{{TRACK}}-{{SLUG}}.yaml` for missing terms. Follow the calibration rules at the end of §9: 4–8 quiz items with one full `review` item (task, right, checklist, 3–5 issues of distinct kinds), and 3–5 interview items with `section`, `level`, `frequency` and a 60–120 word answer per language.
-6. Run `pnpm content:check {{TOPIC_ID}}`. Fix everything it reports (schema errors, zh typography, code syntax, dead links, alignment mismatches). Repeat until it prints `OK`.
+6. Run `pnpm content:check {{TOPIC_ID}}`. The check now compiles both MDX files; fix everything it reports (schema errors, zh typography, code syntax, dead links, alignment mismatches, MDX syntax errors). Repeat until it prints `OK`.
 7. Set `status: reviewed`, `reviewed: {{TODAY}}`, `verified.date: {{TODAY}}` in both files. Run the check once more.
 8. Write `reports/polish/{{SLUG_FLAT}}/report.json`:
 

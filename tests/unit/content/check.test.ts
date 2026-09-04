@@ -13,6 +13,26 @@ function failedChecks(failures: string[]): number[] {
 }
 
 describe('checkTopic', () => {
+  it('reports JSX-like angle brackets in prose as numbered MDX findings', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'codewiki-mdx-check-'));
+    await mkdir(path.join(root, 'python'), { recursive: true });
+    const en = await readFile(path.join(TOPICS, 'python/closures.en.mdx'), 'utf8');
+    const zh = await readFile(path.join(TOPICS, 'python/closures.zh.mdx'), 'utf8');
+    const fixture = fileURLToPath(new URL('../../fixtures/invalid-mdx.mdx', import.meta.url));
+    const invalidProse = (await readFile(fixture, 'utf8')).trimEnd().split('\n').at(-1);
+    expect(invalidProse).toContain('a < b</p>');
+    await writeFile(path.join(root, 'python/closures.en.mdx'), `${en}\n${invalidProse}\n`);
+    await writeFile(path.join(root, 'python/closures.zh.mdx'), `${zh}\n${invalidProse}\n`);
+
+    const result = await checkTopic('python/closures', { noLinks: true, relaxed: true, root });
+
+    expect(result.ok).toBe(false);
+    expect(failedChecks(result.failures)).toEqual([9]);
+    expect(result.failures.join('\n')).toMatch(
+      /9\. en MDX compile: .*closures\.en\.mdx:\d+:\d+: Unexpected closing slash/,
+    );
+  }, 120_000);
+
   it('accepts the polished sample topic', async () => {
     const result = await checkTopic('python/closures', { noLinks: true, relaxed: true });
     expect(result.failures).toEqual([]);
