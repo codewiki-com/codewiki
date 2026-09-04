@@ -1,0 +1,445 @@
+---
+title: Kotlin 扩展
+description: 用接收者语法为现有类型补充函数与计算属性，并理解静态解析、成员优先、可空接收者和作用域边界。
+track: kotlin
+section: functions-classes
+difficulty: intermediate
+tags: [extensions, extension-functions, extension-properties, receivers]
+prerequisites: [kotlin/fundamentals, kotlin/oop]
+related: [kotlin/lambdas, kotlin/null-safety, kotlin/scope-functions, kotlin/dsl]
+terms: [extension-function, extension-property, extension-receiver, dispatch-receiver, static-dispatch]
+verified: { version: 'Kotlin 2.4.10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: kotlin/extensions
+sources:
+  - { title: 'Kotlin documentation: Extensions', url: 'https://kotlinlang.org/docs/extensions.html' }
+  - { title: 'Kotlin coding conventions', url: 'https://kotlinlang.org/docs/coding-conventions.html' }
+  - { title: 'Kotlin language specification: Overload resolution', url: 'https://kotlinlang.org/spec/overload-resolution.html' }
+origin: old/src/content/docs/kotlin/extensions.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    扩展让你在不修改或继承类型的情况下，用成员调用语法为它补充函数或计算属性。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    扩展不会真的成为类成员；它按接收者的编译期类型解析，同签名的真实成员始终优先。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把扩展当作有作用域的普通声明，控制可见性，并用不同静态类型、`null` 和成员冲突测试解析结果。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="extension-function">扩展函数（extension function）</Term>
+是在类型定义之外声明、却能用 `receiver.function()` 形式调用的函数。
+声明中的点号左侧是接收者类型，函数体中的 `this` 是本次调用的接收者对象。
+这种语法把主要操作对象放在调用链前面，同时不要求你取得该类型的源码。
+
+扩展解决的是 API 表达和组织问题，而不是继承问题。
+第三方类型、标准库类型和稳定的领域模型都可以获得调用方需要的辅助操作，
+原类型的继承层级与对象布局保持不变。
+集合库中的 `map()`、`filter()` 和 `joinToString()` 就大量使用了这种形式。
+
+Kotlin 还支持<Term id="extension-property">扩展属性（extension property）</Term>。
+它为计算值提供属性访问语法，但不能给接收者增加存储空间。
+如果一个值便宜、不会抛出异常，并且在接收者状态不变时结果稳定，属性形式通常合适；
+需要参数、可能耗时或具有明显动作语义时，应使用函数。
+
+扩展不会修改类，也不会绕过封装。
+在类型外声明的扩展只能使用声明位置可见的 API，不能读取接收者的 `private` 或
+`protected` 成员。接收者的子类也不能像重写虚成员那样重写它。
+
+你会在领域格式化、集合操作、适配第三方 API、可空值归一化和小型 DSL 中遇到扩展。
+如果行为定义了类型的核心不变量、需要访问私有状态或必须支持运行时多态，
+成员函数通常更准确。扩展应表达调用方视角的补充能力，而不是伪装成类型本身承诺的行为。
+
+## 工作原理
+
+### 接收者只改变调用语法
+
+`fun String.normalized(): String` 声明了一个接收者类型为 `String` 的函数。
+在函数体内，未限定的成员访问和 `this` 都指向接收者；调用方则写
+`input.normalized()`。这里的<Term id="extension-receiver">扩展接收者（extension receiver）</Term>
+仍是一个普通参数角色，不会把声明注入 `String`。
+
+接收者类型可以是接口、泛型、函数类型或可空类型。
+`fun <T> List<T>.secondOrNull(): T?` 的类型参数写在函数名前，
+因此能在接收者类型和返回类型中使用。声明为 `Customer?` 时，函数体中的 `this`
+也可为 `null`，必须像处理其他可空值一样检查它。
+
+调用语法不决定所有权。
+扩展可以修改本来就可变的接收者，也可以返回新值，但它不会自动复制对象，
+也不会获得额外权限。审查扩展时，仍要从参数、返回值和可变性判断副作用。
+
+### 调用在编译期解析
+
+扩展采用<Term id="static-dispatch">静态分派（static dispatch）</Term>。
+编译器根据表达式的声明类型、当前作用域中可见的声明和实参列表选择扩展。
+对象的运行时子类型不会让调用自动切换到接收者更具体的另一个扩展。
+
+解析 `value.render()` 时，可以按下面的边界理解：
+
+| 条件 | 结果 | 审查重点 |
+| --- | --- | --- |
+| 声明类型上有适用成员 | 成员优先 | 新增成员后重新编译可能改变源码解析结果 |
+| 没有适用成员，但有可见扩展 | 从适用扩展中解析 | 检查导入、接收者静态类型与实参 |
+| 只有运行时子类型有另一扩展 | 不参与动态选择 | 需要多态时改用虚成员或接口 |
+| 没有唯一适用声明 | 编译失败 | 使用限定导入、别名或不同名称消除歧义 |
+
+“成员优先”针对的是适用调用。
+如果成员与扩展同名但参数列表不同，扩展仍可以作为普通重载被选中。
+因此，仅搜索函数名不足以判断调用目标；还要比较接收者类型、参数和可见作用域。
+
+静态解析让第三方扩展不会替换类型已有的行为，但也形成一个演进风险。
+依赖升级后，类型若新增与现有扩展兼容的成员，源码重新编译时会改为调用成员。
+公共扩展应使用领域明确的名称，并针对依赖升级运行行为测试。
+
+### 扩展属性没有后备字段
+
+扩展属性必须提供访问器，因为接收者实例里没有为它预留的后备字段。
+只读扩展写成 `val Type.name: Result get() = ...`。
+可变扩展可以声明 getter 和 setter，但两者必须读写接收者已有状态或外部存储，
+不能使用只属于该扩展的 `field`。
+
+这条限制是有用的设计信号。
+若属性需要为每个实例保存新状态，应该修改拥有该状态的类型、使用包装器，
+或建立显式且有生命周期策略的外部映射。把全局映射藏在扩展属性后面，
+容易引入泄漏、并发问题和难以观察的共享状态。
+
+属性访问看起来应当便宜且稳定。
+网络请求、磁盘读取、大量分配或可能失败的解析不应伪装成扩展属性；
+函数名和参数能更诚实地表达这些成本与失败边界。
+
+### 作用域决定可用集合
+
+顶层扩展属于声明它的包。
+其他包的调用方必须导入它，可以用显式导入缩小来源，也可以用
+`import package.longName as localName` 解决同名冲突。
+星号导入会扩大候选集合，因此公共代码更适合显式导入有争议的名称。
+
+扩展也可以声明在函数或类中。
+局部扩展只服务一个实现范围；类中的成员扩展只有在该类的<Term id="dispatch-receiver">分派接收者
+（dispatch receiver）</Term>可用时才能调用。缩小声明范围通常比给整个包增加通用名称更安全。
+
+可见性修饰符约束的是扩展声明本身。
+文件级 `private` 扩展只在同一文件可见，`internal` 扩展只在同一模块可见。
+这些修饰符不会提升扩展对接收者私有实现的访问权限。
+
+## 示例
+
+### 给字符串增加领域转换
+
+第一个扩展把页面标题转换为路由片段。
+它只依赖 `String` 的公开操作，并返回新字符串，不改变接收者。
+
+<Depth level="quick">
+
+```kotlin
+fun String.toRouteSegment(): String =
+    trim()
+        .lowercase()
+        .split(Regex("\\s+"))
+        .filter(String::isNotEmpty)
+        .joinToString("-")
+
+fun main() {
+    val topicTitle = "  Kotlin Extension Functions  "
+    val settingsTitle = "Account   Settings"
+
+    println(topicTitle.toRouteSegment())
+    println(settingsTitle.toRouteSegment())
+}
+```
+
+```text
+kotlin-extension-functions
+account-settings
+```
+
+</Depth>
+
+省略 `this` 不会改变含义，`trim()` 仍在当前字符串上调用。
+如果同一规则只对路由层有意义，应把扩展留在路由包或文件中，
+而不是把模糊的 `normalize()` 名称暴露给整个项目。
+
+这个简化规则不处理 Unicode 规范化或所有 URL 编码要求。
+它的名字把结果限定为项目中的路由片段；若产品规则更复杂，
+应把规则写进测试或专门的值类型，而不是继续堆叠隐含行为。
+
+### 泛型函数与计算属性
+
+泛型扩展可以保留元素类型，扩展属性则适合从现有状态即时计算一个便宜的值。
+空列表没有最后索引，所以属性返回 `Int?`，而不是制造一个哨兵数字。
+
+```kotlin
+fun <T> List<T>.secondOrNull(): T? = getOrNull(1)
+
+val List<*>.lastIndexOrNull: Int?
+    get() = if (isEmpty()) null else lastIndex
+
+fun main() {
+    val cities = listOf("Paris", "Lyon", "Nice")
+    val singleCity = listOf("Paris")
+    val noCities = emptyList<String>()
+
+    println(cities.secondOrNull())
+    println(singleCity.secondOrNull())
+    println(cities.lastIndexOrNull)
+    println(noCities.lastIndexOrNull)
+}
+```
+
+```text
+Lyon
+null
+2
+null
+```
+
+`secondOrNull()` 用标准库的 `getOrNull()` 表达边界行为，避免重复索引检查。
+`lastIndexOrNull` 每次访问都从列表当前状态计算，没有额外存储。
+如果列表之后发生变化，下一次读取会反映新状态。
+
+接收者写成 `List<*>`，因为该属性只关心大小，不需要知道元素类型。
+函数则需要 `T`，这样返回值仍保留具体元素类型。
+让类型参数只覆盖真正依赖它的操作，可以减少无意义的泛型复杂度。
+
+### 在可空接收者内部处理 `null`
+
+可空接收者允许调用方不写安全调用，把缺失值策略集中在扩展内部。
+下面的 `displayNameOr()` 同时处理对象缺失和姓名为空白两种情况。
+
+```kotlin
+data class Customer(
+    val givenName: String,
+    val familyName: String,
+)
+
+val Customer.displayName: String
+    get() = "$givenName $familyName".trim()
+
+fun Customer?.displayNameOr(fallback: String): String {
+    val name = this?.displayName
+    return if (name.isNullOrBlank()) fallback else name
+}
+
+fun main() {
+    val customer = Customer("Ada", "Lovelace")
+    val blank = Customer(" ", " ")
+    val missing: Customer? = null
+
+    println(customer.displayNameOr("Guest"))
+    println(blank.displayNameOr("Guest"))
+    println(missing.displayNameOr("Guest"))
+}
+```
+
+```text
+Ada Lovelace
+Guest
+Guest
+```
+
+调用 `missing.displayNameOr("Guest")` 是合法的，因为扩展的接收者类型本来就是
+`Customer?`。进入函数后，`this` 仍然可空；代码使用安全调用取得属性，
+再由 `isNullOrBlank()` 合并缺失和空白情况。
+
+如果写成 `missing?.displayNameOr("Guest")`，安全调用会在接收者为 `null` 时跳过
+整个扩展，表达式结果变成 `null`，而不是 `"Guest"`。
+是否使用 `?.` 是语义选择，不能只凭“可空值都要安全调用”的习惯决定。
+
+### 观察静态分派与成员优先
+
+下面同时展示两个解析规则。
+`Alert` 静态类型的变量能选择 `Alert.kind()`，但传给 `Message` 参数后只会选择
+`Message.kind()`；真实成员 `channel()` 则遮蔽同签名扩展。
+
+```kotlin
+open class Message {
+    fun channel(): String = "member"
+}
+
+class Alert : Message()
+
+fun Message.kind(): String = "message"
+fun Alert.kind(): String = "alert"
+
+// 这个扩展不会胜过 Message 的同签名成员。
+fun Message.channel(): String = "extension"
+
+fun printSummary(message: Message) {
+    println(message.kind())
+    println(message.channel())
+}
+
+fun main() {
+    val alert: Alert = Alert()
+
+    println(alert.kind())
+    printSummary(alert)
+}
+```
+
+```text
+alert
+message
+member
+```
+
+`printSummary()` 收到的对象仍然是 `Alert`，但参数声明类型是 `Message`，
+因此扩展调用输出 `message`。如果 `kind()` 必须根据运行时子类变化，
+它应成为 `Message` 上的 `open` 成员或接口契约。
+
+编译器会警告 `Message.channel()` 被成员遮蔽。
+保留这种永远无法通过普通成员语法调用的扩展只会误导读者；
+应删除它，或改成表达不同操作的明确名称。
+
+## 陷阱
+
+> [!PITFALL]
+> 把扩展当成虚成员，会让基类类型的参数忽略运行时子类对应的扩展。
+> 代码通常能够编译，错误只出现在多态输入的行为上。
+
+**修复方法：** 需要运行时分派时，在基类或接口中声明可重写成员。
+如果扩展只做静态类型适配，就让名称和参数类型明确表达这一限制，
+并分别测试具体类型变量与基类类型变量。
+
+> [!PITFALL]
+> 给现有类型声明与成员同签名的扩展，并不能覆盖或替换成员。
+> 依赖的新版本后来增加同签名成员时，重新编译还可能悄悄改变调用目标。
+
+**修复方法：** 避免复用通用成员名，特别是 `get()`、`size()`、`parse()` 和
+`toString()`。升级依赖时检查新增成员与编译器警告，并为关键扩展保留行为测试。
+
+> [!PITFALL]
+> 在宽泛包中公开大量通用扩展，会污染自动补全，并可能与其他库的导入形成歧义。
+> 调用语法看不出声明来自哪个包，代码审查也容易误认成真实成员。
+
+**修复方法：** 使用最窄合理可见性，把领域扩展放在拥有该领域规则的包中。
+冲突时使用显式导入或导入别名，不要靠星号导入和偶然的作用域顺序维持解析。
+
+> [!PITFALL]
+> 扩展属性不能保存每个接收者的新状态。
+> 用全局可变映射模拟后备字段，会带来对象保留、并发竞争和不明确的清理时机。
+
+**修复方法：** 让扩展属性只计算接收者已有状态。
+真正的新状态属于原类型、包装类型或显式状态存储；若必须外置，
+要公开键策略、线程模型和生命周期，而不是藏在属性访问器中。
+
+> [!PITFALL]
+> 对可空接收者扩展使用 `?.`，会在 `null` 时跳过函数体。
+> 这可能绕过扩展本来负责的回退、日志标签或规范化策略。
+
+**修复方法：** 先看扩展的接收者类型。
+若声明已经接受 `Type?` 并定义了 `null` 语义，通常直接调用；
+若声明只接受 `Type`，才用安全调用、Elvis 运算符或显式分支处理缺失值。
+
+> [!PITFALL]
+> 扩展能使用接收者的公开方法，却不能访问其私有或受保护状态。
+> 生成代码常会假设“成员调用语法”等于“成员权限”，结果在编译时失败。
+
+**修复方法：** 不要通过提高可见性来迁就扩展。
+行为若依赖私有不变量，就把它放回类型内部；调用方专属的组合逻辑则只使用稳定的公开 API。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常为一个基类和多个子类分别生成同名扩展，然后把它们当作多态方法。
+测试若只用具体类型变量会全部通过，一旦值进入基类参数或集合，静态解析就选择基类扩展。
+另一种常见错误是生成与现有成员或标准库扩展同名的声明，实际调用目标与注释不一致。
+
+生成的扩展属性还常携带隐藏成本或隐藏状态。
+模型会在 getter 中解析 JSON、访问磁盘或维护全局缓存，也会给 `Type?` 扩展的调用点
+机械地加上 `?.`，从而跳过函数内部的回退逻辑。这些问题大多不会表现为语法错误。
+
+**让 AI 检查**
+
+- 列出每个扩展调用的接收者声明类型、可见候选和最终选择，并标出成员优先的调用。
+- 对所有可空接收者调用分别推演接收者为 `null` 时，直接调用与 `?.` 调用的结果。
+- 搜索扩展属性中的 I/O、分配、全局可变状态和可能抛出的操作，再建议函数或显式存储边界。
+
+**审查清单**
+
+- 用具体类型、基类类型和接口类型分别调用同名扩展，确认静态解析符合契约。
+- 检查扩展名称、导入和依赖新增成员，确保没有遮蔽、歧义或重新编译后的行为漂移。
+- 对 `null`、空集合与边界输入运行示例，并确认扩展没有假装拥有接收者的私有权限或新状态。
+
+**提示词词汇**
+
+使用准确术语：`extension function`（扩展函数）、`extension property`（扩展属性）、
+`extension receiver`（扩展接收者）、`declared receiver type`（接收者声明类型）、
+`static dispatch`（静态分派）、`member precedence`（成员优先）、
+`nullable receiver`（可空接收者）和 `dispatch receiver`（分派接收者）。
+要求 AI 输出“接收者类型与候选表”，比笼统地要求“检查这个扩展”更容易暴露解析错误。
+
+<Depth level="deep">
+
+## 成员扩展中的两个接收者
+
+类内部声明的扩展同时处在两个对象上下文中。
+扩展声明左侧类型的实例是扩展接收者，包含该声明的类实例是分派接收者。
+前者提供被扩展对象，后者提供这组扩展所属的策略或环境。
+
+两个接收者出现同名成员时，扩展接收者的成员优先。
+若要明确访问分派接收者，可以使用限定的 `this`，例如 `this@Formatter`。
+这种代码的隐式上下文较多，只有当扩展确实属于该宿主对象的策略时才值得使用。
+
+成员扩展可以随分派接收者的虚成员机制被覆盖，
+但扩展接收者仍按静态类型选择。也就是说，宿主策略可以动态变化，
+被扩展对象的运行时子类型却不会自动改变扩展重载。
+
+这一区别在生成访问器、序列化策略和 DSL 宿主中容易混淆。
+审查时应分别写出两个接收者的类型，不要只问“`this` 是什么”。
+如果所有权读起来仍不清楚，普通函数加显式参数往往更容易维护。
+
+## 静态解析也是演进契约
+
+公共扩展的兼容性不只取决于它自己的签名。
+接收者类型的成员集合、调用方导入和其他库提供的同名扩展都参与源码解析。
+一次看似无关的依赖升级，可能让旧调用产生歧义或在重新编译后转向新成员。
+
+成员优先保护了类作者对自身 API 的控制权，却不能保证调用方行为永远不变。
+库作者应避免为宽泛类型发布语义模糊的名称，尤其是 `Any`、`String` 和
+`List<T>`。项目内部扩展则应靠包边界和可见性表达所属领域。
+
+导入别名只改变当前文件使用的名称，不会复制函数或改变其接收者规则。
+它适合明确区分两个合法实现，例如不同协议的编码函数。
+若两个实现代表互斥的领域语义，更好的长期边界通常是包装类型或显式服务。
+
+测试解析风险时，不要只执行扩展函数体的单元测试。
+保留通过真实导入和真实静态类型编译的调用点测试，并在依赖升级后重新编译。
+这能捕获函数体完全没变、但候选集合已经变化的错误。
+
+## JVM 表示不等于语言语义
+
+在 Kotlin/JVM 上，顶层扩展函数通常降低为文件外观类中的静态方法，
+扩展接收者作为一个参数传入。类中声明的成员扩展则还需要宿主实例，
+因此不能简单概括为“所有扩展都会变成静态方法”。
+
+文件名、`@file:JvmName`、可见性和签名会影响 Java 侧看到的调用形式。
+从 Java 调用顶层扩展时通常使用生成的文件类方法，而不是
+`receiver.extension()` 语法。跨语言 API 应验证实际生成的 JVM 签名。
+
+这些是 JVM 后端的表示细节，不是 Kotlin 源码选择扩展的理由。
+Kotlin/JS、Kotlin/Native 和其他目标可以采用不同表示，
+但成员优先和按声明接收者类型解析等语言规则仍应从 Kotlin 语义理解。
+
+因此，解释扩展时先讨论作用域与重载解析，再在互操作或调试需要时查看字节码。
+把“像带第一个参数的函数”当作心智模型很有帮助，
+把它当作所有平台与所有声明位置的固定 ABI 则会得出错误结论。
+
+</Depth>
+
+<Checkpoint id="kotlin/extensions" />
+
+## 延伸阅读
+
+- [Kotlin 官方文档：扩展](https://kotlinlang.org/docs/extensions.html)
+- [Kotlin 官方编码约定：函数与扩展](https://kotlinlang.org/docs/coding-conventions.html)
+- [Kotlin 官方文档：包与导入](https://kotlinlang.org/docs/packages.html#imports)
+- [Kotlin 语言规范：重载解析](https://kotlinlang.org/spec/overload-resolution.html)

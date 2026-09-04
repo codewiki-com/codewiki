@@ -1,0 +1,437 @@
+---
+title: 结构体
+description: Go 结构体把相关字段组成值；理解零值、复制、可比较性、嵌入和标签，才能避开能编译却共享了错误状态的代码。
+track: go
+section: basics
+difficulty: beginner
+tags: [structs, composite-literals, embedding, struct-tags]
+prerequisites: [go/fundamentals]
+related: [go/methods, go/interfaces, go/json, go/reflect]
+terms: [zero-value, shallow-copy, struct-tag, field-promotion, method-set]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/structs
+sources:
+  - { title: 'The Go Programming Language Specification - Struct types', url: 'https://go.dev/ref/spec#Struct_types' }
+  - { title: 'The Go Programming Language Specification - Composite literals', url: 'https://go.dev/ref/spec#Composite_literals' }
+  - { title: 'The Go Programming Language Specification - Comparison operators', url: 'https://go.dev/ref/spec#Comparison_operators' }
+  - { title: 'The Go Programming Language Specification - Method sets', url: 'https://go.dev/ref/spec#Method_sets' }
+  - { title: 'Go reflect package - StructTag', url: 'https://pkg.go.dev/reflect#StructTag' }
+  - { title: 'Go sync package - Mutex', url: 'https://pkg.go.dev/sync#Mutex' }
+origin: old/src/content/docs/go/structs.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    结构体（struct）是一种由固定字段组成的值类型。每个字段都有名称和类型，一个结构体值会同时保存所有字段的值。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    复制结构体会复制每个字段，但切片、map 和指针字段复制后仍可能引用同一份数据；值接收器也会操作接收者的副本。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    优先使用带字段名的字面量，明确哪些字段允许共享，并让需要修改状态的方法使用指针接收器。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+结构体是一种复合值类型，用一组固定字段描述一个概念。字段可以具有不同类型，例如订单可以同时包含字符串编号、整数数量和布尔付款状态。声明 `type Order struct { ... }` 会创建一个具名类型；`struct { ... }` 则直接写出未命名结构体类型。
+
+结构体解决的是「这些值应该作为一个整体出现」的问题。函数可以接收或返回一个 `Order`，map 可以保存 `Order`，方法也可以绑定到具名类型。字段集合由类型决定，因此拼错字段名或赋入错误类型会在编译期被拒绝。
+
+Go 的结构体不是类。它没有构造函数、继承层级或隐藏在声明中的运行时分派；方法在具名类型之外单独声明，接口实现也由方法集决定。嵌入可以提升字段和方法，但不会建立父类与子类关系。
+
+字段标识符以 Unicode 大写字母开头时是导出的，其他包可以选择它；小写开头的字段只在声明它的包内可见。这个边界也影响反射和编码：例如 `encoding/json` 默认只处理导出字段，标签不能把未导出字段变成可编码字段。
+
+领域值、配置、消息载荷和测试用例表中都会遇到结构体。字段集合经常变化或需要方法时，具名结构体最合适；只在一个很小范围内使用的结果或表驱动测试行，可以使用匿名结构体。只有一项数据时，额外包一层结构体通常没有帮助。
+
+本主题讲结构体声明、字面量、字段选择、复制、比较、嵌入和标签。方法的完整规则、接口设计、JSON 边界和反射 API 分别由相关主题展开。
+
+## 工作原理
+
+### 字段与零值
+
+结构体声明列出有序字段，每个字段都有名称和类型。相邻字段类型相同时可以合写，例如 `X, Y int`。字段顺序会参与类型标识，也会决定不带字段名的字面量如何对应值，因此它不是随意的排版选择。
+
+声明变量但不提供初始化值时，它会得到该类型的<Term id="zero-value">零值（zero value）</Term>。结构体的零值由所有字段各自的零值组成：数字是 `0`，布尔值是 `false`，字符串是 `""`，而指针、切片和 map 等字段是 `nil`。结构体零值本身始终是有效值，但其中的 nil map 仍然不能直接写入。
+
+零值是否立即可用是 API 设计问题。`sync.Mutex` 的零值已经是未锁定的互斥锁，`bytes.Buffer` 的零值也可以使用；需要非空地址或已分配 map 的类型则通常需要初始化函数。不要仅凭「这是结构体」判断是否必须调用 `New`。
+
+### 结构体字面量
+
+带字段名的复合字面量写成 `Order{ID: "A-104", Quantity: 2}`。字段顺序无关紧要，未列出的字段取零值。新增字段后，现有带字段名的字面量仍能编译，并会清楚展示调用方真正设置了什么。
+
+不带字段名的字面量按声明顺序提供所有字段，例如 `Point{3, 4}`。它不能省略某个值，也不能混用带名与不带名的元素。字段顺序改变后，两个类型相同的字段可能悄悄交换含义，所以这种写法只适合很小且稳定的局部类型。
+
+在声明结构体的包之外，不带字段名的字面量不能给未导出字段提供值。即使当前版本只有导出字段，库后来增加未导出字段也会破坏这种写法。跨包构造值时应使用带字段名的字面量或包提供的构造函数。
+
+`new(Order)` 返回指向零值 `Order` 的指针。`&Order{}` 也返回指向新零值的指针，并且更容易在需要时加入字段。两种写法都不执行用户定义的构造逻辑，因为 Go 没有这种隐式机制。
+
+### 选择字段与指针
+
+选择表达式 `order.ID` 读取字段；如果变量可赋值，`order.ID = "A-105"` 会更新该字段。接收结构体值的函数会得到整个结构体的副本，给副本字段赋值不会替换调用方的外层值。
+
+对于结构体指针 `pointer`，Go 允许直接写 `pointer.ID`，含义与 `(*pointer).ID` 相同。这项自动解引用只简化选择器，并没有把值参数改成引用参数。函数需要替换或更新调用方的结构体时，仍须接收指针或返回新值。
+
+读取 nil 结构体指针的字段会在运行时 panic。生成代码有时因为选择器语法不含显式 `*`，就误以为这种访问会自动处理 nil。是否允许 nil 接收者必须由方法契约明确决定。
+
+### 复制会逐字段进行
+
+赋值、传参和返回结构体时，Go 会复制结构体值的每个字段。如果字段是整数、布尔值、字符串或不含引用型元素的数组，副本可以独立修改。Go 没有对象引用语义自动替代这次复制。
+
+但字段值本身可能描述或指向其他存储。复制切片只复制其描述信息，复制 map 会保留同一张 map，复制指针仍指向同一目标。外层结构体已经不同，底层数据却仍可共享，这就是<Term id="shallow-copy">浅拷贝（shallow copy）</Term>。
+
+「深拷贝」没有适用于所有结构体的内置定义。你必须根据所有权契约分别复制切片和 map，并决定指针指向的对象是共享、克隆还是重新建立。含有接口字段时，还要检查接口中的动态值是否继续引用可变数据。
+
+某些字段根本不允许在使用后复制。`sync.Mutex` 的文档明确规定，首次使用后不得复制；把它嵌入结构体后再按值传递，或给该类型声明值接收器，都可能复制锁。`go vet` 的 copylocks 检查能发现一部分此类错误。
+
+### 可比较性来自全部字段
+
+如果结构体的所有字段类型都可比较，那么该结构体类型可比较。两个同类型结构体使用 `==` 时，会按源码顺序比较对应的非空白字段；这种结构体也可以作为 map 的键。整数、字符串、布尔值、指针、channel 和字段都可比较的数组属于常见可比较字段。
+
+切片、map 和函数不可比较，因此包含这些字段的结构体不能使用 `==`，也不能作为 map 键。不要把 `reflect.DeepEqual` 当成所有业务相等性的默认答案；nil 与空值、函数、未导出状态以及领域规则都可能需要更明确的比较函数。
+
+接口类型本身可比较，所以含有 `any` 字段的结构体可能通过静态可比较性检查。然而，如果比较时两个接口持有相同的不可比较动态类型，例如 `[]int`，运行时仍会 panic。需要稳定相等性的键类型不应隐藏任意动态值。
+
+### 嵌入与字段提升
+
+嵌入字段只写类型名，不另写字段名，例如在 `Customer` 中写 `Contact`。这个字段仍然有名称：未限定类型名 `Contact` 就是字段名。复合字面量必须用 `Contact: Contact{...}` 初始化它，不能把提升后的 `Email` 直接写成 `Customer` 的字面量字段。
+
+如果 `customer.Contact.Email` 是合法路径，而且更浅层没有同名字段，选择器可以缩写成 `customer.Email`。这种便利叫作<Term id="field-promotion">字段提升（field promotion）</Term>。提升不会把 `Contact` 的字段物理复制到 `Customer`，显式路径一直存在。
+
+同一最浅深度出现多个同名候选时，缩写选择器是歧义的，编译器会拒绝它。给外层类型声明同名字段或方法会遮蔽更深层候选，但嵌入值仍能通过显式路径访问。这些是静态选择规则，不是运行时的虚方法查找。
+
+嵌入类型的方法也可能进入外层类型的<Term id="method-set">方法集（method set）</Term>，让外层值满足某个接口。不过，外层值并不能赋给内层类型变量。把嵌入称为「继承」会掩盖组合关系以及选择器歧义。
+
+### 标签是供其他包解释的字符串
+
+<Term id="struct-tag">结构体标签（struct tag）</Term>是字段声明后面的字符串字面量。语言和编译器不会把 `json:"display_name,omitempty"` 自动解释成验证、数据库或编码规则；读取标签的包定义键名、选项和冲突行为。
+
+`encoding/json` 读取 `json` 键来改名或省略导出字段。`json:"-"` 总是忽略字段，`omitempty` 则按该包定义的空值规则决定是否省略。标签不能导出小写字段，也不会验证字段内容。
+
+反射把标签表示为 `reflect.StructTag`。`Lookup("json")` 可以区分「键不存在」与「键存在但值为空」，而 `Get("json")` 在这两种情况下都可能返回空字符串。需要保留这项差别的工具应使用 `Lookup`。
+
+标签参与未命名结构体的类型标识，因此字段名称和类型相同、标签不同的两个匿名结构体仍是不同类型。修改公开结构体的标签也可能改变序列化契约，即使 Go 调用方仍能编译。
+
+## 示例
+
+下面四个程序依次展示零值与字面量、复制边界、嵌入选择器和 JSON 标签。每个程序都可以单独保存，并用 `go run 文件名` 执行；显示的输出来自本地 Go 工具链。
+
+### 从零值建立订单
+
+`empty` 的每个字段都取零值。`submitted` 只设置编号和数量，`Paid` 同样从 `false` 开始，之后通过可赋值变量的选择器更新。
+
+<Depth level="quick">
+
+```go run title="order.go"
+package main
+
+import "fmt"
+
+type Order struct {
+	ID       string
+	Quantity int
+	Paid     bool
+}
+
+func main() {
+	var empty Order
+	submitted := Order{
+		ID:       "A-104",
+		Quantity: 2,
+	}
+
+	fmt.Printf("empty=%+v\n", empty)
+	fmt.Printf("submitted=%+v\n", submitted)
+
+	submitted.Paid = true
+	fmt.Println("paid:", submitted.Paid)
+}
+```
+
+```text
+empty={ID: Quantity:0 Paid:false}
+submitted={ID:A-104 Quantity:2 Paid:false}
+paid: true
+```
+
+</Depth>
+
+带字段名的字面量表达了调用方的意图，也允许 `Paid` 使用零值。若零值不能表示合法订单，校验应发生在构造函数或接收输入的边界，而不是假设结构体语法会自动执行校验。
+
+### 看清浅拷贝的共享部分
+
+给 `aliasCopy` 赋值会复制 `Team`。名称字段是独立的字符串值，但 `Members` 的两个切片值仍指向同一底层数组；`slices.Clone` 才为元素槽位建立独立存储。
+
+```go run title="copy.go"
+package main
+
+import (
+	"fmt"
+	"slices"
+)
+
+type Team struct {
+	Name    string
+	Members []string
+}
+
+func main() {
+	original := Team{
+		Name:    "Platform",
+		Members: []string{"Chen", "Imani"},
+	}
+
+	aliasCopy := original
+	aliasCopy.Name = "Operations"
+	aliasCopy.Members[0] = "Lin"
+
+	independent := Team{
+		Name:    original.Name,
+		Members: slices.Clone(original.Members),
+	}
+	independent.Members[1] = "Noor"
+
+	fmt.Println("original:", original)
+	fmt.Println("alias copy:", aliasCopy)
+	fmt.Println("independent:", independent)
+}
+```
+
+```text
+original: {Platform [Lin Imani]}
+alias copy: {Operations [Lin Imani]}
+independent: {Platform [Lin Noor]}
+```
+
+这里的切片元素是字符串，所以克隆切片已经足够。如果元素是 `*Member`，两个切片的对应元素仍会指向相同成员；是否继续复制成员对象取决于所有权要求。
+
+### 显式路径仍在嵌入值上
+
+`Contact` 是 `Customer` 的嵌入字段。`Email` 和 `Label` 都可以使用提升后的短选择器，也可以沿着字段名写出完整路径。
+
+```go run title="embedding.go"
+package main
+
+import "fmt"
+
+type Contact struct {
+	Email string
+}
+
+func (contact Contact) Label() string {
+	return "email=" + contact.Email
+}
+
+type Customer struct {
+	Name string
+	Contact
+}
+
+func main() {
+	customer := Customer{
+		Name: "Mina",
+		Contact: Contact{
+			Email: "mina@example.com",
+		},
+	}
+
+	fmt.Println(customer.Email)
+	fmt.Println(customer.Contact.Email)
+	fmt.Println(customer.Label())
+
+	customer.Email = "support@example.com"
+	fmt.Println(customer.Contact.Email)
+}
+```
+
+```text
+mina@example.com
+mina@example.com
+email=mina@example.com
+support@example.com
+```
+
+最后一次赋值修改的仍是 `customer.Contact.Email`。外层结构体没有额外生成一份 `Email`，`customer.Email` 只是合法选择器的缩写。
+
+### 用标签定义 JSON 边界
+
+`encoding/json` 只编码导出字段，并按 `json` 标签解释名称和省略规则。`PasswordHash` 虽然导出，但 `json:"-"` 阻止它进入输出，也阻止输入填充它。
+
+```go run title="json_tags.go"
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Account struct {
+	ID           int      `json:"id"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	PasswordHash string   `json:"-"`
+	Roles        []string `json:"roles,omitempty"`
+}
+
+func main() {
+	account := Account{
+		ID:           7,
+		PasswordHash: "local-hash",
+	}
+
+	data, err := json.Marshal(account)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(data))
+
+	input := []byte(`{"id":9,"display_name":"Mina","password_hash":"ignored","roles":["reader"]}`)
+	var decoded Account
+	if err := json.Unmarshal(input, &decoded); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%+v\n", decoded)
+}
+```
+
+```text
+{"id":7}
+{ID:9 DisplayName:Mina PasswordHash: Roles:[reader]}
+```
+
+标签描述的是 `encoding/json` 的边界，不是通用的保密机制。其他编码器可能读取不同标签；日志若直接格式化结构体，也不会因为 `json:"-"` 自动隐藏字段。
+
+## 陷阱
+
+### 在跨包代码中使用位置字面量
+
+> [!PITFALL]
+> `library.Record{1, "ready"}` 依赖字段的数量、顺序和可见性。库增加字段或调整顺序后，这段代码会编译失败；相同类型的字段换位时，还可能保留编译结果却改变含义。
+
+**修复方法：** 对非局部类型使用带字段名的字面量，并优先调用包提供的构造函数来维护不变量。位置字面量只留给 `image.Point{3, 4}` 这类小型、稳定且约定明确的类型。
+
+### 把结构体赋值当作深拷贝
+
+> [!PITFALL]
+> `snapshot := state` 会复制外层结构体，但切片、map、指针和接口字段中的可变对象仍可能共享。一个副本的修改可能出现在另一个副本中。
+
+**修复方法：** 逐字段写出复制策略，并用变异测试证明独立性：复制后修改嵌套数据，断言来源没有变化。只需要只读共享时，应在 API 契约中明确说明，而不是让调用方从实现猜测。
+
+### 用值接收器修改状态
+
+> [!PITFALL]
+> `func (account Account) Rename(...)` 修改的是接收者副本。方法可以正常返回，调用方的 `account` 却保持不变；如果结构体含锁，这个接收器还会复制锁。
+
+**修复方法：** 需要修改接收者、保持身份或避免复制不可复制字段时使用指针接收器。对含 `sync.Mutex` 的类型运行 `go vet ./...`，并避免在首次使用后按值传递、返回或存储该值。
+
+### 把提升当作继承
+
+> [!PITFALL]
+> 嵌入 `Contact` 不会让 `Customer` 成为 `Contact`。提升的选择器可能被外层声明遮蔽，也可能因同一深度的多个候选而产生歧义。
+
+**修复方法：** 按组合关系设计 API，并在所有权或歧义重要时使用 `customer.Contact.Email` 这样的显式路径。还要分别验证 `T` 与 `*T` 的方法集是否满足目标接口。
+
+### 假设任意结构体都能比较
+
+> [!PITFALL]
+> 加入一个切片或 map 字段，会让原本可比较的结构体不能再使用 `==` 或作为 map 键。`any` 字段还可能让比较通过编译，却因其中的不可比较动态值在运行时 panic。
+
+**修复方法：** 为业务相等性编写具名比较函数，只比较契约需要的字段。需要 map 键时，设计由字符串、数字、布尔值、指针或其他稳定可比较字段组成的专用键类型。
+
+### 相信标签会执行校验或脱敏
+
+> [!PITFALL]
+> 标签本身没有行为。`validate:"required"` 只有在相应库读取并执行它时才有效，`json:"-"` 也只约束遵循该键的编码器。
+
+**修复方法：** 在边界调用实际的验证或编码 API，并测试生成的字节、日志和错误路径。秘密字段通常应与响应 DTO 分离，不能只靠一个标签承担所有泄漏防护。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常生成能编译的值接收器 mutator，方法内字段发生变化，返回后却全部丢失。它也会用 `copy := original` 声称建立快照，却让切片、map 或指针字段继续共享；或者给含 `sync.Mutex` 的类型生成值接收器和按值返回的复制函数。处理嵌入与 JSON 时，模型还会猜测字段一定被扁平化，忽略同深度名称冲突可能让字段不报错地消失。
+
+**让 AI 检查**
+
+- 为每次结构体赋值、传参和返回列出逐字段复制结果，标明仍共享的切片底层数组、map、指针目标和接口动态值。
+- 计算 `T` 与 `*T` 的方法集，找出所有试图修改状态的值接收器，以及含锁类型在首次使用后的复制路径。
+- 按实际编码包解析每个标签，并给出零值、敏感字段、嵌入字段冲突和未知输入字段的测试结果。
+
+**审查清单**
+
+- 用带字段名的字面量构造外部类型，并确认省略字段的零值符合不变量。
+- 复制后修改每个引用型字段，验证来源与副本的共享关系符合契约。
+- 运行 `go vet ./...`、相关单元测试和序列化边界测试，不能只接受「代码能编译」。
+
+**提示词词汇**
+
+使用准确术语：`struct type`（结构体类型）、`composite literal`（复合字面量）、`zero value`（零值）、`shallow copy`（浅拷贝）、`embedded field`（嵌入字段）、`promoted field`（提升字段）、`method set`（方法集）、`pointer receiver`（指针接收器）、`struct tag`（结构体标签）、`comparable type`（可比较类型）。要求 AI 给出字段所有权表和 `T`/`*T` 方法集；「检查这个结构体」无法暴露复制与提升边界。
+
+<Depth level="deep">
+
+## 类型标识、提升与方法集
+
+### 具名类型与未命名类型
+
+两个分别声明的具名类型始终不同，即使它们的底层结构体具有完全相同的字段。`type Billing struct { ID int }` 与 `type Shipping struct { ID int }` 不能直接相互赋值。底层结构相同且满足转换规则时可以显式转换，但转换不会执行校验或构造逻辑。
+
+未命名结构体是否相同由结构决定：字段顺序、名称、类型、标签以及是否嵌入都必须对应。来自不同包的未导出字段名总被视为不同。这个规则使小型匿名结构体能在精确匹配时赋值，也让看似无关的标签成为类型的一部分。
+
+类型别名不会创建新类型。`type PublicOrder = internalOrder` 只是给同一类型增加另一个名称，而 `type PublicOrder internalOrder` 会声明新的具名类型。生成迁移代码时，要先确认需求是换名字、建立新类型边界，还是显式转换已有值。
+
+结构体转换只复制相应字段值，不会根据标签重命名、递归映射或调用构造函数。把存储模型转换成 API 模型时，字段语义往往并不完全相同；显式映射通常比依赖底层结构一致更能承受演进。
+
+### 最浅且唯一的选择器胜出
+
+提升选择器按嵌入深度搜索。某个名称在最浅深度只有一个候选时可以使用；同一最浅深度有多个候选时，选择器不合法。更深的候选不会打破平局，也不会让编译器任意选择一个。
+
+外层声明可以遮蔽提升字段，而不会删除嵌入值中的原字段。重构加入同名字段后，已有的短选择器可能改变目标，所以公开类型不应把大量嵌入层次当作命名空间技巧。显式路径更长，却能把边界写进源码。
+
+提升字段不能作为外层结构体复合字面量的字段名。即使 `customer.Email` 是合法选择器，`Customer{Email: "a@example.com"}` 仍然不合法；必须写 `Customer{Contact: Contact{Email: "a@example.com"}}`。字面量构造的是实际字段布局，不是选择器视图。
+
+嵌入指针会把 nil 状态带入选择路径。外层零值包含 nil 的 `*Contact` 时，选择 `customer.Email` 仍需要解引用该指针并可能 panic。希望外层零值可用时，嵌入值类型通常更容易维护，但最终选择取决于共享和方法集需求。
+
+### 方法集决定接口实现
+
+具名类型 `T` 的方法集包含接收者为 `T` 的方法；`*T` 的方法集包含接收者为 `T` 或 `*T` 的方法。对于可寻址的变量，编译器可以把 `value.PointerMethod()` 改写为 `(&value).PointerMethod()`，但这项调用便利不会把指针接收器加入 `T` 的方法集。
+
+接口赋值按方法集检查，因此一个可寻址值能调用指针方法，并不表示该值能赋给要求该方法的接口。生成代码常在直接调用处通过编译，直到把值放入接口、map 元素或临时表达式时才暴露差异。
+
+嵌入 `T` 时，`S` 和 `*S` 都会提升接收者为 `T` 的方法，而只有 `*S` 会再包含接收者为 `*T` 的提升方法。嵌入 `*T` 时，`S` 和 `*S` 的方法集都会包含接收者为 `T` 或 `*T` 的提升方法。这些规则会直接决定外层类型是否实现接口。
+
+接收者选择还表达所有权。小型不可变值适合值接收器；修改状态、含锁、需要稳定身份或不应复制的类型适合指针接收器。同一类型混用两种接收者前，应检查方法集与接口行为，而不是只追求表面一致。
+
+### 标签与反射边界
+
+标签的约定格式是一串可由空格分隔的 `key:"value"` 对。`reflect.StructTag.Get` 和 `Lookup` 只解析符合约定的片段；某个包是否拒绝 malformed 标签、忽略它还是回退到默认行为，由该包决定。`go vet` 可以检查常见标签格式错误，但不能证明第三方键的业务含义正确。
+
+序列化字段选择与 Go 选择器规则有关，却不一定完全相同。`encoding/json` 对同一最浅层的多个候选还会应用标签优先规则；仍有多个候选时，它会全部忽略且不返回冲突错误。修改嵌入或标签后，应测试实际 JSON 字节，而不是仅检查选择器能否编译。
+
+结构体标签通常是公开协议的一部分。把 `json:"display_name"` 改成 `json:"name"` 不改变 Go 字段类型，却会改变客户端看到的键。模式生成器、数据库映射和验证器也有各自契约，不能从一个标签键推断另一个工具的行为。
+
+反射工具应先决定是否处理未导出字段、嵌入路径、重复键和空标签。读取到字符串只是开始；真正困难的是把冲突、可见性和错误处理写成稳定规则。若需求只针对一个已知结构体，普通字段访问往往比通用反射映射更清楚。
+
+### 比较与复制的边界
+
+结构体比较基于字段值，不依赖填充字节或内存的原始字节表示。使用 `unsafe` 或把整个结构体转成字节再比较，会引入布局、填充和指针表示假设，也无法表达多数领域相等性。
+
+把可比较结构体作为 map 键会复制键值。之后修改原变量不会修改已经插入的键；查询必须构造相等的新值。若字段含指针，比较的是指针值而不是目标内容，因此两个内容相同但地址不同的对象会形成不同键。
+
+复制结构体时，数组字段会按值复制其全部元素，但数组元素仍可能是指针或其他共享描述值。所谓「结构体是值类型」只说明外层传递规则，不能证明整张对象图独立。审查时应沿字段类型递归到所有权边界，而不是停在 `struct` 关键字。
+
+含锁结构体还需要生命周期约束。构造阶段复制尚未使用的零值锁与首次使用后复制锁不是一回事，但依赖这种时间差的 API 很难维护。通常应让拥有同步原语的对象通过指针使用，并提供只含数据、不含锁的快照类型。
+
+</Depth>
+
+<Checkpoint id="go/structs" />
+
+## 延伸阅读
+
+- [Go 语言规范：结构体类型](https://go.dev/ref/spec#Struct_types)
+- [Go 语言规范：复合字面量](https://go.dev/ref/spec#Composite_literals)
+- [Go 语言规范：比较运算符](https://go.dev/ref/spec#Comparison_operators)
+- [Go 语言规范：方法集](https://go.dev/ref/spec#Method_sets)
+- [Go `reflect.StructTag` 文档](https://pkg.go.dev/reflect#StructTag)
+- [Go `sync.Mutex` 文档](https://pkg.go.dev/sync#Mutex)
