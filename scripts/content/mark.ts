@@ -13,7 +13,7 @@
  * - `ok` records `step` as completed and clears the last error.
  * - `fail` counts an attempt and records the reason; the recorded step stays put.
  */
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoPath } from './lib/paths';
@@ -41,18 +41,27 @@ const MAX_ERROR_LENGTH = 300;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The file inside the lock directory naming the process that holds it. */
+const OWNER_FILE = 'owner';
+
 /**
  * Run `fn` with the journal locked.
  *
  * `mkdir` is the portable atomic test-and-set: it succeeds for exactly one process and
  * fails for the rest, on every filesystem the pipeline runs on.
+ *
+ * The holder writes its pid into the lock and, on release, removes the lock only while
+ * that pid is still the one recorded. Without the check a process whose lock was taken
+ * over as stale would delete its successor's lock on the way out and let two writers into
+ * the journal at once.
  */
 export async function withLock<T>(lockDir: string, fn: () => Promise<T>): Promise<T> {
+  const owner = String(process.pid);
+  const ownerFile = path.join(lockDir, OWNER_FILE);
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     try {
       await mkdir(lockDir, { recursive: false });
-      break;
     } catch {
       const age = await lockAge(lockDir);
       if (age !== null && age > LOCK_STALE_MS) {
@@ -61,12 +70,32 @@ export async function withLock<T>(lockDir: string, fn: () => Promise<T>): Promis
       }
       if (Date.now() > deadline) throw new Error(`journal lock held too long: ${lockDir}`);
       await sleep(LOCK_POLL_MS);
+      continue;
     }
+    try {
+      await writeFile(ownerFile, `${owner}\n`, 'utf8');
+    } catch (error) {
+      // An unclaimable lock would block every other writer until it goes stale.
+      await rm(lockDir, { recursive: true, force: true });
+      throw error;
+    }
+    break;
   }
   try {
     return await fn();
   } finally {
-    await rm(lockDir, { recursive: true, force: true });
+    if (await ownsLock(ownerFile, owner)) {
+      await rm(lockDir, { recursive: true, force: true });
+    }
+  }
+}
+
+/** Whether the lock is still held by `owner`; an unreadable owner file counts as lost. */
+async function ownsLock(ownerFile: string, owner: string): Promise<boolean> {
+  try {
+    return (await readFile(ownerFile, 'utf8')).trim() === owner;
+  } catch {
+    return false;
   }
 }
 

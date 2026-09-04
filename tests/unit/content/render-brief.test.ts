@@ -5,14 +5,28 @@ import { describe, expect, it } from 'vitest';
 import { briefVarsFor, renderBrief } from '../../../scripts/content/render-brief';
 
 /** A staged pair plus its lint report, in a throwaway directory. */
-async function fixture(options: { section?: string; canonicalHint?: 'en' | 'zh' } = {}) {
+async function fixture(
+  options: {
+    section?: string;
+    enSection?: string;
+    zhSection?: string;
+    canonicalHint?: 'en' | 'zh';
+  } = {},
+) {
   const root = await mkdtemp(path.join(tmpdir(), 'render-brief-'));
   const staging = path.join(root, 'staging');
   await mkdir(path.join(staging, 'python'), { recursive: true });
-  const frontmatter = (title: string) =>
-    `---\ntitle: ${title}\ntrack: python\nsection: ${options.section ?? 'functions-deeper'}\n---\n\nbody\n`;
-  await writeFile(path.join(staging, 'python/closures.en.md'), frontmatter('Closures'));
-  await writeFile(path.join(staging, 'python/closures.zh.md'), frontmatter('闭包'));
+  const fallback = options.section ?? 'functions-deeper';
+  const frontmatter = (title: string, section: string) =>
+    `---\ntitle: ${title}\ntrack: python\nsection: ${section}\n---\n\nbody\n`;
+  await writeFile(
+    path.join(staging, 'python/closures.en.md'),
+    frontmatter('Closures', options.enSection ?? fallback),
+  );
+  await writeFile(
+    path.join(staging, 'python/closures.zh.md'),
+    frontmatter('闭包', options.zhSection ?? fallback),
+  );
   const report = path.join(root, 'python__closures.json');
   await writeFile(
     report,
@@ -105,6 +119,12 @@ describe('briefVarsFor', () => {
     await expect(briefVarsFor('python/closures', { lintReportPath: report, root: staging })).rejects.toThrow(
       /section/,
     );
+  });
+
+  it('falls through to zh when the en frontmatter has no section', async () => {
+    const { staging, report } = await fixture({ enSection: '', zhSection: 'functions-deeper' });
+    const vars = await briefVarsFor('python/closures', { lintReportPath: report, root: staging });
+    expect(vars.SECTION).toBe('functions-deeper');
   });
 
   it('renders the real polish brief with no placeholder left', async () => {

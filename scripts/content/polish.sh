@@ -14,7 +14,15 @@
 #   pnpm content:polish [--tier 1|2|3] [--n 4] [--only {track}/{slug} ...]
 #                       [--max 20] [--dry-run] [--no-links]
 #
-# Environment: CODEX_BIN, CODEX_MODEL, CODEX_TIMEOUT (seconds), COMMIT_EVERY.
+# Environment: CODEX_BIN, CODEX_MODEL, CODEX_TIMEOUT (seconds), COMMIT_EVERY,
+# MARK_RETRY_SLEEP (seconds), KILL_GRACE (seconds).
+
+# The job pool uses `wait -n`, which arrived in bash 4.3; macOS still ships 3.2 as
+# /bin/bash, where this script would fail deep into a run instead of at the door.
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3))); then
+  echo "polish.sh needs bash 4.3 or newer (this is ${BASH_VERSION:-unknown})" >&2
+  exit 1
+fi
 
 set -euo pipefail
 
@@ -38,6 +46,9 @@ CODEX_MODEL="${CODEX_MODEL:-gpt-5.6-sol}"
 CODEX_TIMEOUT="${CODEX_TIMEOUT:-3600}"
 # Commit this many finished topics at a time, so a long run leaves reviewable history.
 COMMIT_EVERY="${COMMIT_EVERY:-10}"
+# Pause between journal write attempts, and the grace a killed Codex session gets.
+MARK_RETRY_SLEEP="${MARK_RETRY_SLEEP:-2}"
+KILL_GRACE="${KILL_GRACE:-10}"
 
 POLISH_ROOT='reports/polish'
 LINT_ROOT='reports/lint'
@@ -123,10 +134,23 @@ log() {
 }
 
 # Every journal write goes through mark.ts, which locks and rewrites the JSON.
+#
+# A dropped write is not cosmetic: a topic committed but never recorded is polished again
+# on the next run, an hour of Codex for nothing, and a dropped failure loses an attempt
+# count and weakens the thrice-failed cutoff. So the call is retried, and a write that
+# still does not land fails the caller, which then leaves the topic out of the batch.
 mark() {
-  if ! pnpm exec tsx scripts/content/mark.ts "$@" >>"$RUN_LOG" 2>&1; then
-    log "warn journal write failed: mark $*"
-  fi
+  local attempt
+  for attempt in 1 2 3; do
+    if pnpm exec tsx scripts/content/mark.ts "$@" >>"$RUN_LOG" 2>&1; then
+      return 0
+    fi
+    if ((attempt < 3)); then
+      sleep "$MARK_RETRY_SLEEP"
+    fi
+  done
+  log "error journal write failed after 3 attempts: mark $*"
+  return 1
 }
 
 # The report directory of a topic: `python/closures` -> `python__closures`.
@@ -149,7 +173,7 @@ fi
 selection="$(mktemp)"
 trap 'rm -f "$selection"' EXIT
 if ! pnpm exec tsx scripts/content/next.ts "${next_args[@]}" >"$selection"; then
-  echo "could not select topics; is content/tiers.yaml generated?" >&2
+  echo "could not select topics; see the error above (is content/tiers.yaml generated?)" >&2
   exit 1
 fi
 mapfile -t IDS <"$selection"
@@ -191,7 +215,9 @@ fi
 # Record a failure and close the topic out. Called from the worker only.
 finish_failed() {
   local id="$1" flat="$2" reason="$3"
-  mark fail "$id" polished "$reason"
+  if ! mark fail "$id" polished "$reason"; then
+    log "error $id: the failure could not be recorded in the journal"
+  fi
   rm -f "$INFLIGHT_DIR/$flat"
   log "finish $id failed: $reason"
 }
@@ -204,7 +230,10 @@ run_extract() {
     return 0
   fi
   if pnpm --silent content:extract "$id" >"$dir/extract.log" 2>&1; then
-    mark ok "$id" extracted
+    # Extraction is a bonus step: an unrecorded one costs a re-extraction, nothing more.
+    if ! mark ok "$id" extracted; then
+      log "warn $id: content:extract succeeded but could not be recorded"
+    fi
     return 0
   fi
   # A checkout that has the script entry but not the script says so in these two ways;
@@ -220,7 +249,7 @@ run_extract() {
 # reports every outcome itself and never exits non-zero.
 polish_one() {
   local id="$1"
-  local flat dir lint_report last reason status detail codex_pid
+  local flat dir lint_report last reason status detail codex_pid check_failed
   flat="$(flat_of "$id")"
   dir="$POLISH_ROOT/$flat"
   lint_report="$LINT_ROOT/$flat.json"
@@ -229,7 +258,13 @@ polish_one() {
   mkdir -p "$dir"
   printf '%s\n' "$id" >"$INFLIGHT_DIR/$flat"
   log "start $id"
-  mark start "$id" polished
+  # A topic whose start cannot be recorded is not worth an hour of Codex: the journal
+  # would not know it ran, so the run would repeat it anyway.
+  if ! mark start "$id" polished; then
+    rm -f "$INFLIGHT_DIR/$flat"
+    log "finish $id failed: the journal is unwritable, skipping the topic"
+    return 0
+  fi
 
   # The lint report is an input of the brief, so make sure there is one.
   if [[ ! -f $lint_report ]]; then
@@ -265,23 +300,38 @@ polish_one() {
     reason="codex did not report done (last line: ${last:-empty})"
   fi
 
-  # The gate. It is what decides, whatever Codex said about itself.
+  # The gate has two halves and a topic needs both: Codex must have reported `POLISH DONE`
+  # and `pnpm content:check` must pass. A check that passes on its own proves nothing about
+  # this session — a missing binary (127), a timeout (124) or an OOM kill (137) leaves the
+  # topic exactly as it was, and the already-shipped files may well still pass. The check
+  # runs even after Codex failed, so the recorded reason can say which half went wrong.
   local check_args=("$id")
   if ((NO_LINKS)); then
     check_args+=(--no-links)
   fi
+  check_failed=0
+  detail=''
   if ! pnpm --silent content:check "${check_args[@]}" >"$dir/check.log" 2>&1; then
+    check_failed=1
     detail="$(grep -m 3 '^  ' "$dir/check.log" | tr '\n' ';' || true)"
+  fi
+  if ((check_failed)); then
     finish_failed "$id" "$flat" "${reason:+$reason; }content:check failed: ${detail:-see $dir/check.log}"
     return 0
   fi
   if [[ -n $reason ]]; then
-    log "warn $id: the gate passed although $reason"
+    finish_failed "$id" "$flat" "codex failed: $reason; content:check passed but codex never reported done"
+    return 0
   fi
 
-  # The gate covers alignment too, so a passing check settles both steps.
-  mark ok "$id" polished
-  mark ok "$id" aligned
+  # The gate covers alignment too, so a passing check settles both steps. The topic joins
+  # the batch only once the journal agrees it is done, so a commit can never claim more
+  # than the journal knows.
+  if ! mark ok "$id" polished || ! mark ok "$id" aligned; then
+    rm -f "$INFLIGHT_DIR/$flat"
+    log "finish $id failed: polished, but the journal is unwritable; leaving it uncommitted"
+    return 0
+  fi
   run_extract "$id" "$dir"
   printf '%s\n' "$id" >>"$OK_LIST"
   rm -f "$INFLIGHT_DIR/$flat"
@@ -294,12 +344,31 @@ polish_one() {
 
 committed=0
 
+# The files one finished topic owns, if they are on disk. Nothing else may be staged in
+# its name — see `commit_pending`.
+topic_paths() {
+  local id="$1" track slug lang file
+  track="${id%%/*}"
+  slug="${id#*/}"
+  for lang in en zh; do
+    file="src/content/topics/$track/$slug.$lang.mdx"
+    if [[ -e $file ]]; then
+      printf '%s\n' "$file"
+    fi
+  done
+}
+
 # Commit the topics finished since the last commit, once there are COMMIT_EVERY of them
 # or when the run is over (`commit_pending 1`).
+#
+# Only the batch's own files are staged. A batch commit runs while up to JOBS-1 Codex
+# sessions are still writing under `src/content`, so staging that directory would sweep a
+# half-written topic — and any unrelated edit in the working tree — into a commit that
+# claims to be about the finished ids.
 commit_pending() {
   local force="$1"
   local -a done_ids=() batch=() add=()
-  local pending path
+  local pending path id
   if [[ -f $OK_LIST ]]; then
     mapfile -t done_ids <"$OK_LIST"
   fi
@@ -309,21 +378,32 @@ commit_pending() {
     return 0
   fi
   batch=("${done_ids[@]:committed:pending}")
-  for path in src/content content/glossary-proposals "$STATE_FILE"; do
+  for id in "${batch[@]}"; do
+    while IFS= read -r path; do
+      add+=("$path")
+    done < <(topic_paths "$id")
+  done
+  # The two shared paths the polish pass also writes: proposed glossary terms and the
+  # journal itself, which records exactly the batch being committed.
+  for path in content/glossary-proposals "$STATE_FILE"; do
     if [[ -e $path ]]; then
       add+=("$path")
     fi
   done
   if ((${#add[@]} == 0)); then
+    log "warn no files to stage for ${batch[*]}"
+    committed=${#done_ids[@]}
     return 0
   fi
   if ! git add -- "${add[@]}"; then
     log "warn could not stage ${add[*]}"
     return 0
   fi
-  if git diff --cached --quiet; then
+  # Both the diff and the commit are limited to those same paths, so anything else that
+  # happened to be staged in this working tree stays out of the batch commit.
+  if git diff --cached --quiet -- "${add[@]}"; then
     log "note nothing to commit after ${batch[*]}"
-  elif git commit -q -m "content: polish batch (${batch[*]})"; then
+  elif git commit -q -m "content: polish batch (${batch[*]})" -- "${add[@]}"; then
     log "commit ${batch[*]}"
   else
     log "warn commit failed for ${batch[*]}"
@@ -336,10 +416,50 @@ commit_pending() {
 # Interruption
 # --------------------------------------------------------------------------
 
+# Whether any of the given pids is still around.
+any_alive() {
+  local pid
+  for pid in "$@"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Wait up to `grace` seconds for processes that are not our children to go away, then
+# insist with SIGKILL.
+#
+# `kill -0` is the only handle on a `timeout` session: it lives in its own process group
+# and was started by a worker, so this shell cannot `wait` for it. A negative pid asks
+# about the whole group, which is what the session actually is. Nothing may be committed
+# while one of them can still write, which is what the wait is for.
+await_gone() {
+  local grace="$1"
+  shift
+  local pid
+  while ((grace > 0)) && any_alive "$@"; do
+    sleep 1
+    grace=$((grace - 1))
+  done
+  any_alive "$@" || return 0
+  # Still there after the grace: stop asking.
+  for pid in "$@"; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  grace=5
+  while ((grace > 0)) && any_alive "$@"; do
+    sleep 1
+    grace=$((grace - 1))
+  done
+  return 0
+}
+
 # Ctrl-C during a run leaves topics half-written: record them as failed attempts so the
 # next run treats them as unfinished work rather than as never started.
 on_signal() {
-  local pids file id
+  local pids file id pid
+  local -a workers=() sessions=()
   trap - INT TERM
   log "interrupted, stopping the pool"
   # The workers first, so none of them reaches the gate on a half-written topic, then the
@@ -347,18 +467,40 @@ on_signal() {
   # the worker leaves the session behind, still writing to the repository.
   pids="$(jobs -pr || true)"
   if [[ -n $pids ]]; then
-    # shellcheck disable=SC2086 # a plain word list of pids is what kill wants
-    kill $pids 2>/dev/null || true
+    mapfile -t workers <<<"$pids"
+    kill "${workers[@]}" 2>/dev/null || true
   fi
   for file in "$INFLIGHT_DIR"/*.pid; do
     [[ -e $file ]] || continue
-    kill -TERM "$(cat "$file")" 2>/dev/null || true
+    pid="$(cat "$file")"
+    if [[ -n $pid ]]; then
+      # `timeout` makes itself the leader of a new process group, so the session it
+      # started is only reachable through that group; the bare pid is the fallback for a
+      # `timeout` that could not.
+      if kill -TERM "-$pid" 2>/dev/null; then
+        sessions+=("-$pid")
+      else
+        kill -TERM "$pid" 2>/dev/null || true
+        sessions+=("$pid")
+      fi
+    fi
     rm -f "$file"
   done
+  # Only once everything that was signalled is actually gone may the pending batch be
+  # committed: a session killed mid-write would otherwise have its half-written MDX
+  # committed by the very commit meant to preserve the interrupted run.
+  for pid in "${workers[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  if ((${#sessions[@]} > 0)); then
+    await_gone "$KILL_GRACE" "${sessions[@]}"
+  fi
   for file in "$INFLIGHT_DIR"/*; do
     [[ -e $file && $file != *.pid ]] || continue
     id="$(cat "$file")"
-    mark fail "$id" polished 'interrupted'
+    if ! mark fail "$id" polished 'interrupted'; then
+      log "error $id: the interruption could not be recorded in the journal"
+    fi
     rm -f "$file"
     log "finish $id failed: interrupted"
   done

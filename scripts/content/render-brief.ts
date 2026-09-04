@@ -96,13 +96,16 @@ async function readCanonicalHint(file: string): Promise<Lang> {
 }
 
 /**
- * The section of a staged topic, read from whichever language file is readable.
+ * The section of a staged topic, read from whichever language file carries one.
  *
- * The section places the topic in the track's table of contents and the brief passes it
- * to Codex, so a topic that has none is a defect worth stopping on rather than a brief
- * that tells Codex the section is empty.
+ * `en` is preferred, but a draft pair is often lopsided: one side may have been imported
+ * without a section while the other one is complete, so an empty `section` falls through
+ * to the next language instead of stopping the run. Only a pair that names no section at
+ * all is a defect worth stopping on — the section places the topic in the track's table
+ * of contents, and a brief telling Codex the section is empty is worse than no brief.
  */
 async function readSection(files: Record<Lang, string>, id: string): Promise<string> {
+  const read: string[] = [];
   for (const lang of LANGS) {
     let text: string;
     try {
@@ -110,10 +113,13 @@ async function readSection(files: Record<Lang, string>, id: string): Promise<str
     } catch {
       continue;
     }
+    read.push(displayPath(files[lang]));
     const { data } = parseFrontmatter(text);
     const section = typeof data.section === 'string' ? data.section.trim() : '';
     if (section) return section;
-    throw new Error(`${id}: staged frontmatter has no section (${displayPath(files[lang])})`);
+  }
+  if (read.length > 0) {
+    throw new Error(`${id}: staged frontmatter has no section (${read.join(', ')})`);
   }
   throw new Error(`${id}: no staged files under ${displayPath(path.dirname(files.en))}`);
 }

@@ -12,8 +12,12 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { REPO_ROOT } from './lib/paths';
 import { loadState, nextTopics, STEPS, type Step, type TierLists } from './lib/state';
 import { TIERS_PATH, type TiersFile } from './tiers';
+
+/** Exit code for a run that cannot even decide what to work on. */
+const EXIT_UNUSABLE_INPUT = 2;
 
 interface Args {
   n: number;
@@ -53,14 +57,42 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/** Read the `tiers` block of the generated tier list; a missing file means no workload. */
+/** A path as the repository spells it, so error messages name a file a human can open. */
+function displayPath(file: string): string {
+  const relative = path.relative(REPO_ROOT, file);
+  return relative.startsWith('..') ? file : relative;
+}
+
+/**
+ * Read the `tiers` block of the generated tier list.
+ *
+ * Every failure here is loud on purpose. An unreadable or malformed tier list used to
+ * yield an empty selection, which the runner reports as "nothing to polish" and exits 0 —
+ * a broken pipeline that looks like a finished one.
+ */
 export async function loadTiers(file: string = TIERS_PATH): Promise<TierLists> {
+  let text: string;
   try {
-    const parsed = YAML.parse(await readFile(file, 'utf8')) as TiersFile | null;
-    return (parsed?.tiers ?? {}) as TierLists;
-  } catch {
-    return {};
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    const missing = (cause as NodeJS.ErrnoException).code === 'ENOENT';
+    const what = missing
+      ? `${displayPath(file)} not found; run pnpm content:tiers`
+      : `could not read ${displayPath(file)}: ${(cause as Error).message}`;
+    throw new Error(what, { cause });
   }
+  let parsed: TiersFile | null;
+  try {
+    parsed = YAML.parse(text) as TiersFile | null;
+  } catch (cause) {
+    throw new Error(`${displayPath(file)} is not valid YAML: ${(cause as Error).message}`, {
+      cause,
+    });
+  }
+  if (!parsed?.tiers || typeof parsed.tiers !== 'object') {
+    throw new Error(`${displayPath(file)} has no tiers block; run pnpm content:tiers`);
+  }
+  return parsed.tiers as TierLists;
 }
 
 /** CLI: print the selected ids, one per line. */
@@ -75,5 +107,12 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await main();
+  // Bad arguments and an unusable tier list are the caller's problem, not a crash: print
+  // the one line that says what to fix and leave the stack trace out of the runner's log.
+  try {
+    await main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(EXIT_UNUSABLE_INPUT);
+  }
 }
