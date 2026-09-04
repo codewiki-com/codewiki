@@ -290,6 +290,14 @@ describe('rehypeMermaidDiagrams', () => {
 
     expect(out.match(/<figure class="diagram"/g)).toHaveLength(3);
     expect(out.match(/<svg [^>]*data-diagram=""/g)).toHaveLength(3);
+    const svgTags = out.match(/<svg\b[^>]*>/g) ?? [];
+    expect(svgTags).toHaveLength(3);
+    for (const svg of svgTags) {
+      const viewBox = svg.match(/viewBox="[^"]*\s([\d.]+)\s([\d.]+)"/);
+      expect(viewBox).not.toBeNull();
+      expect(svg).toContain(`width="${viewBox?.[1]}"`);
+      expect(svg).toContain(`height="${viewBox?.[2]}"`);
+    }
     expect(out).toContain('role="img" aria-label="sequenceDiagram"');
     expect(out).toContain('role="img" aria-label="flowchart LR"');
     expect(out).toContain('role="img" aria-label="classDiagram"');

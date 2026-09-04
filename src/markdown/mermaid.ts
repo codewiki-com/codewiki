@@ -36,14 +36,20 @@ function diagramLabel(code: Element): string {
 }
 
 /**
- * Mermaid lays out its viewBox at 14px. This proportional floor lets a wide SVG shrink on a phone
- * until its labels reach 12px, then the figure scrolls instead of making them illegible.
+ * Mermaid lays out its viewBox at 14px. Preserve that intrinsic size instead of letting its emitted
+ * `width="100%"` upscale a narrow diagram. The proportional floor still lets a wide SVG shrink on a
+ * phone until its labels reach 12px, then the figure scrolls instead of making them illegible.
  */
-function setLegibleWidth(svg: Element): void {
+function setIntrinsicSize(svg: Element): void {
   const viewBox = svg.properties.viewBox;
   if (typeof viewBox !== 'string') return;
-  const width = Number(viewBox.trim().split(/\s+/)[2]);
-  if (!Number.isFinite(width) || width <= 0) return;
+  const [, , widthValue, heightValue] = viewBox.trim().split(/\s+/);
+  const width = Number(widthValue);
+  const height = Number(heightValue);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return;
+
+  svg.properties.width = width;
+  svg.properties.height = height;
   const style = typeof svg.properties.style === 'string' ? svg.properties.style.replace(/;?$/, ';') : '';
   svg.properties.style = `${style}--diagram-min-width:${Math.ceil((width * 12) / 14)}px`;
 }
@@ -91,7 +97,7 @@ export function rehypeMermaidDiagrams(this: Processor) {
         parent.properties.className.includes('diagram')
       ) {
         node.properties['data-diagram'] = '';
-        setLegibleWidth(node);
+        setIntrinsicSize(node);
       }
     });
   };

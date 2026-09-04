@@ -113,3 +113,25 @@ stopped afterward.
   route is published.
 - No Lighthouse run was possible because this branch does not contain its planned configuration.
   No other acceptance item is unverified.
+
+## Fix round 1 — shrink-only SVG sizing
+
+- Replaced Mermaid's generated `width="100%"` with explicit numeric `width` and `height`
+  attributes copied from each SVG viewBox. Combined with `max-width: 100%; height: auto`, diagrams
+  now keep their intrinsic size at desktop widths and only scale down when space is constrained.
+- Removed the general 320px SVG minimum that overrode the 131px class-diagram width. The existing
+  viewBox-derived minimum remains, so wide diagrams stop shrinking at the 12px label floor and
+  scroll within their figure.
+- Extended the Markdown unit test to assert that all fixture SVG width and height attributes equal
+  their viewBox dimensions.
+- Rebuilt `/javascript/mermaid-fixture/` from the temporary topic used in the first review and
+  removed that topic again before commit. At a 1440px viewport, browser measurements found the
+  flowchart's `Source fence` label and class diagram's `Topic` label both rendered at 14.00px; the
+  corresponding SVG widths were their intrinsic 516px and 131px. At 390px, the flowchart rendered
+  at its 443px minimum with 12.02px text and horizontal figure overflow, while the 131px class
+  diagram remained at 14px.
+- Captured the same full-page light/dark desktop and mobile screenshots with the requested suffix:
+  `mermaid-light-1440-v2.png`, `mermaid-dark-1440-v2.png`, `mermaid-light-390-v2.png`, and
+  `mermaid-dark-390-v2.png`, under the original `shots-mermaid` scratchpad directory.
+- Final verification: `pnpm lint && pnpm check && pnpm test && pnpm build` passed; the final build
+  produced the original 73 static pages with no temporary fixture route.
