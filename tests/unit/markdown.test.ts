@@ -14,6 +14,7 @@ import { rehypeDepthHeadings } from '@/markdown/rehype-depth-headings';
 import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 import { rehypeSectionActions } from '@/markdown/rehype-section-actions';
 import { parseFenceMeta } from '@/markdown/shiki-meta';
+import { runnableFences } from '@/lib/examples';
 
 describe('parseFenceMeta', () => {
   it('parses run and title', () => {
@@ -24,6 +25,25 @@ describe('parseFenceMeta', () => {
       title: 'a b.py',
       highlight: '2-3',
     });
+  });
+
+  it('parses SQL seed declarations and uses', () => {
+    expect(parseFenceMeta('seed="users"')).toEqual({ run: false, seed: 'users' });
+    expect(parseFenceMeta('run seed="users"')).toEqual({ run: true, seed: 'users' });
+  });
+});
+
+describe('runnableFences', () => {
+  it('carries a same-page SQL seed into its runnable example', () => {
+    const source = readFileSync(new URL('../fixtures/sql-seed.mdx', import.meta.url), 'utf8');
+    expect(runnableFences(source)).toEqual([
+      {
+        lang: 'sql',
+        title: 'list-users.sql',
+        code: 'SELECT * FROM users;',
+        seed: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\nINSERT INTO users (name) VALUES ('Ada'), ('Grace');",
+      },
+    ]);
   });
 });
 
@@ -191,13 +211,13 @@ describe('remarkDepth', () => {
 });
 
 /** Minimal hast fixture: the `<pre>` Shiki hands to `rehype-codebox`, with the meta already applied. */
-function preFixture(properties: Record<string, string>): Element {
+function preFixture(properties: Record<string, string>, source = 'print(1)'): Element {
   return {
     type: 'element',
     tagName: 'pre',
     properties: { className: ['astro-code'], ...properties },
     children: [
-      { type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: 'print(1)' }] },
+      { type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: source }] },
     ],
   };
 }
@@ -258,6 +278,33 @@ describe('rehypeCodebox', () => {
     // Without a title the header falls back to the language's display name.
     expect(title).toEqual({ type: 'text', value: 'JavaScript' });
     expect((head.children[1] as Element).children).toHaveLength(1);
+  });
+
+  it('keeps SQL seed declarations visible and resolves the first one onto a runnable query', () => {
+    const first = 'CREATE TABLE users (name TEXT);';
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users' }, first),
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users' }, 'SELECT broken;'),
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users', 'data-run': 'true' }, 'SELECT * FROM users;'),
+      ],
+    };
+
+    rehypeCodebox()(tree);
+
+    const [declaration, duplicate, query] = tree.children as Element[];
+    expect(declaration.properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+    expect(duplicate.properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+    expect(query.properties).toMatchObject({
+      className: ['codebox'],
+      'data-lang': 'sql',
+      'data-run': 'true',
+      'data-seed': first,
+    });
+    const declarationPre = declaration.children[1] as Element;
+    const declarationCode = declarationPre.children[0] as Element;
+    expect(declarationCode.children[0]).toEqual({ type: 'text', value: first });
   });
 
   it('localizes server-rendered controls before hydration', () => {
@@ -423,7 +470,8 @@ describe('rehypeBlockIds', () => {
       ],
     };
 
-    rehypeBlockIds()(tree);
+    const file = { data: { astro: { frontmatter: {} as Record<string, unknown> } } };
+    rehypeBlockIds()(tree, file as never);
 
     const ids = [tldrParagraph, intro, first, code, callout, list].map((node) => node.properties['data-bi']);
     expect(ids).toEqual([
@@ -436,6 +484,7 @@ describe('rehypeBlockIds', () => {
     ]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(calloutText.properties['data-bi']).toBeUndefined();
+    expect(file.data.astro.frontmatter.biSig).toBe('p,p,h2,p,figure,aside,h3,ul');
   });
 });
 

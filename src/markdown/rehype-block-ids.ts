@@ -9,6 +9,7 @@
  * single block: cloning its child paragraphs separately would split its border and label.
  */
 import type { Root } from 'hast';
+import type { VFile } from 'vfile';
 
 interface AnyNode {
   type: string;
@@ -23,6 +24,7 @@ interface Counter {
   section: string;
   index: number;
   tldr: number;
+  signature: string[];
 }
 
 const BLOCKS = new Set(['p', 'pre', 'ul', 'ol', 'blockquote', 'table']);
@@ -58,12 +60,20 @@ function mark(node: AnyNode, id: string): void {
   node.properties['data-bi'] = id;
 }
 
+/** A structural token deliberately records a heading's level or a block's tag, never its text. */
+function signatureToken(node: AnyNode): string | undefined {
+  if (node.type !== 'element' || !node.tagName) return undefined;
+  if (HEADINGS.has(node.tagName) || isBlock(node)) return node.tagName;
+  return undefined;
+}
+
 /** Marks only the prose inside TL;DR cells, not the component or cell wrappers. */
 function markTldr(node: AnyNode, state: Counter, inCell = false): void {
   const cell = inCell || isTldrCell(node);
   if (cell && node.type === 'element' && node.tagName === 'p') {
     state.tldr += 1;
     mark(node, `tldr:${state.tldr}`);
+    state.signature.push('p');
     return;
   }
   for (const child of node.children ?? []) markTldr(child, state, cell);
@@ -78,6 +88,7 @@ function walk(node: AnyNode, state: Counter): void {
     }
 
     if (child.type === 'element' && child.tagName && HEADINGS.has(child.tagName)) {
+      state.signature.push(signatureToken(child)!);
       const id = child.properties?.id;
       if (typeof id === 'string' && id) {
         state.section = id;
@@ -89,6 +100,7 @@ function walk(node: AnyNode, state: Counter): void {
     if (isBlock(child)) {
       state.index += 1;
       mark(child, `${state.section}:${state.index}`);
+      state.signature.push(signatureToken(child)!);
       continue;
     }
 
@@ -97,7 +109,15 @@ function walk(node: AnyNode, state: Counter): void {
 }
 
 export function rehypeBlockIds() {
-  return (tree: Root): void => {
-    walk(tree as unknown as AnyNode, { section: 'intro', index: 0, tldr: 0 });
+  return (tree: Root, file: VFile = { data: {} } as VFile): void => {
+    const state: Counter = { section: 'intro', index: 0, tldr: 0, signature: [] };
+    walk(tree as unknown as AnyNode, state);
+
+    // Astro exposes this object as `render(entry).remarkPluginFrontmatter`; Topic.astro places the
+    // value on the article wrapper that sits outside the Markdown tree.
+    const data = file.data as { astro?: { frontmatter?: Record<string, unknown> } };
+    data.astro ??= {};
+    data.astro.frontmatter ??= {};
+    data.astro.frontmatter.biSig = state.signature.join(',');
   };
 }

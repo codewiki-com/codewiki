@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
+import { runnableFences } from '@/lib/examples';
 import { encodeState } from '@/lib/lz';
 
 test('loads shared Python state and runs it in the browser', async ({ page }) => {
@@ -12,6 +14,14 @@ test('loads shared Python state and runs it in the browser', async ({ page }) =>
   await expect(page.locator('.playground-terminal')).toContainText('exit 0');
 });
 
+test('shows a localized notice for rejected shared state', async ({ page }) => {
+  await page.goto('/playground/?code=%25%25%25');
+  await expect(page.getByRole('alert')).toHaveText('This shared link is too large or invalid.');
+
+  await page.goto('/zh/playground/?code=%25%25%25');
+  await expect(page.getByRole('alert')).toHaveText('分享链接过大或无效。');
+});
+
 test('runs SQL and formats the result as a table', async ({ page }) => {
   await page.goto('/playground/');
   await page.getByRole('tab', { name: 'sql' }).click();
@@ -19,6 +29,21 @@ test('runs SQL and formats the result as a table', async ({ page }) => {
 
   await expect(page.locator('.playground-terminal')).toContainText('x');
   await expect(page.locator('.playground-terminal')).toContainText('1');
+});
+
+test('runs a seeded SQL fixture before its visible query', async ({ page }) => {
+  const source = readFileSync(new URL('../fixtures/sql-seed.mdx', import.meta.url), 'utf8');
+  const example = runnableFences(source)[0];
+  expect(example).toBeDefined();
+  const state = encodeURIComponent(
+    encodeState({ lang: 'sql', code: example!.code, ...(example!.seed ? { seed: example!.seed } : {}) }),
+  );
+
+  await page.goto(`/playground/?code=${state}`);
+  await page.getByRole('button', { name: 'Run' }).click();
+
+  await expect(page.locator('.playground-terminal')).toContainText('Ada');
+  await expect(page.locator('.playground-terminal')).toContainText('Grace');
 });
 
 test('renders HTML in a sandboxed srcdoc iframe', async ({ page }) => {

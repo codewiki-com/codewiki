@@ -129,6 +129,8 @@ function attachNudgeCode(children: AnyNode[], index: number): void {
     if (!isRunnableCodebox(candidate)) continue;
     const code = candidate.children?.find((child) => child.tagName === 'pre');
     setMdxAttribute(nudge, 'data-code', code ? nodeText(code) : '');
+    const lang = candidate.properties?.['data-lang'];
+    setMdxAttribute(nudge, 'data-lang', typeof lang === 'string' ? lang : '');
     return;
   }
 }

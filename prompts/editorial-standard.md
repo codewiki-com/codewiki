@@ -52,6 +52,8 @@ Place `<TryToBreak items={[...]} />` after the main runnable example and its out
 - Idiomatic for the verified version (f-strings, `match`, `TaskGroup`, `const`/`let`, `async/await`, generics with `type` parameters, etc.).
 - Fence meta: ` ```python run title="make_counter.py" `. Optional `highlight="3-4"`. Output blocks use ` ```text `.
 
+For reusable SQL fixtures, a visible ` ```sql seed="name" ` fence without `run` declares the setup SQL, and a ` ```sql run seed="name" ` fence runs that setup before its query. Seed names are page-local; the first declaration wins, and the declaration remains a normal code block so readers can inspect the schema and rows.
+
 ## 7. Bilingual rule
 
 - One topic is one text in two languages. The zh file mirrors the en file heading for heading, paragraph for paragraph, code block for code block (code identical, comments translated). Lists keep the same number of items.

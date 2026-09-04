@@ -717,4 +717,5 @@ export default {
   'playground.runtimeIframe': 'sandboxed iframe',
   'playground.ranIn': 'ran in {ms} ms',
   'playground.editorFailed': 'The enhanced editor could not load. You can keep editing here.',
+  'playground.stateRejected': 'This shared link is too large or invalid.',
 } as const;

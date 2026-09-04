@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
-import LZString from 'lz-string';
 import { unified } from 'unified';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
@@ -280,7 +279,7 @@ test('a code block opens its three focused Ask-AI presets', async ({ page }) => 
   expect(decodeURIComponent(portHref ?? '')).toContain('def make_counter():');
 });
 
-test('a pitfall asks for reader code and a nudge opens the challenged example', async ({ page }) => {
+test('a pitfall asks for reader code and a nudge offers two challenges', async ({ page }) => {
   await openTopic(page);
   await expect(page.locator('[data-ask-ai]')).toHaveAttribute('data-ready', 'true');
 
@@ -296,10 +295,27 @@ test('a pitfall asks for reader code and a nudge opens the challenged example', 
   await page.keyboard.press('Escape');
   const nudge = page.locator('#article .nudge').first();
   await expect(nudge.locator('li')).toHaveCount(2);
-  const playground = await nudge.getByRole('link').first().getAttribute('href');
-  const encoded = new URL(playground ?? '', 'http://localhost').searchParams.get('code');
-  expect(LZString.decompressFromEncodedURIComponent(encoded ?? '')).toContain('# try: an empty list');
 });
+
+for (const [topicPath, playgroundPath] of [
+  ['/python/closures/', '/playground/'],
+  ['/zh/python/closures/', '/zh/playground/'],
+] as const) {
+  test(`the first nudge on ${topicPath} opens its code in the localized playground`, async ({ page }) => {
+    await openTopic(page, topicPath);
+    const firstLine = await page
+      .locator('#article figure.codebox[data-run] pre')
+      .first()
+      .evaluate((pre) => (pre.textContent ?? '').split('\n')[0]?.trim() ?? '');
+
+    await page.locator('#article .nudge').first().getByRole('link').first().click();
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe(playgroundPath);
+    await expect(page.locator('textarea[name="code"]')).toHaveValue(
+      new RegExp(firstLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  });
+}
 
 test('the action row opens the six Ask-AI presets for the page', async ({ page }) => {
   await openTopic(page);

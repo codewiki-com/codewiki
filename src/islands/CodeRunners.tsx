@@ -142,10 +142,20 @@ function wire(figure: HTMLElement, labels: Strings): () => void {
     };
 
     try {
-      await run({ id: runId(), lang, code: readCode(pre), sourceLang: figure.dataset.lang }, onEvent, {
-        onStatus,
-        previewTarget: out,
-      });
+      await run(
+        {
+          id: runId(),
+          lang,
+          code: readCode(pre),
+          ...(figure.dataset.seed ? { seed: figure.dataset.seed } : {}),
+          sourceLang: figure.dataset.lang,
+        },
+        onEvent,
+        {
+          onStatus,
+          previewTarget: out,
+        },
+      );
     } catch (error) {
       if (isTimeout(error)) {
         writeFooter(out, label('code.timeout', labels));

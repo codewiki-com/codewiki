@@ -1,6 +1,12 @@
 import { useEffect } from 'preact/hooks';
 
-import { BILINGUAL_EVENT, layoutFor, pairBlocks, shouldClone } from '@/lib/bilingual';
+import {
+  BILINGUAL_EVENT,
+  layoutFor,
+  pairAlignedBlocks,
+  shouldClone,
+  type BilingualOrder,
+} from '@/lib/bilingual';
 import {
   DEFAULT_PREFS,
   KEYS,
@@ -31,6 +37,7 @@ interface AlternatePage {
   blocks: Map<string, string>;
   headings: Heading[];
   terms: Map<string, string>[];
+  signature?: string;
 }
 
 const pageCache = new Map<string, Promise<AlternatePage>>();
@@ -79,6 +86,7 @@ async function fetchAlternate(path: string): Promise<AlternatePage> {
         ),
         headings: headingsIn(article),
         terms: termsByHeading(article),
+        signature: article.dataset.biSig,
       };
     });
     pageCache.set(url.href, pending);
@@ -125,8 +133,8 @@ function mapToLocalHeadings(article: HTMLElement, alternate: AlternatePage): Map
 function cloneBlock(html: string, lang: string, strings: Record<string, string>): HTMLElement | null {
   const template = document.createElement('template');
   template.innerHTML = html.trim();
-  const clone = template.content.firstElementChild;
-  if (!(clone instanceof HTMLElement)) return null;
+  const clone = template.content.firstElementChild as HTMLElement | null;
+  if (!clone) return null;
 
   // The original page owns every id. A translated copy must not create a second anchor target.
   if (clone.id) clone.removeAttribute('id');
@@ -146,6 +154,29 @@ function cloneBlock(html: string, lang: string, strings: Record<string, string>)
   return clone;
 }
 
+const CALLOUT_CHROME = 'figure, pre, button, .codeactions, .ask-block, .sec-ask, .out';
+
+/** Builds one translated prose group for insertion into the existing callout box. */
+function cloneCalloutText(html: string, lang: string, strings: Record<string, string>): HTMLElement | null {
+  const callout = cloneBlock(html, lang, strings);
+  if (!callout?.classList.contains('callout')) return null;
+
+  const group = document.createElement('div');
+  group.className = 'bi-callout';
+  group.lang = lang;
+  group.setAttribute('data-bi-clone', '');
+
+  for (const child of [...callout.children]) {
+    if (child.matches(CALLOUT_CHROME)) continue;
+    for (const chrome of child.querySelectorAll(CALLOUT_CHROME)) chrome.remove();
+    if (!child.textContent?.trim()) continue;
+    child.removeAttribute('data-bi-clone');
+    child.removeAttribute('lang');
+    group.append(child);
+  }
+  return group.childElementCount ? group : null;
+}
+
 function clearBilingual(article: HTMLElement): void {
   for (const pair of article.querySelectorAll<HTMLElement>('[data-bi-pair]')) {
     const source = pair.querySelector<HTMLElement>(':scope > [data-bi-source]');
@@ -162,16 +193,28 @@ function clearBilingual(article: HTMLElement): void {
     source.classList.remove('bi', 'bi-source');
     source.removeAttribute('data-bi-source');
   }
+  for (const source of article.querySelectorAll<HTMLElement>('.callout > .bi')) {
+    source.classList.remove('bi');
+  }
   for (const heading of article.querySelectorAll<HTMLElement>('h2[data-bi-h], h3[data-bi-h]')) {
     heading.querySelector(':scope > .bi-h')?.remove();
     heading.removeAttribute('data-bi-h');
+    heading.removeAttribute('data-bi-alt-first');
   }
   for (const vocab of article.querySelectorAll('[data-bi-vocab]')) vocab.remove();
   article.removeAttribute('data-bilingual-missing');
+  article.removeAttribute('data-bilingual-order');
 }
 
-function addHeadingSubtitles(article: HTMLElement, alternate: AlternatePage, lang: string): void {
+function addHeadingSubtitles(
+  article: HTMLElement,
+  alternate: AlternatePage,
+  lang: string,
+  locale: Locale,
+  order: BilingualOrder,
+): void {
   const local = [...article.querySelectorAll<HTMLElement>('h2[id], h3[id]')];
+  const alternateFirst = order[0] !== locale;
   for (const [index, heading] of local.entries()) {
     const text = alternate.headings[index]?.text;
     if (!text) continue;
@@ -179,13 +222,20 @@ function addHeadingSubtitles(article: HTMLElement, alternate: AlternatePage, lan
     const subtitle = document.createElement('span');
     subtitle.className = 'bi-h';
     subtitle.lang = lang;
-    // Leading whitespace keeps the bilingual accessible name from joining the two languages.
-    subtitle.textContent = ` ${text}`;
-    heading.append(subtitle);
+    heading.toggleAttribute('data-bi-alt-first', alternateFirst);
+    // Whitespace stays inside the removable subtitle, so repeated mode changes leave no debris.
+    subtitle.textContent = alternateFirst ? `${text} ` : ` ${text}`;
+    if (alternateFirst) heading.prepend(subtitle);
+    else heading.append(subtitle);
   }
 }
 
-function addVocabulary(article: HTMLElement, alternate: AlternatePage, locale: Locale): void {
+function addVocabulary(
+  article: HTMLElement,
+  alternate: AlternatePage,
+  locale: Locale,
+  order: BilingualOrder,
+): void {
   const headings = [...article.querySelectorAll<HTMLElement>('h2[id], h3[id]')];
   const localTerms = termsByHeading(article, true);
   for (const [index, heading] of headings.entries()) {
@@ -203,17 +253,14 @@ function addVocabulary(article: HTMLElement, alternate: AlternatePage, locale: L
       if (!en && !zh) continue;
       const item = document.createElement('span');
       item.className = 'bi-vocab-term';
-      if (en) {
+      const labels = { en, zh };
+      for (const language of order) {
+        const text = labels[language];
+        if (!text) continue;
         const label = document.createElement('span');
-        label.lang = 'en';
-        label.textContent = en;
-        item.append(label);
-      }
-      if (zh) {
-        const label = document.createElement('span');
-        label.className = 'zh';
-        label.lang = 'zh-Hans';
-        label.textContent = zh;
+        if (language === 'zh') label.className = 'zh';
+        label.lang = language === 'zh' ? 'zh-Hans' : 'en';
+        label.textContent = text;
         item.append(label);
       }
       row.append(item);
@@ -225,7 +272,7 @@ function addVocabulary(article: HTMLElement, alternate: AlternatePage, locale: L
 function applyBlocks(
   article: HTMLElement,
   alternate: AlternatePage,
-  mode: BilingualMode,
+  mode: Exclude<BilingualMode, 'off'>,
   locale: Locale,
   strings: Record<string, string>,
 ): void {
@@ -235,15 +282,40 @@ function applyBlocks(
   const byId = new Map(
     sources.flatMap((block) => (block.dataset.bi ? [[block.dataset.bi, block] as const] : [])),
   );
-  const paired = pairBlocks([...byId.keys()], mapToLocalHeadings(article, alternate));
-  const alternateLocale: Locale = locale === 'en' ? 'zh' : 'en';
-  const alternateLang = alternateLocale === 'zh' ? 'zh-Hans' : 'en';
-  const firstLocale = mode === 'en-zh' ? 'en' : 'zh';
-  const sourceFirst = locale === firstLocale;
+  const paired = pairAlignedBlocks(
+    [...byId.keys()],
+    mapToLocalHeadings(article, alternate),
+    article.dataset.biSig,
+    alternate.signature,
+  );
+  if (!paired) throw new Error('bilingual structure mismatch');
+  const alternateLang = locale === 'en' ? 'zh-Hans' : 'en';
+  const order: BilingualOrder = mode === 'en-zh' ? ['en', 'zh'] : ['zh', 'en'];
+  const sourceFirst = locale === order[0];
+  article.dataset.bilingualOrder = mode;
 
   for (const [id, html] of paired.pairs) {
     const source = byId.get(id);
     if (!source || !shouldClone(id, blockKind(source))) continue;
+
+    if (source.classList.contains('callout')) {
+      const clone = cloneCalloutText(html, alternateLang, strings);
+      if (!clone) continue;
+      const sourceText = [...source.children].filter(
+        (child) => !child.matches(CALLOUT_CHROME) && Boolean(child.textContent?.trim()),
+      );
+      if (sourceFirst) {
+        clone.classList.add('bi');
+        source.append(clone);
+      } else {
+        for (const child of sourceText) {
+          child.classList.add('bi');
+        }
+        source.prepend(clone);
+      }
+      continue;
+    }
+
     const clone = cloneBlock(html, alternateLang, strings);
     if (!clone) continue;
 
@@ -263,8 +335,8 @@ function applyBlocks(
   }
 
   if (paired.missing.length) article.dataset.bilingualMissing = String(paired.missing.length);
-  addHeadingSubtitles(article, alternate, alternateLang);
-  addVocabulary(article, alternate, locale);
+  addHeadingSubtitles(article, alternate, alternateLang, locale, order);
+  addVocabulary(article, alternate, locale, order);
 }
 
 function paint(group: HTMLElement | null, value: string): void {

@@ -23,6 +23,9 @@ const ALLOWED = new Set([
   'game',
   'ai',
   'cs',
+  'python',
+  'sql',
+  'html',
   'TL;DR',
   'EN',
   'esc',
@@ -58,6 +61,8 @@ const PAGES = [
   '/zh/practice/flashcards/',
   '/zh/cheatsheets/',
   '/zh/cheatsheets/python/',
+  '/zh/playground/',
+  '/zh/ai/prompt-builder/',
   '/zh/settings/',
 ];
 
@@ -67,6 +72,7 @@ async function findEnglishOnly(page: import('@playwright/test').Page): Promise<s
       const found = new Set<string>();
       const allowedProduct =
         /^(?:Python|Node|JavaScript|TypeScript|Go|Rust|React|Java|Kotlin|C\+\+|C#|Swift|PHP)(?: [\w.]+(?: LTS)?)?$/;
+      const allowedFilename = /^[\w.-]+\.(?:py|js|ts|sql|html|css)$/i;
       const visible = (element: Element) =>
         element.getClientRects().length > 0 &&
         !element.closest('[hidden], [aria-hidden="true"]') &&
@@ -78,6 +84,7 @@ async function findEnglishOnly(page: import('@playwright/test').Page): Promise<s
           /^[\x00-\x7F]+$/.test(text) &&
           !allowed.includes(text) &&
           !allowedProduct.test(text) &&
+          !allowedFilename.test(text) &&
           !/^[A-Z]$/.test(text)
         ) {
           found.add(text);

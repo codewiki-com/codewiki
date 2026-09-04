@@ -12,27 +12,57 @@ test('aligned topic pairs every translated block, swaps order, removes clones an
   const control = page.locator('[data-bilingual-control]');
   await expect(control.locator('[data-value="en-zh"]')).toBeEnabled();
 
+  const localHeading = (await page.locator('#article h2').first().textContent())?.trim() ?? '';
+  const localToc = (await page.locator('[data-toc]').first().textContent())?.trim() ?? '';
+  const calloutCount = await page.locator('#article aside.callout[data-bi]').count();
   const expected = await page.evaluate(async () => {
     const response = await fetch('/zh/python/closures/');
     const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
-    return [...parsed.querySelectorAll<HTMLElement>('#article [data-bi]')].filter(
-      (block) =>
-        !block.matches('pre, h2, h3, figure.codebox, figure.diagram') &&
-        !block.closest('figure.codebox, figure.diagram'),
-    ).length;
+    return {
+      clones: [...parsed.querySelectorAll<HTMLElement>('#article [data-bi]')].filter(
+        (block) =>
+          !block.matches('pre, h2, h3, figure.codebox, figure.diagram') &&
+          !block.closest('figure.codebox, figure.diagram'),
+      ).length,
+      heading: parsed.querySelector('#article h2')?.textContent?.trim() ?? '',
+    };
   });
   // Ignore the explicit count fetch above; switching modes should add only one more request.
   alternateFetches = 0;
 
   await control.locator('[data-value="en-zh"]').click();
-  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected);
+  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected.clones);
   await expect(page.locator('#article [data-bi-clone]').first()).toHaveAttribute('lang', 'zh-Hans');
   await expect(page.locator('#article h2 .bi-h').first()).toBeVisible();
   await expect(page.locator('[data-toc] .toc-bi').first()).toBeVisible();
   await expect(page.locator('#article .bi-vocab').first()).toBeVisible();
+  await expect
+    .poll(async () =>
+      (await page.locator('#article h2').first().textContent())?.trim().startsWith(localHeading),
+    )
+    .toBe(true);
+  await expect
+    .poll(async () => (await page.locator('[data-toc]').first().textContent())?.trim().startsWith(localToc))
+    .toBe(true);
 
   await control.locator('[data-value="zh-en"]').click();
-  await expect(page.locator('#article [data-bi-pair] > :first-child[data-bi-clone]')).toHaveCount(expected);
+  await expect(page.locator('#article [data-bi-pair] > :first-child[data-bi-clone]')).toHaveCount(
+    expected.clones - calloutCount,
+  );
+  await expect
+    .poll(async () =>
+      (await page.locator('#article h2').first().textContent())?.trim().startsWith(expected.heading),
+    )
+    .toBe(true);
+  await expect
+    .poll(async () =>
+      (await page.locator('[data-toc]').first().textContent())?.trim().startsWith(expected.heading),
+    )
+    .toBe(true);
+  await expect(page.locator('#article .bi-vocab').first().locator('[lang]').first()).toHaveAttribute(
+    'lang',
+    'zh-Hans',
+  );
   expect(alternateFetches).toBe(1);
 
   await control.locator('[data-value="off"]').click();
@@ -41,10 +71,10 @@ test('aligned topic pairs every translated block, swaps order, removes clones an
   await expect(page.locator('#article .bi-vocab')).toHaveCount(0);
 
   await control.locator('[data-value="en-zh"]').click();
-  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected);
+  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected.clones);
   await page.reload();
   await expect(page.locator('#article')).toHaveAttribute('data-bilingual', 'en-zh');
-  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected);
+  await expect(page.locator('#article [data-bi-clone]')).toHaveCount(expected.clones);
   await expect(page.locator('[data-bilingual-control] [data-value="en-zh"]')).toHaveAttribute(
     'aria-checked',
     'true',

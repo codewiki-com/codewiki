@@ -687,4 +687,5 @@ export default {
   'playground.runtimeIframe': '沙盒 iframe',
   'playground.ranIn': '用时 {ms} 毫秒',
   'playground.editorFailed': '增强编辑器加载失败，你仍可继续在此编辑。',
+  'playground.stateRejected': '分享链接过大或无效。',
 } satisfies Record<keyof typeof en, string>;

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { mountEditor, type MountedEditor } from '@/islands/editor';
 import { parseTestResult, wrapWithTests } from '@/lib/kata-tests';
-import { decodeCode, decodeState, encodeState } from '@/lib/lz';
+import { decodeCode, decodeState, encodeState, MAX_TESTS_LENGTH, type PlaygroundState } from '@/lib/lz';
 import { buildPrompt, deepLinks } from '@/lib/prompts';
 import {
   isTimeout,
@@ -40,6 +40,7 @@ export interface PlaygroundExample {
   title: string;
   code: string;
   tests?: string;
+  seed?: string;
   locale?: Locale;
   topic: { title: string; url: string };
 }
@@ -83,6 +84,7 @@ export interface PlaygroundLabels {
   error: string;
   timeout: string;
   editorFailed: string;
+  stateRejected: string;
 }
 
 interface Props {
@@ -93,21 +95,31 @@ interface Props {
 type OutputPanel = 'output' | 'tests' | 'variables';
 type KataResult = ReturnType<typeof parseTestResult> | null;
 
-function stateFromUrl(): { lang: RunLang; code: string; tests?: string } | null {
+function stateFromUrl(): { state: PlaygroundState | null; rejected: boolean } {
   const params = new URLSearchParams(location.search);
   const compressed = params.get('code');
   const explicitLang = normalizeLang(params.get('lang'));
-  const tests = params.get('tests') || undefined;
+  const rawTests = params.get('tests');
+  if (rawTests && rawTests.length > MAX_TESTS_LENGTH) return { state: null, rejected: true };
+  const tests = rawTests || undefined;
 
-  if (compressed) {
-    const decoded = decodeState(compressed);
-    if (decoded) return { ...decoded, ...(tests ? { tests } : {}) };
-    const code = decodeCode(compressed);
-    if (code && explicitLang) return { lang: explicitLang, code, ...(tests ? { tests } : {}) };
+  if (params.has('code')) {
+    const decoded = decodeState(compressed ?? '');
+    if (decoded) return { state: { ...decoded, ...(tests ? { tests } : {}) }, rejected: false };
+    const code = decodeCode(compressed ?? '');
+    if (code && explicitLang) {
+      return { state: { lang: explicitLang, code, ...(tests ? { tests } : {}) }, rejected: false };
+    }
+    return { state: null, rejected: true };
   }
 
-  if (explicitLang) return { lang: explicitLang, code: STARTERS[explicitLang], ...(tests ? { tests } : {}) };
-  return tests ? { lang: 'python', code: STARTERS.python, tests } : null;
+  if (explicitLang) {
+    return {
+      state: { lang: explicitLang, code: STARTERS[explicitLang], ...(tests ? { tests } : {}) },
+      rejected: false,
+    };
+  }
+  return { state: tests ? { lang: 'python', code: STARTERS.python, tests } : null, rejected: false };
 }
 
 function withVariableSnapshot(lang: RunLang, source: string): string {
@@ -144,6 +156,7 @@ function validExample(value: unknown): value is PlaygroundExample {
     typeof row.title === 'string' &&
     typeof row.code === 'string' &&
     (row.tests === undefined || typeof row.tests === 'string') &&
+    (row.seed === undefined || typeof row.seed === 'string') &&
     typeof topic?.title === 'string' &&
     typeof topic.url === 'string'
   );
@@ -154,7 +167,8 @@ export default function Playground({ locale, labels }: Props) {
   const [lang, setLang] = useState<RunLang>('python');
   const [code, setCode] = useState(STARTERS.python);
   const [tests, setTests] = useState<string>();
-  const [baseline, setBaseline] = useState({ lang: 'python' as RunLang, code: STARTERS.python });
+  const [seed, setSeed] = useState<string>();
+  const [baseline, setBaseline] = useState<PlaygroundState>({ lang: 'python', code: STARTERS.python });
   const [examples, setExamples] = useState<PlaygroundExample[]>([]);
   const [exampleState, setExampleState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [selectedExample, setSelectedExample] = useState('');
@@ -168,6 +182,7 @@ export default function Playground({ locale, labels }: Props) {
   const [actionStatus, setActionStatus] = useState('');
   const [editorEnabled, setEditorEnabled] = useState(false);
   const [editorError, setEditorError] = useState(false);
+  const [stateRejected, setStateRejected] = useState(false);
 
   const drafts = useRef<Record<RunLang, string>>({ ...STARTERS });
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -177,11 +192,12 @@ export default function Playground({ locale, labels }: Props) {
   const supportsVariables = lang === 'python' || lang === 'js' || lang === 'ts';
   const busy = runStatus !== undefined;
 
-  const applyState = (next: { lang: RunLang; code: string; tests?: string }, example?: PlaygroundExample) => {
+  const applyState = (next: PlaygroundState, example?: PlaygroundExample) => {
     drafts.current[next.lang] = next.code;
     setLang(next.lang);
     setCode(next.code);
     setTests(next.tests);
+    setSeed(next.seed);
     setBaseline(next);
     setSelectedExample(example?.id ?? '');
     setTopic(example?.topic);
@@ -196,7 +212,8 @@ export default function Playground({ locale, labels }: Props) {
   useEffect(() => {
     setHydrated(true);
     const initial = stateFromUrl();
-    if (initial) applyState(initial);
+    setStateRejected(initial.rejected);
+    if (initial.state) applyState(initial.state);
 
     let live = true;
     fetch('/api/examples.json')
@@ -264,6 +281,7 @@ export default function Playground({ locale, labels }: Props) {
     setLang(next);
     setCode(nextCode);
     setTests(undefined);
+    setSeed(undefined);
     setBaseline({ lang: next, code: nextCode });
     setSelectedExample('');
     setTopic(undefined);
@@ -293,7 +311,7 @@ export default function Playground({ locale, labels }: Props) {
   };
 
   const share = async () => {
-    const value = encodeState({ lang, code, ...(tests ? { tests } : {}) });
+    const value = encodeState({ lang, code, ...(tests ? { tests } : {}), ...(seed ? { seed } : {}) });
     const params = new URLSearchParams({ lang, code: value });
     history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
     try {
@@ -338,7 +356,7 @@ export default function Playground({ locale, labels }: Props) {
 
     try {
       setRunStatus(lang === 'python' ? 'loading-python' : lang === 'sql' ? 'loading-sql' : 'running');
-      await run({ id, lang, code: program }, onEvent, {
+      await run({ id, lang, code: program, ...(seed ? { seed } : {}) }, onEvent, {
         previewTarget: preview.current ?? undefined,
         onStatus: setRunStatus,
       });
@@ -478,6 +496,12 @@ export default function Playground({ locale, labels }: Props) {
           </span>
         </div>
       </header>
+
+      {stateRejected && (
+        <p class="playground-state-rejected" role="alert">
+          {labels.stateRejected}
+        </p>
+      )}
 
       <div class="playground-workspace">
         <section class="playground-editor" aria-label={FILES[lang]}>

@@ -99,9 +99,17 @@ export default function Toc({ labels }: TocProps) {
         if (!text) continue;
         const subtitle = document.createElement('span');
         subtitle.className = 'bi-h toc-bi';
-        subtitle.lang = heading.querySelector<HTMLElement>(':scope > .bi-h')?.lang ?? '';
-        subtitle.textContent = ` ${text}`;
-        anchor.append(subtitle);
+        const headingSubtitle = heading.querySelector<HTMLElement>(':scope > .bi-h');
+        subtitle.lang = headingSubtitle?.lang ?? '';
+        const alternateFirst = heading.hasAttribute('data-bi-alt-first');
+        subtitle.textContent = alternateFirst ? text : ` ${text}`;
+        if (alternateFirst) {
+          const deep = anchor.querySelector(':scope > .toc-deep');
+          if (deep) deep.after(subtitle);
+          else anchor.prepend(subtitle);
+        } else {
+          anchor.append(subtitle);
+        }
       }
     };
 
