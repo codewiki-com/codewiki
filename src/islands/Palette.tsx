@@ -4,6 +4,7 @@ import {
   groupResults,
   pushRecent,
   recentPages,
+  safeExcerpt,
   GROUP_ORDER,
   type GroupName,
   type PagefindResultData,
@@ -143,9 +144,10 @@ function toRow(result: PagefindResultData, group: GroupName): Row {
   return {
     url: result.url,
     title: meta.title ?? result.url,
-    tag: (group === 'topics' ? meta.track : undefined) ?? TAG_OF[group],
+    // The track's own two-letter glyph when the page published one, as the mockup's rows show.
+    tag: (group === 'topics' ? (meta.glyph ?? meta.track) : undefined) ?? TAG_OF[group],
     variant: VARIANT_OF[group],
-    meta: trail || (result.excerpt ?? ''),
+    meta: trail || safeExcerpt(result.excerpt ?? ''),
     html: !trail,
   };
 }
@@ -200,7 +202,9 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   /** What had focus before the dialog opened, so closing puts the visitor back where they were. */
   const opener = useRef<HTMLElement | null>(null);
 
-  const listId = useId();
+  // `useId` is seeded per Preact root, so the two islands `/search/` mounts would otherwise hand
+  // out the same ids — and `aria-activedescendant` and `scrollIntoView` would find the other's.
+  const listId = `${mode}-${useId()}`;
   const other: Locale = locale === 'en' ? 'zh' : 'en';
   const term = query.trim();
 
@@ -241,13 +245,16 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   }, []);
 
   const openPalette = useCallback(() => {
+    // A second ⌘K while the dialog is up would otherwise record the dialog's own field as the
+    // element to restore focus to when it closes.
+    if (open) return;
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     readRecents();
     setOpen(true);
     // Warms the index while the visitor is still reaching for the keyboard, and in dev surfaces
     // the "no index" message on opening rather than on the first keystroke.
     loadPagefind(PAGEFIND_LANG[other]).catch(() => setStatus('unavailable'));
-  }, [other, readRecents]);
+  }, [open, other, readRecents]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -393,6 +400,9 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
     }
 
     if (event.key === 'Enter') {
+      // The language toggle, the esc button and a focused row are real controls with their own
+      // Enter. Only the field, which has none, opens the row under the cursor.
+      if (event.target !== field.current) return;
       const row = rows[active];
       if (!row) return;
       event.preventDefault();

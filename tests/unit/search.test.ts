@@ -1,4 +1,4 @@
-import { groupResults, pushRecent, recentPages, RECENTS_LIMIT } from '@/lib/search';
+import { groupResults, pushRecent, recentPages, safeExcerpt, RECENTS_LIMIT } from '@/lib/search';
 import { KEYS } from '@/lib/prefs';
 
 /** Minimal in-memory `Storage`, so the palette helpers have something to talk to. */
@@ -127,5 +127,27 @@ describe('recents', () => {
     // The write is lost, but the caller still gets the list to render for this session.
     expect(pushRecent(null, '/a/', 'A').map((page) => page.url)).toEqual(['/a/']);
     expect(pushRecent(broken, '/a/', 'A').map((page) => page.url)).toEqual(['/a/']);
+  });
+});
+
+describe('safeExcerpt', () => {
+  it('keeps the highlight Pagefind added', () => {
+    expect(safeExcerpt('a <mark>closure</mark> is')).toBe('a <mark>closure</mark> is');
+    expect(safeExcerpt('nothing matched')).toBe('nothing matched');
+    expect(safeExcerpt('')).toBe('');
+  });
+
+  it('escapes the page text around it', () => {
+    // Pagefind escapes nothing, so a topic that shows this as an example would otherwise run it.
+    expect(safeExcerpt('<img src=x onerror="alert(1)">')).toBe(
+      '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;',
+    );
+    expect(safeExcerpt("a <mark>&</mark> b <script>'x'</script>")).toBe(
+      'a <mark>&amp;</mark> b &lt;script&gt;&#39;x&#39;&lt;/script&gt;',
+    );
+  });
+
+  it('escapes an ampersand once, not twice', () => {
+    expect(safeExcerpt('&lt; stays literal')).toBe('&amp;lt; stays literal');
   });
 });

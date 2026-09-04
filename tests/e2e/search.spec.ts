@@ -23,7 +23,9 @@ test('⌘K opens the palette and finds an English topic', async ({ page }) => {
 
   const result = dialog.getByRole('option').filter({ hasText: 'Closures' });
   await expect(result).toHaveAttribute('href', '/python/closures/');
-  await expect(result).toContainText('Python');
+  // The pill is the track's glyph; the meta line spells the track and section out.
+  await expect(result.locator('.tag')).toHaveText('py');
+  await expect(result.locator('.palette-meta')).toHaveText('Python · Functions in depth');
 });
 
 test('the palette searches the Chinese index on the Chinese home page', async ({ page }) => {
@@ -65,6 +67,38 @@ test('the keyboard moves through the results and opens one', async ({ page }) =>
   // The page it opened is offered back as a recent the next time the palette opens empty.
   await openPalette(page);
   await expect(page.getByRole('option').first()).toHaveAttribute('href', first ?? '');
+});
+
+test('Enter belongs to whichever control has focus', async ({ page }) => {
+  await page.goto('/');
+  const here = page.url();
+  const dialog = await openPalette(page);
+  await dialog.getByRole('combobox').fill('closure');
+  await expect(dialog.getByRole('option').first()).toHaveAttribute('href', '/python/closures/');
+
+  // Past the field, past the EN half, onto 中文.
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  const zh = dialog.getByRole('button', { name: '中文' });
+  await expect(zh).toBeFocused();
+
+  // Enter here switches the filter; it must not open the row the cursor is on.
+  await page.keyboard.press('Enter');
+  await expect(zh).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog).toBeVisible();
+  expect(page.url()).toBe(here);
+});
+
+test('the two palettes on /search/ do not share element ids', async ({ page }) => {
+  await page.goto('/search/?q=closure');
+  await expect(page.locator('.search-results a.row').first()).toBeVisible();
+  const dialog = await openPalette(page);
+  await dialog.getByRole('combobox').fill('closure');
+  await expect(dialog.getByRole('option').first()).toBeVisible();
+
+  const ids = await page.locator('.palette-list').evaluateAll((nodes) => nodes.map((node) => node.id));
+  expect(ids).toHaveLength(2);
+  expect(new Set(ids).size).toBe(2);
 });
 
 test('the nav search button opens the palette and Escape closes it', async ({ page }) => {

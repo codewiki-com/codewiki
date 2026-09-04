@@ -48,6 +48,41 @@ export function groupResults(results: PagefindResultData[]): GroupedResults {
   return grouped;
 }
 
+/** The characters that would let a fragment of page text be read back as markup. */
+const ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => ESCAPES[char]!);
+}
+
+/** The only markup Pagefind adds to an excerpt: one wrapper per matched word. */
+const MARK = /<\/?mark>/g;
+
+/**
+ * Makes a Pagefind excerpt safe to insert as HTML, keeping its highlight.
+ *
+ * Pagefind builds `excerpt` by wrapping matched words of the *indexed text* in `<mark>` and
+ * escapes nothing else, so a topic that shows `<img onerror=...>` as an example would run it.
+ * Everything between the marks is therefore escaped, and only the marks survive as markup. A
+ * literal `<mark>` in the prose renders as a highlight rather than as text, which is the whole
+ * of the damage that concession can do: the tag takes no attributes and nothing else gets through.
+ */
+export function safeExcerpt(excerpt: string): string {
+  let safe = '';
+  let last = 0;
+  for (const match of excerpt.matchAll(MARK)) {
+    safe += escapeHtml(excerpt.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return safe + escapeHtml(excerpt.slice(last));
+}
+
 /** Spec §6.2 keeps the recents list short; the oldest entry is dropped first. */
 export const RECENTS_LIMIT = 8;
 
