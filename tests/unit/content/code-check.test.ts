@@ -164,6 +164,13 @@ describe('checkFence', () => {
       { ok: true, skipped: true, tool: 'fragment' },
     );
   });
+  it('treats a c++ loop outside any function as a fragment', async () => {
+    // The C++ twin of Java's bare statement: `expected unqualified-id before 'for'` names
+    // the missing enclosing scope, not a malformed loop.
+    const result = await checkFence({ lang: 'cpp', code: 'for (int i = 0; i < 3; ++i) {\n  sum += i;\n}\n' });
+    if (result.tool === 'missing') return; // No C++ compiler here.
+    expect(result).toEqual({ ok: true, skipped: true, tool: 'fragment' });
+  });
 
   it('reports placeholder-only fences as errors', async () => {
     for (const code of ['...', '…', '# ...', '// ...', '/* ... */', 'pass', 'TODO', '# ...\n// ...\n'])

@@ -413,9 +413,16 @@ function at(line: number | undefined, text: string): string {
  */
 const JAVA_SYNTAX =
   /\b(?:expected|illegal start of|unclosed|reached end of file while parsing|not a statement)\b/i;
-/** A fence holding statements rather than a type: an excerpt, not a syntax error. */
-const JAVA_FRAGMENT = /class, interface, enum, or record expected/i;
 const CPP_SYNTAX = /\b(?:expected|unterminated|missing terminating|stray|unmatched|before)\b/i;
+
+/**
+ * The two diagnostics that mean "this fence is an excerpt", one per language: a fence of
+ * bare statements where Java wants a type declaration, and a loop or statement where C++
+ * wants a declaration at file scope. Both look syntactic but only describe the missing
+ * enclosing scope, so they are excluded before the allowlist is consulted.
+ */
+const JAVA_FRAGMENT = /class, interface, enum, or record expected/i;
+const CPP_FRAGMENT = /expected unqualified-id before/i;
 
 function classify(language: 'java' | 'cpp', result: FenceCheck): FenceCheck {
   if (result.ok || result.skipped) return result;
@@ -423,7 +430,7 @@ function classify(language: 'java' | 'cpp', result: FenceCheck): FenceCheck {
   const syntactic =
     language === 'java'
       ? !JAVA_FRAGMENT.test(message) && JAVA_SYNTAX.test(message)
-      : CPP_SYNTAX.test(message);
+      : !CPP_FRAGMENT.test(message) && CPP_SYNTAX.test(message);
   return syntactic ? result : skip('fragment');
 }
 
