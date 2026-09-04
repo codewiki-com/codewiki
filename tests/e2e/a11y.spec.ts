@@ -55,17 +55,9 @@ for (const path of PAGES) {
   }
 }
 
-/*
- * Colour contrast is scanned separately because it fails today, and it fails at the token level
- * rather than page by page: `--ink3` is 3.31–3.89:1 against the three light surfaces it is used
- * on (4.5:1 is the AA floor for text below 18.66px), `--ok` is 3.82:1 on `--ok-soft`, `--warn`
- * 4.45:1 on `--warn-soft`, the Shiki comment colour 3.04:1 on the code panel, and `.toc a.deep`
- * multiplies `--ink3` by opacity 0.7, reaching 2.32:1. Fixing it means re-picking palette values,
- * which is a design decision and not this suite's to make — hence `fixme` rather than a deleted
- * test: it is listed on every run until the palette is settled.
- */
+/* Colour contrast is scanned separately so failures name the affected page and palette. */
 for (const theme of THEMES) {
-  test.fixme(`every surface meets the WCAG AA contrast floor in the ${theme} palette`, async ({ page }) => {
+  test(`every surface meets the WCAG AA contrast floor in the ${theme} palette`, async ({ page }) => {
     await usingTheme(page, theme);
     for (const path of PAGES) {
       await page.goto(path);
