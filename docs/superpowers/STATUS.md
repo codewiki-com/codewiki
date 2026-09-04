@@ -33,6 +33,11 @@ Read this first in any new session. Update it at every milestone and before star
 - **Next steps in order:** (1) when batch 8 ends: `git merge main` in the P0 worktree (expect conflicts only in `src/schemas/quiz.ts`/`interview.ts`, `scripts/content/check.ts`, `tests/unit/content-fixtures.test.ts`; Task 17 copied P0 files verbatim so most is clean), run `pnpm test`, commit; (2) start batch 9 (`--tier 1 --n 10 --max 50`) and, in parallel from the same worktree? NO — one runner per worktree: run content generation later or in a second worktree of the same branch is unsafe; sequence generation after the polish wave, or run generation from a `p0-generate` worktree on a branch cut from P0 and merge back; (3) `conformance-v3-codex.md` (Codex); (4) merge P0 into `main`, rebuild, deploy prep.
 - Resume rule: `git log --oneline -3` per branch; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; an interrupted polish batch is resumed by re-running the same `content:polish` command.
 
+## TODO (deferred by the user)
+- **Tier 2 polish (423 topics)** — decided 2026-09-04 by the user: not now. Estimate at 10-way parallelism: ~6 h wall, ~79 M Codex tokens (tier 1 averaged 187 k per topic). Command when the time comes: `pnpm content:polish --tier 2 --n 10 --max 100` per batch from `.worktrees/p0-content-pipeline`.
+- **Tier 3 polish (238 topics)** — same, after tier 2.
+- Codex usage so far (2026-09-04, logs on disk): ~48 M polish, ~3 M generation, ~4 M code tasks ≈ 55 M.
+
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
 2. Open the active plan under `docs/superpowers/plans/` and find the first unchecked task.
