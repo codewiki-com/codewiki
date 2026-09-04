@@ -1,0 +1,400 @@
+---
+title: Rust lifetime annotations
+description: Express relationships among references precisely with lifetime parameters, elision, borrowed structs, 'static, and higher-ranked bounds.
+track: rust
+section: ownership-borrowing
+difficulty: advanced
+tags: [lifetimes, annotations, borrow-checker, static, hrtb]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/lifetimes, rust/closures, rust/trait-bounds, rust/strings]
+terms: [lifetime, lifetime-annotation, lifetime-elision, outlives-bound, higher-ranked-trait-bound, static-lifetime, borrow-checker]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/lifetime-annotations
+sources:
+  - { title: 'The Rust Programming Language - Validating References with Lifetimes', url: 'https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html' }
+  - { title: 'The Rust Reference - Lifetime elision', url: 'https://doc.rust-lang.org/reference/lifetime-elision.html' }
+  - { title: 'The Rust Reference - Trait and lifetime bounds', url: 'https://doc.rust-lang.org/reference/trait-bounds.html#lifetime-bounds' }
+  - { title: 'The Rustonomicon - Higher-Rank Trait Bounds', url: 'https://doc.rust-lang.org/nomicon/hrtb.html' }
+origin: old/src/content/docs/rust/lifetime-annotations.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Lifetime annotations name the valid regions of references to express relationships among inputs, outputs, and borrowed fields;
+    they are type contracts and do not make any value live longer.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Giving several references the same `'a` creates a constraint but does not mean their owners have identical lexical scopes;
+    adding `'static` cannot repair a reference to a local value.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Trace every returned reference to its input and annotate only real dependencies;
+    rely on elision when the relationship is unique, and return an owned value when the data must be independent.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A <Term id="lifetime">lifetime</Term> is a region of the program in which a reference can be used safely.
+Every reference has one, but the compiler infers most lifetimes without source annotations.
+It describes reference validity and is not necessarily the whole lexical scope in which a variable is visible.
+
+A <Term id="lifetime-annotation">lifetime annotation</Term> starts with an apostrophe, as in `'a`, `'input`, and `'static`.
+It is declared like a type parameter in a generic parameter list, but represents a region relationship rather than a runtime type.
+Annotations appear in types and signatures; no lifetime value needs to remain after compilation.
+
+When a function accepts several references and returns a reference, its body may borrow data from more than one input.
+From `fn select(x: &str, y: &str) -> &str` alone, a caller cannot tell whether the result depends on `x`, `y`, or both.
+Explicit parameters turn that origin relationship into a checked API contract.
+
+For example, `fn select<'a>(x: &'a str, y: &'a str) -> &'a str` says the caller chooses a region `'a`, both inputs remain valid throughout it, and the result may only be used within it.
+It does not require both owners to be created or destroyed in the same block; a longer borrow can be shortened to their common usable region.
+The implementation must be safe for every call that satisfies the contract.
+
+The <Term id="borrow-checker">borrow checker</Term> solves these constraints together with control flow and actual reference uses.
+It rejects code at compile time if a result could outlive its source data.
+A lifetime annotation adds a relationship to that analysis but does not move an owner's destruction point.
+
+You encounter this syntax in functions returning slices, structs storing references, closures and trait objects, thread boundaries, and generic trait bounds.
+Ordinary read-only parameters often rely on elision; relationships more often need to be explicit when a borrow is stored or returned across a function boundary.
+
+## How it works
+
+### A signature is a set of constraints
+
+Lifetime parameters are declared in angle brackets after a function name, then written between `&` and the referenced type.
+`&'a T` is a shared reference with lifetime `'a`, while `&'a mut T` is a mutable reference in that region.
+Descriptive names such as `'source` help in complex signatures; short relationships usually use `'a` and `'b`.
+
+An output `'a` must be connected to a valid origin.
+The compiler does not derive a conditional public signature from whichever branch happens to execute at runtime.
+If an implementation might return either of two inputs, both inputs and the output need a common constraint.
+
+A repeated name states a minimum guarantee; it does not force the actual borrows to have identical lengths.
+At a call site, the compiler can reborrow a longer reference for a shorter period and choose a region that satisfies every position.
+Read “the same `'a`” as “valid throughout the same chosen region.”
+
+Different names mean that the signature establishes no automatic relationship between them.
+If `fn prefix<'text>(text: &'text str, delimiter: &str) -> &'text str` returns only a slice of `text`, the delimiter borrow should not restrict the result.
+A precise signature both admits more valid calls and exposes the data origin to reviewers.
+
+### Elision follows deterministic rules
+
+<Term id="lifetime-elision">Lifetime elision</Term> is not arbitrary guessing.
+The compiler completes function, function-pointer, and closure-trait signatures with fixed rules; if ambiguity remains after those rules, it reports a missing lifetime specifier.
+
+The function elision rules, in order, are:
+
+1. Every elided reference parameter gets a distinct input lifetime.
+2. If there is exactly one input lifetime among all parameters, every elided output lifetime uses it.
+3. If a method has several input lifetimes and its receiver is `&self` or `&mut self`, every elided output lifetime uses the receiver's lifetime.
+
+Consequently, `fn first(text: &str) -> &str` can be elided because it has one input lifetime.
+`fn choose(x: &str, y: &str) -> &str` cannot, because the rules cannot identify the output's origin.
+The receiver rule can also bind a method output to `self` even when another parameter looks like the likely source.
+
+The placeholder lifetime `'_` asks the compiler to infer a lifetime at that position.
+It is clearer than total omission in type paths, such as a returned `View<'_>`, but it does not create a new relationship or relax borrow checking.
+
+### Borrowed fields carry relationships into types
+
+A struct that stores a reference must declare the corresponding lifetime on its definition.
+`struct View<'a> { text: &'a str }` means that no `View<'a>` may be used after `text` becomes invalid.
+The constraint follows the type into function parameters, return values, and container elements.
+
+`impl<'a> View<'a>` declares an implementation for any `'a`.
+A method returning a field may explicitly use `-> &'a str` to show that the result borrows directly from the field's source; with `-> &str`, the receiver elision rule usually limits the result to the current `&self` borrow.
+Both signatures may compile, but they expose different relationships to the caller.
+
+Borrowed fields suit short-lived views, parsing results, and large inputs where copying is unnecessary.
+If a value must enter a long-lived cache, cross a thread queue, or be stored independently of its source, an owned `String`, `Vec<T>`, or shared-ownership pointer usually matches the contract better.
+Lifetime parameters do not automatically make self-referential structs safe and cannot replace ownership design.
+
+### Choose ownership before writing annotations
+
+A borrowed return fits when the result is already part of an input and callers can naturally retain that input.
+Slice lookup, zero-copy parsing, and collection views have this shape; the signature tells callers that the result cannot leave its source.
+
+An owned return fits when the function creates data or the result must independently enter a queue, cache, or asynchronous task.
+That is a different API contract, not a concession to the borrow checker; forcing a borrow instead spreads internal storage details to every caller.
+
+Whether a struct stores references should likewise follow the object's role.
+A parsing view used within one request may borrow its buffer, while a long-lived domain object usually owns its important fields.
+Draw the owners and required use periods before choosing a lifetime parameter on the struct.
+
+When the compiler suggests adding `'a`, it says only that the signature lacks a provable relationship, not that an annotation is the right repair.
+Data created inside the function still gives a returned reference no valid source; if the output comes from one input, tying the others to the same `'a` overconstrains the call.
+
+The smallest contract is usually the most stable one.
+It reduces the borrows that callers must keep alive and makes the implementation's real data flow visible in the type.
+It also makes later refactoring less likely to confuse necessary constraints with accidental coupling.
+
+## Examples
+
+### Establishing a common region for two inputs
+
+The first example may return either the primary or fallback label, so all three reference positions use the same `'a`.
+The two `String` owners have different lexical scopes, but the result is used only inside the inner block, allowing the compiler to choose that common region.
+
+<Depth level="quick">
+
+```rust title="choose_label.rs"
+fn choose_label<'a>(primary: &'a str, fallback: &'a str) -> &'a str {
+    if primary.trim().is_empty() {
+        fallback
+    } else {
+        primary
+    }
+}
+
+fn main() {
+    let primary = String::from("priority");
+
+    {
+        let fallback = String::from("untitled");
+        let selected = choose_label(&primary, &fallback);
+        println!("selected: {selected}");
+    }
+}
+```
+
+```text
+selected: priority
+```
+
+</Depth>
+
+`selected` cannot be used beyond the intersection of the two input borrows.
+Even though runtime execution chooses `primary`, the signature also permits the function to return `fallback`, so the caller cannot move the result out of the inner block.
+
+The annotation did not shorten `primary` or extend `fallback`.
+It only requires every use of the result to fall within the region where both inputs are valid.
+
+### Relating only the real origin
+
+The second example can return only data from `text`, never from `delimiter`.
+The signature names `'text` only for the text and result, while the delimiter uses a separate elided lifetime.
+
+```rust title="prefix_before.rs"
+fn prefix_before<'text>(text: &'text str, delimiter: &str) -> &'text str {
+    text.split_once(delimiter)
+        .map_or(text, |(prefix, _)| prefix)
+}
+
+fn main() {
+    let record = String::from("account=active");
+
+    let key = {
+        let delimiter = String::from("=");
+        prefix_before(&record, &delimiter)
+    };
+
+    println!("key: {key}");
+}
+```
+
+```text
+key: account
+```
+
+`delimiter` is destroyed at the end of the inner block, but `key` remains valid because it points only into `record`.
+Giving both parameters `'text` would unnecessarily restrict the result to the delimiter's short borrow.
+
+That precision matters in parser and lookup APIs.
+An auxiliary input used only during computation should not be presented as an origin of returned data.
+
+### Storing a borrow in a struct
+
+`Header<'source>` stores a view of its source text without copying the string.
+The method elision rule ties `name` to `&self`, while `raw` explicitly returns the source lifetime `'source`.
+
+```rust title="header_view.rs"
+struct Header<'source> {
+    raw: &'source str,
+}
+
+impl<'source> Header<'source> {
+    fn new(raw: &'source str) -> Self {
+        Self { raw }
+    }
+
+    fn name(&self) -> &str {
+        self.raw
+            .split_once(':')
+            .map_or(self.raw, |(name, _)| name)
+    }
+
+    fn raw(&self) -> &'source str {
+        self.raw
+    }
+}
+
+fn main() {
+    let source = String::from("content-type:text/plain");
+    let header = Header::new(&source);
+
+    println!("name: {}", header.name());
+    let complete = header.raw();
+    drop(header);
+    println!("raw: {complete}");
+}
+```
+
+```text
+name: content-type
+raw: content-type:text/plain
+```
+
+`complete` borrows from `source`, not from the struct itself, so it remains readable after `header` is moved and dropped.
+If the method used the elided `-> &str`, the returned reference would generally be guaranteed only for the `&self` borrow.
+
+The struct's lifetime parameter does not own the text.
+`source` must still outlive every view derived from it.
+
+### Requiring a callback for any short borrow
+
+The last example applies a normalization function to several temporary string slices.
+`for<'a>` requires the callback relationship to hold for whichever `'a` each call chooses, tying every result back to that call's input.
+
+```rust title="normalize_all.rs"
+fn normalize_all<F>(values: &[String], normalize: F) -> Vec<&str>
+where
+    F: for<'a> Fn(&'a str) -> &'a str,
+{
+    values.iter().map(|value| normalize(value)).collect()
+}
+
+fn trim_label(value: &str) -> &str {
+    value.trim()
+}
+
+fn main() {
+    let labels = vec![String::from(" alpha "), String::from(" beta")];
+    let normalized = normalize_all(&labels, trim_label);
+
+    println!("normalized: {normalized:?}");
+}
+```
+
+```text
+normalized: ["alpha", "beta"]
+```
+
+Every `&str` in the returned vector borrows from the corresponding `String` in `labels`.
+The callback cannot return a shorter-lived local slice unrelated to its input.
+
+The ordinary function `trim_label` satisfies the higher-ranked bound because it works for any valid input borrow.
+This boundary often appears in APIs that store a generic closure and call it while borrowing their own data inside a method.
+
+## Pitfalls
+
+> [!PITFALL]
+> **Returning a local with an arbitrary `'a`.** `fn make<'a>() -> &'a str` lets the caller choose `'a`, which a `String` created inside the function cannot satisfy; that string is destroyed on return.
+> **Fix:** Return an owned value such as `String`; only data that truly resides in static storage, such as a string literal or static item, can be returned as a static reference.
+
+> [!PITFALL]
+> **Binding every parameter to one lifetime.** If the result comes only from the first input, a shared `'a` lets an unrelated short borrow restrict the result and creates unnecessary compile failures.
+> **Fix:** Draw the “output comes from” relationship and share a name only between a real source and the output; give other references independent parameters or elided lifetimes.
+
+> [!PITFALL]
+> **Treating `'static` as an extender.** Adding a `'static` bound, calling `Box::leak`, or hiding data in global state changes resource ownership and may leak memory permanently, but it does not repair the original local-borrow design.
+> **Fix:** Move owned values across thread and callback boundaries; use scoped APIs for bounded concurrency and static storage only for genuinely process-long data.
+
+> [!PITFALL]
+> **Ignoring receiver elision.** The output of `fn choose(&self, candidate: &str) -> &str` is tied to `self` by default, so an implementation that returns `candidate` encounters a lifetime error.
+> **Fix:** If the output comes from the parameter, write `fn choose<'a>(&self, candidate: &'a str) -> &'a str`; preserve the receiver relationship when the output comes from a field.
+
+> [!PITFALL]
+> **Storing a short borrow in a long-lived object.** Generated caches, tasks, and handlers often retain a request-body `&str` beyond the request and then try to suppress the error with cloning, `unsafe`, or `'static`.
+> **Fix:** Decide who owns the data and how long the object must live; store owned data or suitable shared ownership when crossing the source boundary instead of fabricating a lifetime.
+
+## In the AI era
+
+**What generated code gets wrong here.**
+Models often add the same `'a` mechanically to every reference, causing auxiliary configuration or delimiters to restrict a returned value.
+Another pattern claims that `'static` makes a local reference permanent, then emits `Box::leak`, global caches, or `unsafe { transmute(...) }` to overpower borrow checking.
+Generated code also confuses `T: 'static` with `&'static T` or overlooks the receiver rule that ties an elided method output to `self`.
+
+**Ask your AI to check.**
+Ask it to identify the exact origin of every returned reference and explain the caller constraint created by each pair of repeated lifetime names.
+Then ask for a minimal call where an auxiliary argument is destroyed before the result is used, proving that unrelated inputs are not tied together.
+For threads or persistent callbacks, ask it to classify every capture as owned or borrowed and validate the boundary with `cargo check`.
+
+**Review checklist.**
+
+- Every output reference traces to an input, field, or static item that remains valid.
+- Every explicit lifetime expresses a necessary relationship, with no `'static`, clone, or `unsafe` added only to silence a diagnostic.
+- Compile or runtime tests cover short scopes, empty input, alternate branches, and object destruction order.
+
+**Prompt vocabulary.**
+Use the terms `lifetime parameter`, `output lifetime`, `lifetime elision`, `outlives bound`, `higher-ranked trait bound`, `borrowed return`, and `ownership boundary`.
+They direct the model toward specific signature relationships instead of a vague request to “fix the lifetimes.”
+
+<Depth level="deep">
+
+## Elision, bounds, and higher-ranked relationships
+
+### Outlives relationships
+
+An <Term id="outlives-bound">outlives bound</Term> `'long: 'short` says that `'long` covers at least `'short`.
+When a function supplies a `'long` reference where `'short` is required, the bound states that the longer reference can be shortened for that use.
+The bound describes substitutability; it does not extend the underlying value.
+
+The type bound `T: 'a` says that every reference contained in `T` is valid for at least `'a`.
+For `&'a T`, well-formedness already implies `T: 'a`, so many explicit bounds found in older Rust code are redundant today.
+Trait bounds are not all inferred in the same way, so do not generalize this rule beyond lifetime bounds.
+
+Outlives relationships usually appear when composing several borrowed fields, generic associated types, or passing a longer borrow to a shorter interface.
+For a signature handling one ordinary `&T`, first check whether elision and implied bounds already suffice.
+
+### The two readings of `'static`
+
+The <Term id="static-lifetime">static lifetime</Term> covers the program's entire execution.
+String literals and `static` items can produce `&'static T` because their referents are not destroyed before the program ends.
+This describes the validity of the referenced target.
+
+`T: 'static` is a type bound saying that `T` contains no borrow shorter than the static lifetime.
+An owned `String` satisfies this bound but can still be dropped immediately at the end of an ordinary block; the bound does not promise that the value itself lives forever.
+Conversely, an `&str` pointing into a local `String` usually cannot satisfy a thread or callback boundary that requires `'static`.
+
+Trait objects have separate default object-lifetime rules.
+In a type position without a containing constraint, `Box<dyn Trait>` usually means `Box<dyn Trait + 'static>`; when it stores a non-static borrow, write the suitable `+ 'a` or `+ '_` explicitly.
+These defaults differ from the three ordinary function-elision rules.
+
+### Valid for every lifetime
+
+A <Term id="higher-ranked-trait-bound">higher-ranked trait bound (HRTB)</Term> introduces a lifetime parameter under `for<'a>`.
+`F: for<'a> Fn(&'a str) -> &'a str` means that `F` must accept an input borrow chosen at any call and return a borrow related to that input.
+
+With an ordinary `F: Fn(&'a str) -> &'a str`, the outer caller often chooses `'a` once.
+A higher-ranked bound instead lets the called function select a new short lifetime for each internal borrow, which is necessary when repeatedly invoking a callback on local data.
+
+Common elided function-pointer and closure-trait forms acquire a similar higher-ranked meaning automatically: `fn(&str) -> &str` can expand to `for<'a> fn(&'a str) -> &'a str`.
+Writing `for<'a>` explicitly suits more complex generic bounds and shows a reviewer where the quantification occurs.
+
+### Working backward from diagnostics
+
+`E0106` commonly means the origin of an output reference remains ambiguous, so inspect which input-output relationship is missing from the signature.
+`E0515` often reports a returned reference to local data; no arbitrary lifetime parameter can fix that design.
+`E0597` says that one concrete call destroys a borrowed value too early, requiring a different use region or ownership boundary.
+
+Start a fix from the data origin: identify what the output points into, decide how long the caller needs it, and then write the smallest constraint.
+If no input or field can own the returned data, return an owned value.
+Only after the contract is sound do shorter borrow ranges, reborrowing, or structural splitting become relevant.
+
+Do not use `unsafe` to turn a compile error into an unchecked promise.
+A lifetime diagnostic often exposes a real ownership gap; bypassing it merely moves the failure from compilation to undefined behavior.
+
+</Depth>
+
+<Checkpoint id="rust/lifetime-annotations" />
+
+## Further reading
+
+- [The Rust Programming Language: Validating References with Lifetimes](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html)
+- [The Rust Reference: Lifetime elision](https://doc.rust-lang.org/reference/lifetime-elision.html)
+- [The Rust Reference: Trait and lifetime bounds](https://doc.rust-lang.org/reference/trait-bounds.html#lifetime-bounds)
+- [The Rustonomicon: Higher-Rank Trait Bounds](https://doc.rust-lang.org/nomicon/hrtb.html)
