@@ -17,15 +17,14 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-03 Execution mode: subagent-driven development, one Opus subagent per plan task, Fable reviews between tasks. P1 first (Tasks 0–8), then P0 in parallel once P1 Task 6 (schemas) exists.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are
+## Where things are (updated 2026-09-04)
 | Item | State |
 |---|---|
 | Master spec | done, approved |
-| Design mockups (16 artboards, light/dark) | done, approved |
-| P1 plan (site foundation) | done: `docs/superpowers/plans/2026-09-03-p1-site-foundation.md` (20 tasks) |
-| P0 plan (content pipeline) | done: `docs/superpowers/plans/2026-09-03-p0-content-pipeline.md` (14 tasks); briefs in `prompts/` |
-| Repo scaffold | not started (P1 Task 1) |
-| Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
+| Design mockups (16 artboards, light/dark) | done, approved; sources in `docs/design/mockups/` |
+| P1 plan (site foundation, 20 tasks) | Tasks 0–11 complete (scaffold, tokens/theme, fonts, i18n + zh UI copy by Codex, tracks, content collections + Codex sample topics, SEO lib, layout shell, home, track hub, markdown pipeline); Task 12 (topic page) implemented at `3176c06`, fix round 1 in progress (readPct must ignore depth-hidden headings; breadcrumb root crumb; inert progressbar role); Tasks 13–19 pending (runners, glossary, search, Ask-AI + md twin, endpoints/settings, OG images, e2e/lighthouse/headers) |
+| P0 plan (content pipeline, 14 tasks) | Tasks 1–7 complete (libs, inventory, mapping accepted with overrides, import → `content/staging` 918 pairs, zh typography linter, code checker, link checker); Task 8 (alignment checker) implemented at `bca79da`, review pending; P1 branch merged into P0 at `9cbe928`; Tasks 9–14 pending (tiers, check/state, polish runner, calibration, extract, wave 1) |
+| Content | 4 sample MDX topics + 7 glossary terms + 1 quiz by Codex; `python/closures` aligned, `javascript/event-loop` marked `aligned: false` (needs a Codex translate-topic pass) |
 
 ## Active work (2026-09-03)
 - P1 is being executed on branch `p1-site-foundation` in the worktree `.worktrees/p1-site-foundation/` (git-ignored). Progress ledger: `.worktrees/p1-site-foundation/.superpowers/sdd/2026-09-03-p1-site-foundation/progress.md` (first line names the plan; tasks with a `complete` line are done). Merge to `main` when the final review is clean.
