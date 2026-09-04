@@ -1,0 +1,422 @@
+---
+title: C# 特性
+description: 理解 C# 特性如何把声明式信息写入元数据，掌握目标、参数、继承与反射读取规则，并避开生成代码中的错误假设。
+track: csharp
+section: types-linq
+difficulty: intermediate
+tags: [attributes, metadata, reflection, attribute-usage, custom-attributes]
+prerequisites: [csharp/fundamentals]
+related: [csharp/reflection, csharp/source-generators, csharp/properties, csharp/aspnet-core]
+terms: [attribute, attribute-target, positional-argument, named-argument, attribute-inheritance, reflection]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/attributes
+sources:
+  - { title: 'Attributes and reflection - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/' }
+  - { title: 'Attributes - C# language specification', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/attributes' }
+  - { title: 'Writing custom attributes', url: 'https://learn.microsoft.com/en-us/dotnet/standard/attributes/writing-custom-attributes' }
+  - { title: 'Retrieving information stored in attributes', url: 'https://learn.microsoft.com/en-us/dotnet/standard/attributes/retrieving-information-stored-in-attributes' }
+  - { title: 'CustomAttributeData API', url: 'https://learn.microsoft.com/en-us/dotnet/api/system.reflection.customattributedata?view=net-10.0' }
+origin: old/src/content/docs/csharp/attributes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    C# 特性把结构化的声明式信息附到类型、成员或程序集上；编译器把信息写入元数据，编译器、运行时、框架或工具再按各自规则解释它。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    写上 `[Something]` 不会自动执行行为；目标选错、继承查询不一致或用单值 API 读取多用特性，都会让元数据看似存在却不起作用。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先确认特性的消费者和准确目标，再用 `AttributeUsage` 收紧契约，并明确选择实例化读取或 `CustomAttributeData` 元数据读取。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="attribute">特性（attribute）</Term>是一种附加到程序实体的结构化声明信息。特性类直接或间接继承 `System.Attribute`，使用处写在方括号中，例如 `[Obsolete]`。按照约定，类名以 `Attribute` 结尾，但在使用处通常可以省略这个后缀。
+
+特性信息会进入程序集元数据，而不是像注释那样在编译后消失。代码可以通过<Term id="reflection">反射（reflection）</Term>读取它，编译器、测试运行器、序列化器和 Web 框架也可以成为消费者。特性只描述事实或意图，真正的效果来自读取并执行规则的消费者。
+
+这种机制解决的是“把声明和解释分开”的问题。一个 API 作者可以定义稳定、带类型的元数据词汇；使用方把信息放在相关声明旁；消费者不必解析命名约定或散落的字符串配置。你会在弃用提示、条件调用、路由、验证、序列化和测试发现中遇到它。
+
+有些特性由 C# 编译器直接理解，例如 `ObsoleteAttribute` 与 `ConditionalAttribute`。更多特性只是普通库类型，只有相应框架扫描到它们时才产生效果。相同的方括号语法并不表示它们拥有相同的执行时机或语义。
+
+特性适合表达紧贴声明、规模较小且可序列化的元数据。需要密钥、运行时对象、复杂控制流或频繁变化的配置时，应使用普通参数、配置对象或服务，而不是把特性变成隐藏的程序语言。
+
+## 工作原理
+
+### 特性类定义词汇
+
+自定义特性至少是一个继承 `Attribute` 的类。公开实例构造函数定义可以使用的位置参数序列，公开可读写字段或带公开 `get` 和 `set`／`init` 的属性定义命名参数。特性类可以包含普通方法，但元数据消费者并不会因此自动调用它们。
+
+`AttributeUsageAttribute` 定义使用契约。它的 `ValidOn` 指定允许附着的声明种类，`AllowMultiple` 决定同一实体能否出现多个实例，`Inherited` 决定派生类和重写成员的继承查询能否看到基类声明。省略 `AttributeUsage` 等价于允许所有目标、禁止重复并允许继承。
+
+通常应把特性类声明为 `sealed`，并把它的公开数据设计成读取后不会变化的值。继承特性类只有在消费者明确支持多态契约时才值得使用。命名参数需要可写只是为了让运行时构造对象；这不代表应用代码应在读取后修改实例。
+
+### 目标决定元数据附在哪里
+
+每个特性都有一个<Term id="attribute-target">特性目标（attribute target）</Term>。默认目标通常是紧随其后的声明，但属性、事件、方法返回值和编译器生成的幕后字段可能位于不同的元数据实体上。需要消除歧义时，使用 `[field: Marker]`、`[property: Marker]`、`[return: Marker]` 或 `[assembly: Marker]` 这样的目标说明符。
+
+`AttributeTargets` 是供 `AttributeUsage` 使用的标志枚举。它能组合 `Class`、`Method`、`Property`、`Field`、`Parameter`、`ReturnValue` 等值，但“允许某个目标”不会替你选择目标。使用处的上下文和显式目标说明符共同决定最终位置。
+
+自动属性尤其容易暴露这个区别。`[Marker]` 默认附到属性元数据，`[field: Marker]` 则附到编译器生成的幕后字段。反射 `PropertyInfo` 不会自动返回字段上的特性，扫描字段的框架也不会把属性目标当作字段目标。
+
+### 实参必须能写入元数据
+
+构造函数调用形式提供<Term id="positional-argument">位置实参（positional argument）</Term>，必须先出现并匹配某个公开构造函数。之后的 `Name = value` 是<Term id="named-argument">命名实参（named argument）</Term>，用于公开可写实例字段或属性，可以省略并且顺序无关。
+
+特性实参只允许元数据能够表示的类型：规定的简单数值与字符类型、`bool`、`string`、`System.Type`、枚举、`object`，以及这些类型的一维数组。表达式还必须能在编译时确定，例如字符串常量、枚举值、`typeof(Customer)` 或符合规则的数组创建表达式。
+
+`DateTime.Now`、服务实例和任意对象构造都不能作为特性实参。需要复杂配置时，可以传入稳定的枚举、字符串或 `Type` 作为键，再由消费者从自己的配置或依赖注入容器解析运行时对象。这个间接层也让元数据保持可移植。
+
+### 写入和消费是两个阶段
+
+编译器先解析特性名称，检查目标、重复规则、构造函数和实参类型，然后把一条自定义特性记录写入程序集。记录标识被修饰的实体和特性构造函数，并把位置实参与命名实参编码为数据。此时通常没有创建特性对象。
+
+之后由某个消费者决定是否读取记录以及如何解释它。典型流程如下：
+
+1. 编译器或构建工具读取自己认识的特性。
+2. 运行时库通过反射定位类型、成员或参数。
+3. 消费者筛选所需的特性类型，并决定是否查询继承链。
+4. 消费者验证数据，然后执行路由、序列化、测试发现等行为。
+
+因此，定义特性和定义消费者是两个不同任务。只完成第一步会得到合法元数据，却不会得到路由、验证、缓存或授权行为。审查代码时必须能指出消费者的具体 API 或构建阶段。
+
+### 读取 API 做出不同承诺
+
+`GetCustomAttribute<T>()` 适合最多只能得到一个匹配实例的查询，找不到时返回 `null`。`GetCustomAttributes<T>()` 返回序列，适合 `AllowMultiple = true` 或需要合并继承结果的情况。若实际存在多个匹配项，单值查询可能抛出 `AmbiguousMatchException`。
+
+实例化读取会调用特性构造函数并设置命名字段或属性。构造函数中的异常和副作用因此会发生在扫描期间，而不是目标类型实例化时。特性对象应保持轻量，不应访问网络、文件、时钟或依赖注入容器。
+
+`CustomAttributeData` 提供构造函数信息、位置实参和命名实参，而不构造特性对象。工具只需要检查元数据形状，或不能安全执行被检查程序集中的代码时，应优先使用它。消费者仍需验证参数数量、类型与缺失值，不能把元数据视为可信输入。
+
+`inherit` 参数和 `AttributeUsage.Inherited` 共同影响继承查询。<Term id="attribute-inheritance">特性继承（attribute inheritance）</Term>不是把记录复制到派生声明；它是反射 API 在查询时沿基类或重写链补充结果的规则。直接元数据读取仍会显示记录实际存放的位置。
+
+## 示例
+
+### 定义并读取自定义特性
+
+第一个程序定义只允许出现在类上的 `EndpointAttribute`。`"orders"` 对应构造函数的位置参数，`Version = 2` 对应带 `init` 的公开属性，因此是可选命名参数。
+
+<Depth level="quick">
+
+```csharp title="BasicAttribute.cs"
+using System;
+using System.Reflection;
+
+var descriptor = typeof(OrderHandler)
+    .GetCustomAttribute<EndpointAttribute>();
+
+Console.WriteLine($"{descriptor!.Route} v{descriptor.Version}");
+Console.WriteLine(descriptor.GetType().Name);
+
+[Endpoint("orders", Version = 2)]
+public sealed class OrderHandler;
+
+[AttributeUsage(
+    AttributeTargets.Class,
+    AllowMultiple = false,
+    Inherited = false)]
+public sealed class EndpointAttribute : Attribute
+{
+    public string Route { get; }
+    public int Version { get; init; } = 1;
+
+    public EndpointAttribute(string route) => Route = route;
+}
+```
+
+```text
+orders v2
+EndpointAttribute
+```
+
+</Depth>
+
+源码使用短名 `[Endpoint]`，反射得到的实际类型仍是 `EndpointAttribute`。消费者读取的是结构化值，不需要从类名、注释或字符串约定推断端点版本。
+
+这个示例只打印元数据，没有实现 Web 路由。若没有调用 `GetCustomAttribute` 的代码或框架扫描器，`OrderHandler` 不会因为方括号声明而自动接收请求。
+
+### 分别标记属性和幕后字段
+
+同一个自动属性可以同时承载属性目标和字段目标的特性。程序分别取得 `PropertyInfo` 与非公开幕后字段，证明两条记录并不在同一个反射对象上。
+
+```csharp title="AttributeTargets.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var type = typeof(CustomerRecord);
+var property = type.GetProperty(nameof(CustomerRecord.CustomerId))!;
+var field = type
+    .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+    .Single(candidate => candidate.Name.Contains("CustomerId"));
+
+Console.WriteLine(
+    $"property: {property.GetCustomAttribute<MarkerAttribute>()!.Name}");
+Console.WriteLine(
+    $"field: {field.GetCustomAttribute<MarkerAttribute>()!.Name}");
+
+public sealed class CustomerRecord
+{
+    [Marker("public contract")]
+    [field: Marker("private storage")]
+    public string CustomerId { get; init; } = string.Empty;
+}
+
+[AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
+public sealed class MarkerAttribute(string name) : Attribute
+{
+    public string Name { get; } = name;
+}
+```
+
+```text
+property: public contract
+field: private storage
+```
+
+`[Marker]` 使用自动属性声明的默认目标，所以属性查询得到 `public contract`。显式的 `field:` 把另一条记录放到幕后字段，字段查询才会得到 `private storage`。
+
+示例通过名称片段寻找幕后字段，只用于演示目标位置。编译器生成的完整字段名不是公共契约；生产代码若依赖它，应改为扫描带目标特性的字段，或使用框架公开的成员模型。
+
+### 合并直接声明与继承结果
+
+`AuditAttribute` 允许在一个方法上多次使用，也允许继承。派生重写提供自己的记录；查询参数决定只看这一条，还是把基方法上的记录也纳入结果。
+
+```csharp title="InheritedAttributes.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var method = typeof(ExpressWorkflow)
+    .GetMethod(nameof(ExpressWorkflow.Submit))!;
+
+var direct = method
+    .GetCustomAttributes<AuditAttribute>(inherit: false)
+    .Select(attribute => attribute.Stage);
+var inherited = method
+    .GetCustomAttributes<AuditAttribute>(inherit: true)
+    .Select(attribute => attribute.Stage)
+    .OrderBy(stage => stage);
+
+Console.WriteLine($"direct: {string.Join(",", direct)}");
+Console.WriteLine($"inherited: {string.Join(",", inherited)}");
+
+public class Workflow
+{
+    [Audit("base")]
+    public virtual void Submit() { }
+}
+
+public sealed class ExpressWorkflow : Workflow
+{
+    [Audit("derived")]
+    public override void Submit() { }
+}
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = true, Inherited = true)]
+public sealed class AuditAttribute(string stage) : Attribute
+{
+    public string Stage { get; } = stage;
+}
+```
+
+```text
+direct: derived
+inherited: base,derived
+```
+
+程序排序后再打印继承结果，因为特性在源码中的排列顺序没有语义保证。消费者若需要优先级，应把它建模成明确的整数或枚举，而不是依靠反射返回顺序。
+
+若把 `Inherited` 改为 `false`，即使查询传入 `inherit: true`，基方法记录也不会作为继承结果出现。两个开关必须同时允许，消费者还要针对自己查询的成员种类编写测试。
+
+### 不实例化地检查元数据
+
+最后一个程序让特性构造函数递增计数器。先读取 `CustomAttributeData` 时计数仍为零；实例化读取后才变为一，清楚分开了元数据记录与运行时对象。
+
+```csharp title="CustomAttributeData.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var type = typeof(Shipment);
+var data = type.GetCustomAttributesData()
+    .Single(item => item.AttributeType == typeof(ProbeAttribute));
+
+Console.WriteLine($"after data: {ProbeAttribute.Created}");
+Console.WriteLine($"argument: {data.ConstructorArguments[0].Value}");
+
+var instance = type.GetCustomAttribute<ProbeAttribute>();
+
+Console.WriteLine($"after instance: {ProbeAttribute.Created}");
+Console.WriteLine($"name: {instance!.Name}");
+
+[Probe("stable")]
+public sealed class Shipment;
+
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class ProbeAttribute : Attribute
+{
+    public static int Created { get; private set; }
+    public string Name { get; }
+
+    public ProbeAttribute(string name)
+    {
+        Created++;
+        Name = name;
+    }
+}
+```
+
+```text
+after data: 0
+argument: stable
+after instance: 1
+name: stable
+```
+
+计数器只是为了显示时机，不是推荐的特性设计。真实特性构造函数应保存并验证少量数据，消费者的外部工作则放在普通服务中。
+
+元数据工具可以从 `ConstructorArguments` 和 `NamedArguments` 重建声明信息。它得到的是类型化元数据值，不是 `ProbeAttribute` 实例，因此也不应调用特性类上的业务方法。
+
+## 陷阱
+
+### 把标记误当成行为
+
+> [!PITFALL]
+> 生成代码常定义 `[Cache]`、`[Authorize]` 或 `[Validate]`，却没有任何中间件、拦截器、生成器或反射扫描器消费它。
+
+合法特性只证明元数据能被写入，不证明功能已经实现。测试如果只检查特性存在，也会漏掉真实调用路径完全不读取它的问题。
+
+**修复方法：** 为每个非编译器特性指出消费者、读取时机和失败策略。写一个穿过真实框架入口的集成测试，证明元数据改变了可观察行为；若没有消费者，就删除特性或实现明确的普通代码。
+
+### 把特性放在错误目标上
+
+> [!PITFALL]
+> 序列化器扫描属性，生成代码却写了 `[field: Name]`；或者框架扫描幕后字段，代码只标记了属性。两边名称接近，但元数据实体不同。
+
+返回值、参数、访问器、事件和程序集也有类似歧义。`AttributeUsage` 允许多个目标时，编译器无法根据消费者意图替你选择。
+
+**修复方法：** 查清框架读取的是 `Type`、`PropertyInfo`、`FieldInfo`、`ParameterInfo` 还是返回参数，并在含糊位置显式写出目标。用与框架相同的反射入口做一个最小测试。
+
+### 使用不能编码的实参
+
+> [!PITFALL]
+> 模型把 `DateTime.Now`、运行时配置或 `new Service()` 填进特性构造函数，误以为方括号中的调用与普通对象创建完全相同。
+
+特性实参受元数据类型和编译时可确定性限制。即使特性类能够声明某种普通构造函数参数，该构造函数也不一定能在特性规范中使用。
+
+**修复方法：** 只传常量、枚举、`typeof(...)` 或允许的一维数组。复杂运行时值改由消费者通过稳定键解析，并在启动时验证键是否有效。
+
+### 用单值 API 读取多用特性
+
+> [!PITFALL]
+> `AllowMultiple = true` 后，消费者仍调用 `GetCustomAttribute<T>()`，数据增长到第二条时才出现 `AmbiguousMatchException`。
+
+这个错误经常被只有一个特性的测试隐藏。继承查询还可能把基类或基方法的记录加入结果，使单值假设在派生类型上突然失效。
+
+**修复方法：** 多用特性始终使用 `GetCustomAttributes<T>()`，并定义合并、冲突和优先级规则。如果业务上只能有一个有效值，就让 `AllowMultiple = false`，并保持消费者的单值契约一致。
+
+### 假定所有成员都按同一方式继承
+
+> [!PITFALL]
+> 生成的扫描器把类、重写方法、属性、事件和接口实现交给同一种 `inherit: true` 查询，并假定结果相同。
+
+继承结果取决于成员种类、反射入口和特性自身的 `Inherited`。接口上的特性不会因为某个类实现了接口就自然变成类上的继承特性；属性与事件也需要按各自访问器或声明链处理。
+
+**修复方法：** 分别测试类、重写方法以及框架实际支持的其他成员。需要接口契约时显式遍历接口映射；需要属性或事件继承时显式定义匹配声明的方式，不要把一个布尔参数当作通用遍历器。
+
+### 在构造函数中执行外部工作
+
+> [!PITFALL]
+> 特性构造函数读取文件、访问网络或依赖可变全局状态，导致程序集扫描变慢、失败或在工具进程中产生意外副作用。
+
+实例化反射可能在应用启动、测试发现、设计器加载或诊断工具运行时调用构造函数。使用处看不出这些工作，异常也会从扫描路径冒出。
+
+**修复方法：** 让特性实例只保存轻量、确定的数据，把 I/O 和服务调用留给消费者。只需分析声明的工具使用 `CustomAttributeData`，并把元数据当作需要验证的输入。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型会根据名字发明一个看似合理但目标框架从未读取的特性，或导入同名但属于错误命名空间的类型。它还常把属性目标与幕后字段目标混淆，在 `AllowMultiple` 开启后继续使用单值读取，并假设 `inherit: true` 会遍历接口和所有成员种类。扫描器代码则容易在请求热路径上反复反射，或让特性构造函数偷偷访问服务。
+
+**让 AI 检查**
+
+- 为每个特性列出完整类型名、允许目标、目标框架中的消费者，以及该消费者实际使用的版本化 API。
+- 对每个反射查询说明它读取的元数据实体、是否包含继承结果，以及零个、一个和多个匹配项的行为。
+- 区分 `GetCustomAttributes` 的实例化路径与 `CustomAttributeData` 的元数据路径，并标出构造函数、命名 setter 和外部 I/O 的执行点。
+
+**审查清单**
+
+- 通过真实框架入口测试特性产生的行为，不要只断言方括号或反射记录存在。
+- 对自动属性、参数、返回值和重写成员，确认特性附着位置与消费者查询位置一致。
+- 用缺失、重复、继承和非法配置用例检查消费者，并确认扫描不在每次请求中重复执行。
+
+**提示词词汇**
+
+使用准确术语：`attribute class`（特性类）、`attribute target`（特性目标）、`positional argument`（位置实参）、`named argument`（命名实参）、`AttributeUsage`（特性使用契约）、`AllowMultiple`（允许多次应用）、`Inherited`（允许继承查询）、`attribute instantiation`（特性实例化）和 `CustomAttributeData`（自定义特性元数据）。要求 AI 给出“声明—元数据实体—消费者 API—可观察行为”映射，比“给它加个 annotation”更容易暴露缺失的执行链。
+
+<Depth level="deep">
+
+## 元数据、实例化与继承边界
+
+### 记录不是对象
+
+编译后的自定义特性记录关联三个核心信息：被修饰的元数据实体、用于构造特性的构造函数，以及编码后的实参。它不是预先创建并永久保存在程序集中的 CLR 对象。加载程序集也不等于实例化所有特性。
+
+位置实参按构造函数参数顺序编码，命名实参还记录目标是字段还是属性以及成员名称。这个格式解释了为什么允许的类型集合很窄，也解释了为什么重命名公开命名参数可能破坏已编译的使用方。特性类是元数据协议的一部分，应像序列化格式一样考虑兼容性。
+
+`CustomAttributeData` 把记录呈现为 `Constructor`、`ConstructorArguments` 和 `NamedArguments`。它适合文档生成器、分析器和插件目录等只需描述声明的工具。调用者仍要处理未知特性类型、缺失依赖和版本差异。
+
+直接调用 `GetCustomAttribute<T>()` 则要求运行时加载特性类型并创建对象。随后，消费者得到方便的强类型属性，但也跨过了执行代码的边界。面对不受信任或依赖不完整的程序集时，这个区别是架构选择，不只是 API 风格。
+
+### 构造与命名赋值
+
+实例化路径先使用记录指向的构造函数处理位置实参，再把命名实参写入相应的字段或属性。构造函数和 setter 都可能执行用户代码，因此二者都应保持确定、快速且无外部副作用。一个看似简单的读取调用可能因为其中任一步失败而抛出。
+
+不要把特性实例当作应用级可变配置对象。反射调用可以返回新的实例，消费者之间也没有共享修改的契约。若读取结果会在多个请求中复用，应缓存经过验证的不可变描述模型，而不是依赖修改后的特性对象。
+
+`IsDefined` 适合只询问某类特性是否存在，但存在性通常不足以执行功能。需要路由模板、优先级或策略名称时，仍要读取并验证参数。把“找到记录”和“配置有效”分成两个检查，会产生更清楚的错误消息。
+
+### 继承是查询策略
+
+基类或基方法上的记录仍然存放在原声明上。带继承的反射 API 根据查询对象、`inherit` 参数和 `AttributeUsage.Inherited` 组合结果；它没有改写派生类型的元数据。`CustomAttributeData` 查看直接记录时自然不会制造继承副本。
+
+`AllowMultiple` 也参与合并。允许多用时，派生声明与基声明的匹配实例可以同时出现；禁止多用时，派生层的声明会影响消费者最终看到哪个值。不要用返回顺序表达覆盖关系，应明确实现从最近声明到最远声明的策略。
+
+接口实现不属于类继承链。若框架把接口特性当作契约，它必须显式找到实现的接口和映射成员，再定义类声明与接口声明发生冲突时的规则。这是框架语义，不是 `AttributeUsage.Inherited` 自动提供的行为。
+
+属性和事件在元数据中关联访问器方法，但它们自身也是独立成员。扫描器需要说明是在匹配属性声明、访问器方法还是幕后字段。对方法成立的重写链查询不能未经测试就推广到这些复合成员。
+
+### 目标与生成成员
+
+目标说明符在编译时确定记录挂接点。`field:` 可以把自动属性或字段式事件上的特性放到生成字段，`method:` 可以指向访问器，`param:` 可以指向 setter 的隐式值参数，`return:` 可以指向 getter 返回值。消费者必须查询相同种类的元数据实体。
+
+生成成员的名称和具体布局是实现细节，目标本身才是语言级契约。框架可以枚举字段并查找某个特性，却不应把 `<Name>k__BackingField` 这样的拼写写入公共格式。源码生成器也应使用编译器符号模型定位关联成员。
+
+程序集和模块特性必须使用显式全局目标，通常放在源文件的顶层。它们适合描述整个输出单元的信息，不适合表达某个类型的局部策略。多项目解决方案还要确认特性最终进入哪个程序集，而不是只看它出现在哪个源文件中。
+
+### 顺序、缓存与边界
+
+C# 不赋予同一声明上多个特性的排列顺序任何语义。反射实现返回某种顺序并不构成应用契约。需要顺序时，把 `Order` 设计为显式数据，检查重复值，并定义稳定的次级排序键。
+
+反射扫描通常适合在应用启动或注册阶段完成，再把结果转换成普通描述对象。是否缓存应由调用频率和测量决定，但边界原则不依赖基准数字：不要在每次业务调用中重新发现同一份静态元数据。程序集可动态加载时，还要定义缓存失效和隔离范围。
+
+源码生成器可以在构建时读取编译器符号上的特性并生成普通代码，从而把一部分错误提前到编译阶段。它并不会修复含糊的目标、冲突规则或非法业务配置。无论消费者在构建时还是运行时执行，同一份元数据协议都需要版本、验证与可诊断的错误。
+
+</Depth>
+
+<Checkpoint id="csharp/attributes" />
+
+## 延伸阅读
+
+- [C# 特性与反射](https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/)
+- [C# 语言规范：特性](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/attributes)
+- [编写自定义特性](https://learn.microsoft.com/en-us/dotnet/standard/attributes/writing-custom-attributes)
+- [读取特性中存储的信息](https://learn.microsoft.com/en-us/dotnet/standard/attributes/retrieving-information-stored-in-attributes)
+- [`CustomAttributeData` API](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.customattributedata?view=net-10.0)
