@@ -59,6 +59,62 @@ test('the contents mark the section being read', async ({ page }) => {
   await expect(page.locator('[data-toc-nav] a.on')).toBeVisible();
 });
 
+test('progress is measured over the sections the depth shows', async ({ page }) => {
+  await openTopic(page);
+  await page.locator('#in-the-ai-era').scrollIntoViewIfNeeded();
+
+  // A deep section is hidden at Standard depth, so it is not part of what this reader was shown.
+  const expected = await page.evaluate(() => {
+    const shown = [...document.querySelectorAll<HTMLElement>('#article h2')].filter(
+      (heading) => heading.getClientRects().length > 0,
+    );
+    const index = shown.findIndex((heading) => heading.id === 'in-the-ai-era');
+    return Math.round(((index + 1) / shown.length) * 100);
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => JSON.parse(localStorage.getItem('cw:v1:progress') ?? '{}').topics?.['python/closures']?.readPct,
+      ),
+    )
+    .toBe(expected);
+});
+
+test('reading to the checkpoint completes the topic at any depth', async ({ page }) => {
+  await openTopic(page);
+
+  // Quick hides most of the article, so the sections it hides must not count against the reader.
+  await page.locator('[data-depth-tab="quick"]').click();
+  await page.locator('#checkpoint').scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem('cw:v1:progress') ?? '{}').topics?.['python/closures']?.completedAt,
+      ),
+    )
+    .toBeTruthy();
+
+  await page.reload();
+  await expect(page.locator('.tree a[data-topic-id="python/closures"]')).toHaveClass(/done/);
+});
+
+test('the breadcrumb and the JSON-LD trail agree', async ({ page }) => {
+  await page.goto('/python/closures/');
+  const pills = await page.locator('.crumbs .tag').allTextContents();
+  expect(pills.map((pill) => pill.trim())).toEqual(['Tracks', 'Python', 'Functions in depth', 'closures']);
+
+  const blocks = await page.locator('script[type="application/ld+json"]').allTextContents();
+  const crumbs = blocks.map((block) => JSON.parse(block)).find((ld) => ld['@type'] === 'BreadcrumbList');
+  expect(crumbs.itemListElement.map((item: { name: string }) => item.name)).toEqual([
+    'Tracks',
+    'Python',
+    'Functions in depth',
+    'Closures',
+  ]);
+});
+
 test('the URL can carry the depth', async ({ page }) => {
   await page.goto('/python/closures/?depth=deep');
   await expect(page.locator('#article')).toHaveAttribute('data-depth-mode', 'deep');
