@@ -1,0 +1,400 @@
+---
+title: URLSession
+description: Build, send, and test HTTP requests with URLSession while handling status codes, decoding, caching, cancellation, and bounded retries.
+track: backend
+section: http-apis
+difficulty: intermediate
+tags: [Swift, URLSession, HTTP, networking, async-await]
+prerequisites: [backend/getting-started, backend/restful-api-design]
+related: [backend/api-design, backend/caching, backend/oauth2-guide, backend/testing]
+terms: [url-session, url-request, cache-policy, cancellation, idempotency]
+verified: { version: 'Swift 6.3.3', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: backend/urlsession
+sources:
+  - { title: 'Apple Developer Documentation - URLSession', url: 'https://developer.apple.com/documentation/foundation/urlsession' }
+  - { title: 'Apple Developer Documentation - URLSessionConfiguration', url: 'https://developer.apple.com/documentation/foundation/urlsessionconfiguration' }
+  - { title: 'WWDC21 - Use async/await with URLSession', url: 'https://developer.apple.com/videos/play/wwdc2021/10095/' }
+  - { title: 'Apple Developer Documentation - Accessing cached data', url: 'https://developer.apple.com/documentation/foundation/accessing-cached-data' }
+  - { title: 'Apple Developer Documentation - Downloading files in the background', url: 'https://developer.apple.com/documentation/foundation/downloading-files-in-the-background' }
+  - { title: 'Swift.org - Installing Swift with Swiftly on macOS', url: 'https://www.swift.org/install/macos/swiftly/' }
+origin: old/src/content/docs/swift/urlsession.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `URLSession` is Apple's network transfer coordinator. A session applies one configuration to a group of data, upload, download, or WebSocket tasks.
+  </TLDRCell>
+  <TLDRCell label="when">
+    Use it when an app calls an HTTP API, transfers files, or asks the system to continue an upload or download in the background.
+  </TLDRCell>
+  <TLDRCell label="how">
+    Define the request with `URLComponents` and `URLRequest`, reuse a configured session, and handle transport errors, HTTP status, and decoding errors separately.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="url-session">`URLSession`</Term> is the Foundation object that coordinates network transfers. One session creates tasks under shared rules for connections, cookies, credentials, caching, and protocol negotiation. Your application still defines each request, interprets each response, and decides what to do after failure.
+
+The common data task collects a complete response body in memory, which suits short requests such as JSON API calls. Upload tasks explicitly provide data or a file, download tasks write response bodies to temporary files, and WebSocket tasks exchange messages. The task type changes how bytes are delivered, not the server's HTTP contract.
+
+`URLSession.shared` fits simple requests that need no special policy. When you need separate cookies, caches, timeouts, network-cost limits, or delegate callbacks, create a `URLSessionConfiguration` first and use it to make a reusable session. Background transfers also need a `.background` configuration with a stable identifier and a delegate.
+
+URLSession solves transport on Apple platforms; it isn't a complete API-client architecture. It won't turn a 404 into a Swift error, validate business fields in JSON, refresh an access token, or decide whether a write can be retried. Those rules belong in visible, testable boundaries.
+
+A typical repository or service receives a session and uses a small request builder to produce each <Term id="url-request">`URLRequest`</Term>. Production code can then use a real session while tests use a controlled `URLProtocol`. Views and domain models don't need to carry the networking details.
+
+## How it works
+
+A regular asynchronous request follows this path:
+
+```mermaid
+flowchart LR
+    A[URLComponents] --> B[URLRequest]
+    B --> C[URLSession]
+    C --> D[URLSessionTask]
+    D --> E[HTTP response]
+    E --> F[status validation]
+    F --> G[Decodable model]
+```
+
+`URLComponents` encodes path and query items into a URL. `URLRequest` adds the method, headers, body, cache policy, and per-request timeout. String concatenation can't reliably handle reserved characters and makes it too easy to place tokens in a URL, so it shouldn't do this job.
+
+A session configuration defines policies shared by its tasks. `.default` uses persistent caching and shared cookie and credential stores; `.ephemeral` doesn't persist those stores to disk; `.background` hands uploads or downloads to the system. Don't move a short data request to a background session merely because the app may enter the background.
+
+`URLSession` copies its configuration during initialization. Changing the original configuration later, or changing the copy returned by `session.configuration`, doesn't affect that session. When policy must change, create another configuration and session, and define when the old session becomes invalid.
+
+Calling `data(for:)` creates and starts a data task, then suspends the current Swift task until the full response arrives or transport fails. It returns `(Data, URLResponse)`; a return value means URL loading completed, not that HTTP succeeded. Converting the response to `HTTPURLResponse` and checking its status is the client's job.
+
+Boundary code should distinguish at least three result layers:
+
+| Layer | Example | Handling |
+| --- | --- | --- |
+| Transport | DNS failure, lost network, cancellation | Preserve `URLError` or wrap its cause |
+| HTTP | 401, 404, 429, 500 | Inspect status, headers, and a safely truncated body |
+| Representation | Missing field, wrong type, malformed JSON | Preserve `DecodingError` and `codingPath` |
+
+This distinction tells callers where a request failed. Flattening everything into `nil` or one "request failed" string loses the facts needed to reauthenticate, retry, or locate a mismatched field. An application error needn't expose every implementation detail, but it should retain the original cause for logs and tests.
+
+Cancellation of a Swift concurrency task works with URLSession's async methods. Yet <Term id="cancellation">cancellation</Term> is a request to stop waiting and working, not a server rollback protocol. If a request passed the remote commit point, a caller that observes cancellation or timeout may still have an unknown write outcome.
+
+A session may use no delegate, a session delegate, or a per-task delegate. Delegates provide lifecycle hooks for authentication challenges, redirects, incremental data, progress, and background events. A session with a delegate retains it until the session is explicitly invalidated or the process exits, so ownership and invalidation must be designed together.
+
+Caching first follows HTTP response headers and the request's <Term id="cache-policy">cache policy</Term>. `URLCache` can store cacheable responses by request. Saving an ETag manually without also managing the response body, `Vary` dimensions, and freshness rules usually creates a second, incomplete HTTP cache.
+
+## Examples
+
+These four examples build a request, run a testable data task, configure a session, and isolate retry eligibility as a policy. They require Swift and Apple Foundation. This workspace has no Swift toolchain, so every code block is marked as unexecuted and no output block claims a run result.
+
+### Build a request without corrupting query values
+
+The request builder expresses the path, query, and headers separately. `URLComponents` encodes the space in the search term, while the access token stays in the `Authorization` header.
+
+<Depth level="quick">
+
+```swift title="make_request.swift"
+// # not executed here: Swift 6.3.3 toolchain is unavailable.
+import Foundation
+
+let baseURL = URL(string: "https://api.example.com")!
+var components = URLComponents(
+    url: baseURL.appendingPathComponent("v1/search"),
+    resolvingAgainstBaseURL: false
+)!
+components.queryItems = [
+    URLQueryItem(name: "q", value: "red bike"),
+    URLQueryItem(name: "limit", value: "20"),
+]
+
+guard let url = components.url else {
+    fatalError("invalid search URL")
+}
+
+var request = URLRequest(url: url)
+request.httpMethod = "GET"
+request.timeoutInterval = 15
+request.setValue("application/json", forHTTPHeaderField: "Accept")
+request.setValue("Bearer demo-token", forHTTPHeaderField: "Authorization")
+
+print(request.httpMethod ?? "missing method")
+print(request.url?.absoluteString ?? "missing URL")
+print(request.value(forHTTPHeaderField: "Accept") ?? "missing Accept")
+```
+
+```text
+# not executed here: Swift 6.3.3 toolchain is unavailable.
+```
+
+</Depth>
+
+The two force unwraps are provably safe for the fixed demonstration URL. Production code that reads user or configuration input should return a clear error instead. Keep path segments and query values separate: concatenating `?token=...` risks broken encoding and puts a secret into histories and proxy logs.
+
+### Validate a response without using the real network
+
+`StubProtocol` intercepts the request and returns a fixed HTTP response. The client still follows the real `URLSession.data(for:)` path, so the test covers request handling, status validation, and decoding without depending on an external service.
+
+```swift title="fetch_user.swift"
+// # not executed here: Swift 6.3.3 toolchain is unavailable.
+import Foundation
+
+final class StubProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]
+        )!
+        let data = Data(#"{"id":7,"name":"Mina"}"#.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+struct User: Decodable { let id: Int; let name: String }
+enum ClientError: Error { case nonHTTP; case status(Int) }
+
+let configuration = URLSessionConfiguration.ephemeral
+configuration.protocolClasses = [StubProtocol.self]
+let session = URLSession(configuration: configuration)
+let request = URLRequest(url: URL(string: "https://api.example.test/users/7")!)
+let (data, response) = try await session.data(for: request)
+
+guard let http = response as? HTTPURLResponse else { throw ClientError.nonHTTP }
+guard (200...299).contains(http.statusCode) else {
+    throw ClientError.status(http.statusCode)
+}
+
+let user = try JSONDecoder().decode(User.self, from: data)
+print("\(user.id): \(user.name)")
+```
+
+```text
+# not executed here: Swift 6.3.3 toolchain is unavailable.
+```
+
+<TryToBreak items={['make the stub return 404 with a JSON error body', 'remove the name field', 'cancel the task before the response']} />
+
+The force unwraps here cover a fixed URL and an HTTP response constructor owned by the test. A production client should retain only a small, redacted portion of an error body; it mustn't log returned HTML, tokens, or personal data wholesale. Decode after status validation so a 404 error object can't masquerade as a model-format failure.
+
+### Freeze session policy
+
+Finish the configuration before initializing a session. This example uses an ephemeral session to isolate persistent cookies, caches, and credentials, and it specifies separate timeouts for a request gap and the complete resource load.
+
+```swift title="configure_session.swift"
+// # not executed here: Swift 6.3.3 toolchain is unavailable.
+import Foundation
+
+let configuration = URLSessionConfiguration.ephemeral
+configuration.timeoutIntervalForRequest = 12
+configuration.timeoutIntervalForResource = 45
+configuration.waitsForConnectivity = true
+configuration.allowsExpensiveNetworkAccess = false
+configuration.httpAdditionalHeaders = [
+    "Accept": "application/json",
+    "User-Agent": "CatalogApp/1.0",
+]
+
+let session = URLSession(configuration: configuration)
+configuration.timeoutIntervalForRequest = 99
+
+print(session.configuration.timeoutIntervalForRequest)
+print(session.configuration.timeoutIntervalForResource)
+print(session.configuration.allowsExpensiveNetworkAccess)
+session.invalidateAndCancel()
+```
+
+```text
+# not executed here: Swift 6.3.3 toolchain is unavailable.
+```
+
+`timeoutIntervalForRequest` limits how long to wait for additional data, while `timeoutIntervalForResource` limits the total time available for a resource load. They aren't the same deadline. `waitsForConnectivity` lets a task wait for a suitable network, but it doesn't repair a connection that drops after establishment. Product requirements, not copied global defaults, should decide whether costly networks or Low Data Mode are allowed.
+
+### Retry only reads covered by policy
+
+Retry eligibility belongs to the API contract, not to every error by default. This conservative policy considers only GET and HEAD, a small set of transient statuses, and a fixed attempt limit. Production timing should still honor `Retry-After` and add bounded jitter.
+
+```swift title="retry_policy.swift"
+// # not executed here: Swift 6.3.3 toolchain is unavailable.
+import Foundation
+
+struct RetryPolicy {
+    let maximumAttempts = 3
+    let transientStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
+
+    func permits(_ request: URLRequest, status: Int, attempt: Int) -> Bool {
+        guard attempt < maximumAttempts else { return false }
+        guard transientStatuses.contains(status) else { return false }
+        return request.httpMethod == "GET" || request.httpMethod == "HEAD"
+    }
+
+    func fallbackDelay(after attempt: Int) -> TimeInterval {
+        min(pow(2, Double(attempt - 1)), 8)
+    }
+}
+
+let policy = RetryPolicy()
+var get = URLRequest(url: URL(string: "https://api.example.com/items")!)
+get.httpMethod = "GET"
+var post = get
+post.httpMethod = "POST"
+
+print(policy.permits(get, status: 503, attempt: 1))
+print(policy.permits(post, status: 503, attempt: 1))
+print(policy.permits(get, status: 404, attempt: 1))
+print(policy.fallbackDelay(after: 3))
+```
+
+```text
+# not executed here: Swift 6.3.3 toolchain is unavailable.
+```
+
+The policy deliberately doesn't treat an idempotent method as sufficient by itself. Safe replay also requires a reproducible body, valid credentials, and enough deadline remaining. POST becomes safe to retry only when the server provides an application protocol such as a stable idempotency key backed by atomic deduplication.
+
+## Pitfalls
+
+### Treating transport completion as HTTP success
+
+> [!PITFALL]
+> A nonthrowing return from `try await session.data(for:)` only says that URL loading delivered a response. A 404 or 500 can still return `Data`, and its error body might happen to decode into an overly permissive model.
+
+**Fix:** First require an `HTTPURLResponse`, then accept the endpoint's specific success statuses, and only then decode the body. Preserve the status and a relevant request identifier for failures, while bounding and redacting any recorded body.
+
+### Building dynamic URLs with strings and force unwraps
+
+> [!PITFALL]
+> `URL(string: base + "?q=" + input)!` mixes path, query, and encoding. Slashes, spaces, `&`, Unicode, or invalid configuration can change the target, while tokens can leak through URL logs.
+
+**Fix:** Build layers with `URL.appendingPathComponent` and `URLComponents.queryItems`, and represent failure as an explicit error. Put credentials in the appropriate header and validate allowed schemes and hosts before sending.
+
+### Creating a session for every call
+
+> [!PITFALL]
+> One `URLSession` per request fragments cookies, caching, connection reuse, metrics, and delegate lifetimes. If a session retains a delegate and never becomes invalid, a short-lived wrapper can also leave a long-lived reference behind.
+
+**Fix:** Reuse a session for each genuinely different policy, perhaps one each for interactive calls, ephemeral authentication, and background transfers. An owner with a custom delegate must choose `finishTasksAndInvalidate()` or `invalidateAndCancel()` and test the shutdown path.
+
+### Retrying writes unconditionally
+
+> [!PITFALL]
+> A fixed loop that retries every `URLError`, 429, and 5xx can create an order or charge more than once. Cancellation and timeout say the client lacks a definite result; neither proves that the server didn't commit.
+
+**Fix:** Write a retry matrix by method, endpoint, and failure stage. Reads use bounded backoff and honor `Retry-After`; writes need an <Term id="idempotency">idempotency</Term> protocol, a stable key, and atomic server deduplication. Otherwise mark the result unknown and query operation status.
+
+### Hiding boundary failures with `try?` and raw bodies
+
+> [!PITFALL]
+> `try?` turns a missing field, wrong type, or malformed JSON into the same `nil`. Printing complete headers and bodies to make up for the missing diagnosis then exposes tokens and personal data.
+
+**Fix:** Preserve the categories and causes of `URLError`, HTTP-status errors, and `DecodingError`. Log only a request ID, endpoint template, status, duration, and redacted error summary; tests should assert the precise failure layer.
+
+### Mistaking a foreground async call for background transfer
+
+> [!PITFALL]
+> Calling `URLSession.shared.download` inside a `Task` doesn't make the transfer survive system termination of the app. Conversely, a background session is a poor home for short JSON calls because it doesn't support data tasks.
+
+**Fix:** Use a background configuration with a fixed identifier, upload or download tasks, and persistent delegate state for long file transfers. Use default or ephemeral sessions for ordinary API calls, and make lifecycle interruption a recoverable product behavior.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate `let (data, _)` and decode immediately, discarding the HTTP status and headers. They interpolate paths, queries, and tokens into one force-unwrapped string, make a fresh session on every retry, or apply three rounds of exponential backoff to every POST. Authentication code is particularly prone to a refresh storm: concurrent 401 responses each refresh the token, then one business response is incorrectly delivered to every waiter. Another common patch swallows the real error with `try?` and prints the entire body "for debugging."
+
+**Ask your AI to check**
+
+- List the path for transport errors, non-HTTP responses, each accepted status, and decoding failure at every call site.
+- Produce a session-ownership table that says when configuration is copied, who owns each delegate, when invalidation occurs, and how cancellation propagates.
+- For every automatic retry, state the method, endpoint idempotency contract, attempt limit, total deadline, `Retry-After` handling, and duplicate-write protection.
+
+**Review checklist**
+
+- Test success, 404, 429, malformed JSON, connection failure, and cancellation with a controlled `URLProtocol`, without touching a live service.
+- Search for URL string interpolation, force unwraps, `try?`, per-call sessions, and logs containing authentication headers or raw bodies.
+- Trace task ownership during concurrent 401 responses, view disappearance, and app backgrounding; rule out refresh storms, orphaned work, and crossed responses.
+
+**Prompt vocabulary**
+
+Use the exact terms `URLSessionConfiguration`, `URLRequest`, `transport error`, `HTTP status validation`, `task cancellation`, `idempotency key`, `Retry-After`, `URLProtocol test double`, and `delegate invalidation`. Ask for a status matrix, ownership table, and failure timeline. "Write a robust networking layer" is too vague to expose bad assumptions.
+
+<Depth level="deep">
+
+## Request boundaries and type design
+
+A network boundary works well as three small parts: a request builder, a transport, and a decoder. The request builder accepts typed path and query inputs; the transport returns bytes with a validated response; the decoder converts the representation into a transport model. Business validation then turns that transport model into a domain value.
+
+Don't make one generic `request<T>()` pretend every endpoint behaves alike. A 204 has no body, a download returns a temporary file, a stream shouldn't buffer all bytes first, and an error response may use another model. Shared code can unify mechanics, but each endpoint still declares accepted statuses, body requirements, and authentication scope.
+
+A request body must match its `Content-Type`. Use `JSONEncoder` to produce JSON instead of interpolating a string; for file uploads, choose data, file, or stream according to the protocol and replay requirements. `Accept` states which response media types are acceptable. It doesn't replace `Content-Type`.
+
+Generic decoding proves only that data met `Decodable` rules. URLs, amounts, permission fields, and pagination cursors supplied by a server remain untrusted input. Check ranges, lengths, allowed hosts, and cross-field invariants during an explicit validation step.
+
+Token refresh needs one coordinator. When concurrent requests receive 401, one refresh operation should run while the other calls wait for new credentials and then replay their own requests. The waiters mustn't share one business response. A failed refresh must also finish every waiter consistently and clear stale tokens.
+
+## Error, cancellation, and retry timelines
+
+A transport error occurs without a usable HTTP response, an HTTP error follows a server status, and a representation error happens while interpreting the body. Drawing those stages as a timeline helps determine whether a request may have reached the server. For a write, a connection lost after sending often leaves the result unknown.
+
+Swift task cancellation should travel down the call tree. A UI owner of search, image, or page requests can cancel old work when new work replaces it, but the lower layer shouldn't convert `CancellationError` into an ordinary empty result. The caller needs to distinguish "no data" from "this work is no longer wanted."
+
+Cancelling a URLSession task doesn't retract a remote side effect, and closing a screen doesn't roll back a payment. For reliable writes, the client generates a stable idempotency key and the server atomically stores the key, request fingerprint, and result. A retry sends the same key with the same request instead of generating a new key each time.
+
+A retry budget should limit both attempts and total time. Every delay spends the caller's deadline, as do token refresh and connectivity waits. Without one shared budget, three nested retry layers multiply: a URLSession wrapper, repository, and UI that each try three times can issue twenty-seven requests.
+
+A 429 or 503 may carry `Retry-After`. Parse its permitted date or seconds form and follow it only within the remaining local budget; use bounded fallback backoff when it is absent. Random jitter keeps many clients from retrying together, but it doesn't make unbounded waiting sensible.
+
+## Caching, redirects, and trust boundaries
+
+An HTTP cache key is more than a URL string. The method, request headers, response `Vary`, validators, and freshness rules can all change reuse. Letting `URLCache` work with server cache headers is usually safer than storing only an ETag in a dictionary.
+
+`.reloadIgnoringLocalCacheData` bypasses local cache reads, but it doesn't mean that every intermediary must avoid caching. Likewise, the product must define whether the possibly stale data allowed by `.returnCacheDataElseLoad` is acceptable. Cache policy is a correctness choice, not merely a performance switch.
+
+An ephemeral session doesn't persist caches, cookies, or credentials to disk, but that doesn't make it anonymous or stateless. Requests still carry authentication headers supplied by code, and in-memory state exists while the session lives. Sensitive flows also need review of logs, telemetry, screenshots, and upper-layer model lifetimes.
+
+URLSession follows HTTP redirects by default, and a delegate can inspect or reject a new request. A security-sensitive client should revalidate the scheme, host, credentials, and method change at every hop, not just at the initial URL. In particular, don't blindly forward secrets across hosts.
+
+App Transport Security favors HTTPS by default, but broad exceptions weaken that boundary. A challenge handler that trusts every certificate disables server identity checking. If custom trust is required, scope it to a host, use system trust evaluation, and plan for certificate rotation.
+
+## Background transfers and delegate lifetime
+
+Background sessions suit long uploads and downloads that can be represented by files. The configuration identifier must be stable and unique within the app because the system uses it to reconnect events after relaunch. A random identifier on every launch makes the restoration path lose the original session.
+
+The system process performs a background transfer, so the app must rebuild state after process death. In-memory completion closures, arrays, and progress observers aren't enough. Persist task descriptions, destination files, business IDs, and state transitions, and move a completed download from its temporary URL promptly.
+
+Delegate callbacks run on the selected operation queue, while UI updates belong on `MainActor`. An async call made from the main actor doesn't imply that every delegate callback arrives on the main thread. Conversely, JSON decoding and file processing shouldn't all be forced onto the main actor.
+
+A custom session strongly retains its delegate. If the delegate also owns the session, the relationship lasts until `finishTasksAndInvalidate()` or `invalidateAndCancel()` releases the session's reference. The former allows existing tasks to finish; the latter cancels them. The owner must choose the shutdown semantics deliberately.
+
+The total byte count may be unknown. `countOfBytesExpectedToReceive`, or the corresponding download-delegate value, can be negative, so dividing by it produces a meaningless ratio. Show indeterminate progress until the total is known and greater than zero.
+
+## Testing and observability
+
+Inject a `URLSession` or a smaller transport protocol into the client. A `URLProtocol` test double can capture requests and return controlled responses synchronously, which suits assertions about methods, queries, headers, bodies, statuses, and decoding. It doesn't replace a small number of real integration tests, but it keeps unit tests fast and deterministic.
+
+The test matrix should cover every accepted status, no-body responses, structured errors, non-JSON errors, malformed JSON, connection failure, cancellation, and redirects. Retry tests should use a virtual clock or injected sleeper instead of waiting real exponential seconds. Concurrent-authentication tests release several 401 responses together and assert one refresh plus a separate response for each original request.
+
+Metrics should separate DNS, connection, TLS, first-byte, download, status, and decoding stages. `URLSessionTaskMetrics` provides transport timings and connection-reuse data, while business logs still need a request ID and endpoint template. A full URL may contain query secrets and shouldn't become a metric label.
+
+Record only the fields needed for diagnosis. Treat authentication headers, cookies, request bodies, and response bodies as sensitive by default; even an error response may contain email addresses, internal stacks, or session data. If a sample is necessary, bound it first, redact by field, and configure retention.
+
+To test cancellation, create a request that genuinely remains pending, cancel the Swift task that owns it, and assert both the error category and cleanup. A stub that returns immediately proves nothing about cancellation propagation. Background sessions need device-level lifecycle tests because a unit test can't simulate event delivery by the system daemon.
+
+</Depth>
+
+<Checkpoint id="backend/urlsession" />
+
+## Further reading
+
+- [Apple Developer Documentation: URLSession](https://developer.apple.com/documentation/foundation/urlsession)
+- [Apple Developer Documentation: URLSessionConfiguration](https://developer.apple.com/documentation/foundation/urlsessionconfiguration)
+- [WWDC21: Use async/await with URLSession](https://developer.apple.com/videos/play/wwdc2021/10095/)
+- [Apple Developer Documentation: Accessing cached data](https://developer.apple.com/documentation/foundation/accessing-cached-data)
+- [Apple Developer Documentation: Downloading files in the background](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)
+- [Swift.org: Installing Swift with Swiftly on macOS](https://www.swift.org/install/macos/swiftly/)

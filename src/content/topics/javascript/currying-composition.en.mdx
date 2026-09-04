@@ -1,0 +1,403 @@
+---
+title: Currying and function composition
+description: Currying fixes arguments in stages; function composition connects unary transformations while making arity, this, and async boundaries explicit.
+track: javascript
+section: functions-scope
+difficulty: intermediate
+tags: [currying, partial-application, function-composition, higher-order-functions]
+prerequisites: [javascript/functions, javascript/closures]
+related: [javascript/arrow-functions, javascript/call-apply-bind, javascript/array-methods]
+terms: [currying, partial-application, function-composition, higher-order-function, closure]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/currying-composition
+sources:
+  - { title: 'MDN JavaScript Guide - Functions', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Functions' }
+  - { title: 'MDN - Function length', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/length' }
+  - { title: 'MDN - Function bind', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind' }
+  - { title: 'MDN - Array reduce', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce' }
+  - { title: 'MDN - Closures', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures' }
+origin: old/src/content/docs/javascript/currying-composition.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Currying rewrites a multi-argument call as a sequence of unary calls; function composition passes one function's return value to the next function.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A generic `curry` based on `fn.length` misreads default and rest parameters, and a synchronous `pipe` doesn't automatically await Promises.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    State the arity, argument order, `this`, and async contracts, then connect named unary stages.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="currying">Currying</Term> transforms a function that takes several arguments into a sequence of functions that each take one argument. If the original call is `format(symbol, digits, amount)`, its strictly curried form is `format(symbol)(digits)(amount)`. The early calls return functions; the final call produces the result.
+
+Each returned layer is the result of a <Term id="higher-order-function">higher-order function</Term>. It uses a <Term id="closure">closure</Term> to retain arguments already supplied, letting you fix stable configuration before passing the specialized function elsewhere. For example, fixing a currency and decimal count produces a formatter that only needs an amount.
+
+<Term id="partial-application">Partial application</Term> is related to currying, but the definitions aren't interchangeable. Partial application binds any subset of a function's arguments in advance and returns a function for the rest; it can bind several arguments at once. Currying changes the call shape, with one argument per layer in its strict form.
+
+JavaScript `curry` helpers often accept `fn(a)(b, c)` or `fn(a, b)(c)`. That interface combines currying with grouped partial application. It is convenient, but it is no longer the strict one-argument-at-a-time form, so check the library's rules for grouping, placeholders, extra arguments, and completion.
+
+<Term id="function-composition">Function composition</Term> connects several functions into one. `compose(f, g)(value)` is equivalent to `f(g(value))`, so calls proceed from right to left. The common `pipe(f, g)(value)` spelling represents the same process as `g(f(value))`, read from left to right as a data flow.
+
+Currying and composition often appear together because stages after the entry point normally accept one value. Currying or partial application can fix configuration and turn a multi-argument operation into a suitable unary stage. This is only a useful pairing: either technique works independently, and the JavaScript standard library doesn't provide generic `curry`, `compose`, or `pipe` functions.
+
+These techniques fit configuration reuse, array transformations, validation stages, and small data-processing flows. Direct calls and named ordinary functions are usually clearer when the work depends heavily on mutable objects, `this`, multiple result channels, or complex error recovery. Point-free style merely omits parameter names; it shouldn't become a design goal.
+
+## How it works
+
+Each call to a curried function merges new arguments with those collected earlier. The helper invokes the original function once the agreed count is reached; otherwise, it returns another argument-collecting function. The closure stores arguments for that partial call, so two branches created from the same entry function don't append to each other's lists.
+
+Strict currying doesn't need to infer arity because the function structure says how many layers remain. A generic helper needs a completion condition, commonly defaulting to `fn.length`. That property isn't a complete signature: it counts parameters only up to the first one with a default, excludes a rest parameter, and counts one destructuring pattern as one parameter.
+
+Here are the runtime `length` values for several signatures. They follow the language rules, but they don't necessarily equal the number of arguments the business operation requires.
+
+| Function signature | `length` | Effect on generic `curry` |
+| --- | ---: | --- |
+| `(a, b, c)` | `3` | Can serve as the default completion count |
+| `(a, b = 0, c)` | `1` | May execute as soon as `a` arrives |
+| `(...values)` | `0` | Can't reveal a useful minimum count |
+| `({ id }, options)` | `2` | The whole destructuring pattern counts once |
+
+A dependable helper therefore accepts an explicit arity or serves only a controlled set of function signatures. When the target has optional parameters, another clear design is a factory that takes a fixed configuration object and returns a function for the business data. Don't mistake a reflection value for the business contract.
+
+Composition has simpler mechanics. `pipe` starts with an input and uses `reduce()` to pass the current value through each stage; `compose` uses `reduceRight()` to traverse the same stages in reverse. Every intermediate stage receives one value, not an automatically expanded argument list.
+
+Adjacent stages must therefore agree at runtime. If one stage returns an array, the next receives one array; it isn't called with the array's elements as separate arguments. JavaScript doesn't check this input-output relationship, so a type error often appears only when execution reaches the incompatible stage.
+
+Synchronous and asynchronous composition have different contracts. A synchronous `pipe` immediately passes a Promise to the next stage as an ordinary object; it doesn't switch modes because one function is marked `async`. An async variant can begin with `Promise.resolve(input)` and chain stages with `.then()`, which consistently awaits both plain values and Promises.
+
+Neither currying nor composition solves `this` automatically. Extracting an object method for a helper loses the original call form, and different implementations may preserve the receiver from the first or last partial call. The safest contract is to compose functions that don't depend on `this`; when a receiver is required, fix it first with `bind()`.
+
+## Examples
+
+The four examples move from strict currying to arity-based collection, synchronous composition, and asynchronous composition. Every output shown below comes from running the corresponding file with local Node 24.14.0.
+
+### Fixing formatter configuration
+
+This amount formatter puts stable configuration first and the changing amount last. Two partial call chains produce dollar and yen formatters, so callers don't repeat the configuration.
+
+<Depth level="quick">
+
+```javascript run title="format-amount.js"
+const formatAmount = symbol => decimals => amount =>
+  `${symbol}${amount.toFixed(decimals)}`;
+
+const formatUsd = formatAmount('$')(2);
+const formatYen = formatAmount('¥')(0);
+
+console.log(formatUsd(19.5));
+console.log(formatUsd(0));
+console.log(formatYen(2400.4));
+```
+
+```text
+$19.50
+$0.00
+¥2400
+```
+
+<TryToBreak items={['a negative amount', 'a negative decimal count', 'an amount passed as a string']} />
+
+</Depth>
+
+`formatAmount('$')` returns a function that captures `symbol`, and the next layer captures `decimals`. `formatUsd` and `formatYen` come from separate call chains and keep separate configurations. Nothing here infers arity or defines placeholder rules.
+
+Argument order determines what you can reuse. Putting the fastest-changing data last naturally produces specialized functions such as `formatUsd`. If callers usually have all three values together, a direct three-argument function may be easier to read.
+
+### Collecting grouped arguments
+
+This small helper defaults to `fn.length` and also accepts an explicit `arity`. It permits unary or grouped calls and invokes the original function once the collected count reaches the target.
+
+```javascript run title="curry-by-arity.js"
+function curryByArity(fn, arity = fn.length) {
+  if (!Number.isInteger(arity) || arity < 1) {
+    throw new TypeError('arity must be a positive integer');
+  }
+
+  function collect(collected) {
+    return function curried(...next) {
+      const all = [...collected, ...next];
+      return all.length >= arity ? fn(...all) : collect(all);
+    };
+  }
+
+  return collect([]);
+}
+
+const createMessage = (level, service, message) =>
+  `[${level}] ${service}: ${message}`;
+const message = curryByArity(createMessage);
+const warnBilling = message('WARN')('billing');
+
+console.log(warnBilling('payment delayed'));
+console.log(message('INFO', 'search')('index ready'));
+```
+
+```text
+[WARN] billing: payment delayed
+[INFO] search: index ready
+```
+
+`warnBilling` fixes the log level and service name, leaving only the message argument. The second call supplies two arguments together, showing that this helper uses flexible grouping rather than strict currying. The name `curryByArity` exposes its completion rule instead of suggesting that it works for every function.
+
+Once the count is reached, the code passes every collected argument to the target. An ordinary JavaScript function may ignore extras or inspect them through a rest parameter or `arguments`, so a production helper must say whether oversupply is allowed. This example also deliberately doesn't preserve a dynamic `this` value.
+
+### Connecting order transformations
+
+The argument order of `filter` and `map` puts configuration before data. Partial calls produce stages that each accept one array, which is exactly what `pipe` needs.
+
+```javascript run title="order-pipeline.js"
+const pipe = (...steps) => input =>
+  steps.reduce((value, step) => step(value), input);
+
+const compose = (...steps) => input =>
+  steps.reduceRight((value, step) => step(value), input);
+
+const filter = predicate => items => items.filter(predicate);
+const map = project => items => items.map(project);
+const atLeast = minimum => order => order.total >= minimum;
+const orderLabel = compose(
+  label => label.toUpperCase(),
+  order => `${order.id}:${order.total}`,
+);
+
+const selectOrderLabels = pipe(
+  filter(atLeast(50)),
+  map(orderLabel),
+  labels => labels.toSorted(),
+);
+
+const orders = [
+  { id: 'a-101', total: 35 },
+  { id: 'a-103', total: 120 },
+  { id: 'a-102', total: 75 },
+];
+
+console.log(JSON.stringify(selectOrderLabels(orders)));
+console.log(orders.map(order => order.id).join(','));
+```
+
+```text
+["A-102:75","A-103:120"]
+a-101,a-103,a-102
+```
+
+`orderLabel` composes right to left, building a label before uppercasing it. The outer pipeline filters, maps, and sorts in reading order. Each stage has a separately describable input and output shape, and its name can appear directly in a stack trace.
+
+The final output line proves that the original order array keeps its ordering. `filter()` and `map()` return new arrays, and `toSorted()` also leaves its receiver alone. If generated code replaces the last step with `sort()`, the pipeline silently mutates the array returned by the previous stage; shared references can carry that side effect beyond the pipeline.
+
+### Chaining synchronous and async stages
+
+The async pipeline first normalizes its input to a Promise, then connects every stage with `.then()`. An async lookup, synchronous validation, and synchronous formatting can use one execution path.
+
+```javascript run title="async-pipeline.js"
+const pipeAsync = (...steps) => input =>
+  steps.reduce(
+    (pending, step) => pending.then(step),
+    Promise.resolve(input),
+  );
+
+const findAccount = async id => {
+  const accounts = new Map([
+    [7, { id: 7, name: 'Ada', planId: 'pro' }],
+  ]);
+  return accounts.get(id) ?? null;
+};
+
+const requireAccount = account => {
+  if (account === null) throw new Error('account not found');
+  return account;
+};
+
+const summarize = account => `${account.name} uses ${account.planId}`;
+const describeAccount = pipeAsync(findAccount, requireAccount, summarize);
+
+async function main() {
+  console.log(await describeAccount(7));
+  try {
+    await describeAccount(99);
+  } catch (error) {
+    console.log(`${error.name}: ${error.message}`);
+  }
+}
+
+main();
+```
+
+```text
+Ada uses pro
+Error: account not found
+```
+
+When the account exists, the fulfillment value passes through all three stages. A plain value returned by a synchronous stage is automatically adopted by the next `.then()`. When no account exists, the exception from `requireAccount` becomes a rejection and `summarize` doesn't run.
+
+This error policy fails the whole chain fast. If the domain needs to accumulate validation errors or distinguish recoverable failures, put that result type in the stage contract instead of having some stages throw while others return `{ error }`. Mixing both channels forces every later stage to guess its input shape.
+
+## Pitfalls
+
+### Treating flexible grouping as the definition
+
+> [!PITFALL]
+> The fact that `curried(a, b)(c)` works doesn't mean strict currying lets each layer take several arguments. Many libraries combine currying and partial application in one interface, while others accept only unary calls.
+
+**Fix:** Document and test the accepted call shapes. Cover unary calls, grouped calls, extra arguments, and empty calls; if the library has placeholders, verify their fill order too.
+
+### Treating `fn.length` as a full signature
+
+> [!PITFALL]
+> An arity-based helper applied to `(base, options = {}, request)` may execute as soon as it receives `base`. A rest-parameter function has a `length` of `0`, so it has no naturally inferred completion point either.
+
+**Fix:** Supply an explicit arity for default, rest, and optional parameters, or write a configuration factory for that target. Tests should prove that a partial call still returns a function and only the final call returns the business value.
+
+### Losing or confusing `this`
+
+> [!PITFALL]
+> `curry(account.charge)` extracts a function value and loses the receiver call form `account.charge()`. A helper that reads `this` at different layers can also see different receivers from the first and last partial calls.
+
+**Fix:** Prefer composable functions that receive dependencies as explicit arguments. When an object method is required, call `account.charge.bind(account)` before partial application or currying, then test the extracted function.
+
+### Putting a Promise in a synchronous chain
+
+> [!PITFALL]
+> When a synchronous `pipe` reaches an async stage, it passes the Promise itself to the next function. A later property read commonly produces `undefined` or a type error several stages away from the real cause.
+
+**Fix:** Give one chain one awaiting strategy. If any stage may return a Promise, use an explicit `pipeAsync` and test fulfillment, rejection, and synchronous exceptions.
+
+### Hiding type changes and mutation
+
+> [!PITFALL]
+> A long point-free chain hides changes from object to array to string. Stages using `sort()`, `reverse()`, or object-field assignment can also make an apparently functional transformation modify caller-owned data.
+
+**Fix:** Name nontrivial stages and write or annotate their input and output shapes. Keep a pre-call snapshot and check object identity for shared input; use explicit copying methods such as `toSorted()` and `toReversed()` when needed.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate a universal `curry` based on `fn.length`, then apply it to a function with defaults or rest parameters, causing early or immediate execution. Another common failure is an `async` stage inside a synchronous `pipe`, so the next stage receives a Promise; models also capture `this` from the wrong partial-call layer while repairing detached methods. Generated data pipelines frequently replace `toSorted()` with `sort()`, keeping the output correct while unexpectedly mutating the input.
+
+**Ask your AI to check**
+
+- List each target's source parameters beside its runtime `fn.length`, and identify the call that completes collection.
+- State the input shape, output shape, and plain-value-or-Promise behavior of every composed stage.
+- Trace every method receiver and each array operation's mutation behavior, including shared references.
+
+**Review checklist**
+
+- Run tests for unary, grouped, default, rest, and extra arguments.
+- Test success and rejection with a real Promise, confirming that later stages receive fulfillment values rather than Promise objects.
+- Freeze or copy the input before running the pipeline, then check `this`, array order, and nested objects for unintended changes.
+
+**Prompt vocabulary**
+
+Use the exact terms `currying`, `partial application`, `arity`, `function composition`, `unary function`, `point-free style`, `receiver`, and `Promise normalization`. Ask for the helper contract and a stage-by-stage type table before requesting code; "optimize this functional code" doesn't constrain grouping, receivers, or error channels.
+
+<Depth level="deep">
+
+## Contracts for curry helpers
+
+JavaScript has no shared currying protocol, so two helpers with the same name needn't behave alike. A usable contract answers at least five questions: the completion arity, whether one call may supply several arguments, whether extras are accepted, whether placeholders exist, and where `this` comes from. Those behaviors deserve more attention during a library upgrade than the helper's short implementation.
+
+The strict unary form is easiest to reason about because each layer has one argument. Flexible grouping removes parentheses but adds boundaries around empty and oversupplied calls. Whether `curried()()(a)` keeps collecting and whether `curried(a, b, c, d)` discards `d` are decisions the language doesn't make for you.
+
+Placeholders let callers fix non-prefix positions, but they complicate merging. An implementation must distinguish a symbol used as real data from its placeholder and decide whether new arguments fill old gaps before appending. Unless a project needs that syntax, a named configuration object or small wrapper is usually easier to review.
+
+`bind()` is the language's built-in partial-application tool, but it fixes both `this` and leading arguments. Binding the returned function again can't replace an already fixed receiver, and constructor calls have separate rules. `bind()` is therefore not a generic `curry`, and the two aren't interchangeable without a receiver contract.
+
+Argument order is API design. Stable configuration first and changing data last make reusable unary functions convenient; if most calls already have every argument, the same order may only add indirection. Inspect real call sites before adding a curried entry point.
+
+## Composition laws and runtime boundaries
+
+For compatible unary functions, `compose(f, g, h)(x)` expands to `f(g(h(x)))`. Composition is associative because grouping `f` with `g` or `g` with `h` leaves that call nesting unchanged. Pure functions make the equality safe to substitute; hidden state doesn't change the parentheses but makes results depend on conditions outside the chain.
+
+The identity function `value => value` is the natural result of an empty composition. `pipe()` or `compose()` can then return a callable even with no stages instead of inventing a special `undefined` result. A project may forbid empty chains instead, but implementation, types, and tests must agree.
+
+Some helpers allow the entry stage to receive several arguments: `compose(f, g)(a, b)` invokes `g(a, b)` first and then resumes unary passing. The examples here choose a narrower single-input contract to keep every stage consistent. Don't assume these two entry rules match when copying a `compose` implementation.
+
+Runtime values carry no proof of their static type. If one stage can return `null`, throw, or produce a union shape, the next stage must handle that branch explicitly. Encoding validation, transformation, and error channels in stage names and types is more dependable than relying on a concise point-free surface.
+
+Side effects make intermediate values harder to replay and compare. A named `tap` stage that returns its input can add logging, but the log operation can still fail or leak data. Test it as a real side effect instead of treating `tap` as pure.
+
+## Async composition and diagnosis
+
+An async pipeline that starts with `Promise.resolve(input)` adopts plain values and Promises. Each `.then(step)` also converts a synchronous exception into a rejection, so one `await` and `try...catch` at the end can observe a consistent outcome. This normalization doesn't classify failures; the domain still decides which ones are retryable.
+
+Putting several async functions in `pipeAsync` doesn't make independent work parallel, because the pipeline awaits each stage in order. Independent requests belong in one explicit stage that starts them with `Promise.all()` and passes their aggregate result onward. Sequential dependencies and parallel branches should be visible in the code structure.
+
+To debug a long chain, first extract anonymous arrows into named stages. Assert the input shape at stage boundaries and test each stage separately, then use an integration test to verify direction and full order. Stack traces, coverage, and failure messages will then point to business names instead of anonymous callback positions.
+
+Composition-helper tests should cover empty, one-stage, multi-stage, and throwing chains. Curry-helper tests should cover argument boundaries and branch isolation. Don't test only with addition: numeric addition hides argument-order bugs and lets several wrong implementations produce the same answer.
+
+Function identity can also be part of an external contract. Each curry or compose call creates a new function object, so listener removal, cache keys, and reference-equality checks must retain the returned value. Rebuilding a function with the same arguments doesn't reproduce the original object.
+
+## Designing reusable stages
+
+A reusable stage should have one clear data parameter. Configuration can be fixed through leading partial application or collected in a named object; either is easier to test than reading implicit global configuration. A stage that needs two constantly changing business values may not belong directly in a unary composition chain.
+
+Put adapters at boundaries instead of scattering them through every stage. An entry adapter can package two raw arguments into one record, after which every stage accepts that record. This preserves multiple fields without making the composition helper guess when to spread an array or object.
+
+The factory call site determines the configured function's lifetime. A partial application created during module loading retains its configuration for a long time; one created while handling a request should serve only that request. If its closure captures a large client or request context, caching the returned function also keeps those objects reachable.
+
+A public API can offer both a direct entry point and a configured factory, but their names should distinguish the jobs. `formatAmount(config, amount)` suits occasional calls, while `createAmountFormatter(config)` clearly returns a reusable function. Exposing one function through several parenthesis patterns usually makes documentation and types harder to state.
+
+Choose the form from the call pattern, not from a functional-programming label.
+
+| Call pattern | More direct form | Reason |
+| --- | --- | --- |
+| Every call has every argument | Ordinary multi-argument function | There is no configuration to retain |
+| Many calls reuse leading configuration | Currying or partial application | Produces a specialized unary function |
+| Many optional settings in unstable order | Configuration-object factory | Field names are clearer than positions |
+| Several public operations share state | Object or class | Ownership and lifetime are more visible |
+| Data crosses compatible transformations | `pipe` | Execution order matches reading order |
+
+One input doesn't mean one simple scalar. A stage may receive a record containing data, diagnostics, and context, then return a record following the same protocol. What matters is agreement between stages, not preserving a unary appearance through layers of anonymous objects.
+
+Point-free code fits functions that already have clear names and stable signatures. If you must repeatedly look up adapters such as `prop`, `flip`, and `uncurry` to understand direction, writing the argument is usually shorter. Readability depends on whether the data change is visible, not on whether parameter names appear in source.
+
+Keep one tested composition helper in a clear project location. When teams each write a slightly different `pipe`, their empty-chain, multi-argument entry, and async rules soon diverge. Reuse comes from a shared contract, not from saving two lines of `reduce()`.
+
+Stage names should describe results rather than vague classes of action. `parseInvoice`, `validateInvoice`, and `toInvoiceRow` expose shape changes; `process`, `handle`, and `transform` don't tell you where a boundary lies. The distinction becomes especially useful when those names appear in a stack trace.
+
+## Testing argument and stage boundaries
+
+Curry tests should verify call shapes before they verify a final arithmetic answer. Create at least two partial branches from one entry and finish them in an interleaved order to prove their captured argument lists don't cross. String joining or record construction reveals argument order better than addition.
+
+For a helper with explicit arity, test one short of completion, exact completion, and oversupply. If empty calls are legal, verify whether they preserve collected state. Placeholder implementations also need contract tests for repeated gaps, unfilled gaps, and the placeholder token used as real data.
+
+Composition tests should make every stage produce a recognizable change. Appending a character and then wrapping the result in parentheses directly distinguishes left-to-right from right-to-left evaluation. Two commutative mathematical operations can let a reversed implementation pass.
+
+Error paths belong to the composition contract too. Verify which stage stops, whether an exception or rejection preserves its original cause, and whether required cleanup still runs. If the pipeline represents failure with a result object, prove that later stages don't treat the failure object as successful data.
+
+A compact boundary set covers the main risks:
+
+- Finish two partial branches in different orders and keep their results independent.
+- Give default-parameter functions an explicit arity and execute them at the intended call.
+- Reject Promises in a synchronous pipeline or explicitly await them in an async pipeline.
+- Preserve the promised identity and contents of input objects across a call.
+
+Test a composition helper with zero, one, and several stages. The one-stage case catches accidental input wrapping or spreading, while the empty case fixes the identity-or-rejection policy. Only the multi-stage case is responsible for direction.
+
+Business-pipeline tests don't need to prove `reduce()` again. Concentrate on adjacent-stage protocols, real boundary values, and ownership of side effects. Those tests still describe the same business contract if the implementation later switches from `pipe` to ordinary statements.
+
+When a review fails, record a stage trace before rewriting the composition helper. A trace needs the stage name, input category, output category, and sync or async state; production logs shouldn't print sensitive values. Once you find the first protocol change, inspect that stage's isolated test.
+
+The final decision still comes from call sites. Keep currying when it makes configuration reuse clear and composition when it exposes stage contracts. If readers must learn project-specific placeholder and receiver rules to understand one line, ordinary functions provide the smaller interface.
+
+</Depth>
+
+<Checkpoint id="javascript/currying-composition" />
+
+## Further reading
+
+- [MDN JavaScript Guide: Functions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Functions)
+- [MDN: `Function.length`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/length)
+- [MDN: `Function.prototype.bind()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind)
+- [MDN: `Array.prototype.reduce()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce)
+- [MDN: Closures](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Closures)

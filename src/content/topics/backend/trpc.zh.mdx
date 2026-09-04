@@ -1,0 +1,407 @@
+---
+title: tRPC
+description: tRPC 将 TypeScript router 转换为类型化客户端契约；掌握运行时边界、验证、上下文、中间件与部署陷阱。
+track: backend
+section: http-apis
+difficulty: intermediate
+tags: [trpc, typescript, rpc, type-safety]
+prerequisites: [backend/getting-started, backend/api-design]
+related: [backend/restful-api-design, backend/graphql, backend/grpc, backend/backend-security]
+terms: [remote-procedure-call, type-inference, trpc-router, trpc-procedure, trpc-context]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: backend/trpc
+sources:
+  - { title: 'tRPC documentation', url: 'https://trpc.io/docs' }
+  - { title: 'tRPC - Routers', url: 'https://trpc.io/docs/server/routers' }
+  - { title: 'tRPC - Procedures', url: 'https://trpc.io/docs/server/procedures' }
+  - { title: 'tRPC - Context', url: 'https://trpc.io/docs/server/context' }
+  - { title: 'tRPC - Middlewares', url: 'https://trpc.io/docs/server/middlewares' }
+  - { title: 'tRPC - Server-side calls', url: 'https://trpc.io/docs/server/server-side-calls' }
+origin: old/src/content/docs/backend/trpc.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    tRPC 根据 TypeScript 服务端 router 构建类型化调用接口。客户端通过类型推断得到 procedure 路径、输入与输出，不需要另写 API 模式或生成客户端。
+  </TLDRCell>
+  <TLDRCell label="when">
+    当同一团队控制 TypeScript 客户端与服务端，并能在构建时共享 router 类型时，可以使用 tRPC。若独立客户端或非 TypeScript 客户端需要调用 API，应优先考虑语言无关的契约。
+  </TLDRCell>
+  <TLDRCell label="how">
+    在运行时验证所有输入，从请求上下文推导身份，对目标对象执行授权，并且只公开有意设计的输出。批处理、序列化与部署都属于 TypeScript 无法证明的运行时契约。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+tRPC 是一种 TypeScript <Term id="remote-procedure-call">远程过程调用（remote procedure call，RPC）</Term>接口实现。服务端把具名 procedure 组合成 router，并且只导出 router 的 TypeScript 类型。tRPC 客户端利用该类型，为 procedure 路径、输入与结果提供调用式补全和静态检查。
+
+它的核心收益是让私有 TypeScript API 只有一个事实来源。当 procedure 的输入从 `{ id: string }` 改成 `{ id: string; revision: number }` 时，使用同一 router 类型编译的调用方会收到类型错误。团队不必再同步第二份 OpenAPI 文档或生成的 SDK。
+
+这项保证的范围比表面上窄。请求经过网络时，TypeScript 类型早已消失，所以 tRPC 仍需在运行时解析输入。传输可能失败，已经部署的旧客户端可能调用新服务端，而类型完全正确的调用方仍可能无权读取某一行数据。
+
+tRPC 适合 monorepo、全栈 TypeScript 应用，以及客户端与服务端一起发布的内部服务。如果移动应用、合作方集成、Webhook 或多语言服务也要调用同一 API，只提供 tRPC 往往不合适。这些调用方通常需要语言无关且可独立演进的接口描述。
+
+tRPC 不规定数据库或应用架构。procedure 通常应把传输输入适配到应用服务，而不是容纳全部查询与业务规则。保持服务层独立，还能让 HTTP handler、后台任务、测试与服务端调用复用同一行为。
+
+本页使用 Node 24.14.0、TypeScript 6.0.3、`@trpc/server` 11.18.0 和 Zod 4.5.4 验证。示例通过服务端调用器保持单文件可运行；同一个 router 也可以由 HTTP adapter 暴露。
+
+## 工作原理
+
+tRPC 服务端从 `initTRPC` 开始，可以为它指定上下文类型。初始化结果包含 router、procedure 与 middleware 构建器。<Term id="trpc-router">tRPC router</Term>是一棵具名树，<Term id="trpc-procedure">tRPC procedure</Term>则是树中一个可调用的叶节点。
+
+每个 procedure 都会构建一条有序管线，其中包含解析器 middleware 和用户 middleware。输入解析器产生经过验证的值，middleware 可以拒绝调用，也可以向后传递类型已收窄的上下文，query、mutation 或 subscription resolver 则执行操作。管线返回时，输出解析器检查结果；抛出的 `TRPCError` 携带稳定的 tRPC 错误码。
+
+```mermaid
+flowchart LR
+  A[Client proxy] --> B[Link and transport]
+  B --> C[HTTP adapter]
+  C --> D[Ordered parser and middleware pipeline]
+  D --> E[Procedure resolver]
+  E --> F[Output checks on return]
+  F --> G[Serialized result]
+```
+
+客户端 proxy 不会在运行时下载或检查服务端 router。它的泛型 `AppRouter` 类型只存在于编译阶段；访问 `client.order.byId.query()` 等属性时，proxy 会构造操作路径，并通过已配置的 link 发送数据。服务端 adapter 再根据真实 router 解析该路径。
+
+### Router 与 procedure
+
+Router 把相关能力组成 `order.byId`、`order.rename` 等命名空间。嵌套 router 只负责组织结构，不构成授权边界。通常把根 router 的 `typeof` 结果导出为 `AppRouter`，客户端使用类型导入，以免服务端实现代码进入客户端 bundle。
+
+Query 表示读取，mutation 表示写入或其他副作用。这些标签会影响客户端集成与缓存行为，但不会自动保证 resolver 只读，也不会自动创建事务。相关语义仍需由应用服务和数据库强制执行。
+
+Procedure 输入可以使用 Zod 或其他受支持的 Standard Schema 验证器。解析器同时决定传给 resolver 的运行时值和推断出的输入类型。因此，转换与默认值属于 procedure 契约，而不只是编辑器提示。
+
+### 上下文与中间件
+
+<Term id="trpc-context">tRPC 上下文（tRPC context）</Term>是调用时提供的应用状态，通常包括已认证主体、数据库访问对象、请求元数据和跟踪设施。HTTP adapter 一般根据传入请求创建上下文。同一 HTTP 请求中的批量操作会共享请求上下文，因此必须有意隔离每个操作的可变状态。
+
+Middleware 包裹 procedure 管线的后续部分。认证 middleware 可以拒绝不存在的主体，并向后传递主体非空的上下文。授权通常还需要更多工作：加载请求的资源后，代码必须证明该主体可以对该资源执行当前操作。
+
+先构建 `publicProcedure`、`protectedProcedure` 等可复用基础 procedure，再为租户或角色规则扩展它们。不要依赖 resolver 必须记得检查的全局标志。只有每条敏感路由确实继承受保护构建器时，`protected` 这个名字才有意义。
+
+### 静态契约与运行时契约
+
+<Term id="type-inference">类型推断（type inference）</Term>把当前客户端构建连接到 router 声明。运行时解析器则防止真实进程接收畸形、过期或恶意输入。两者都重要，也都不能取代认证、授权、数据库约束或业务不变量。
+
+输出解析器会在结果离开 procedure 管线前检查 resolver 返回值。它既能发现内部数据边界上的漂移，也能建立白名单式响应形状。它仍应配合显式结果映射，因为先意外返回数据库对象、再交给解析器处理，会让代码意图难以审查。
+
+错误也要跨越边界。客户端决策应使用 `BAD_REQUEST`、`UNAUTHORIZED`、`FORBIDDEN`、`NOT_FOUND` 等稳定错误码，内部原因则记录在服务端。即使 TypeScript 错误类型中存在堆栈、SQL 消息或秘密，也不能直接把它们暴露出去。
+
+### 调用与传输
+
+HTTP 客户端通过 `httpBatchLink` 等 link 发送操作，adapter 接收操作并创建上下文。服务端调用器在进程内调用同一 router，需要直接提供上下文。两条路径都会执行 procedure 解析与 middleware，但只有 HTTP 路径会覆盖 header、序列化、请求限制、proxy 与网络故障。
+
+批处理可以把多个操作放入一次 HTTP 交换。它在合适负载下降低传输开销，但每个 procedure 仍是独立操作。批次不是数据库事务，不会共享一次授权决策，也可能同时包含成功与失败结果。
+
+普通 JSON 无法保留 `Date`、`Map`、`Set` 或自定义类的身份。可以把 procedure 边界设计为 JSON 形状，在验证器中转换字符串，或者在客户端与服务端一致配置数据转换器。无论选择哪种方案，它都会成为部署兼容性的一部分。
+
+## 示例
+
+四个示例依次展示 router 与输入解析器、授权、输出验证，以及 JSON 形状的时间值。显示的输出均来自本地工具链与上文所列的确切版本。
+
+### 调用经过验证的 router
+
+第一个 router 只有一个 query。`createCaller()` 让示例无需 HTTP 服务端也能运行，Zod 仍会通过正常的 procedure 管线拒绝空 ID。
+
+<Depth level="quick">
+
+```typescript run title="basic-router.ts"
+import { initTRPC, TRPCError } from "@trpc/server";
+import { z } from "zod";
+
+const t = initTRPC.create();
+const products = [
+  { id: "p1", name: "Mechanical keyboard", stock: 4 },
+  { id: "p2", name: "USB-C dock", stock: 0 },
+];
+
+const appRouter = t.router({
+  productById: t.procedure
+    .input(z.object({ id: z.string().min(1) }))
+    .query(({ input }) => {
+      const product = products.find((item) => item.id === input.id);
+      if (!product) throw new TRPCError({ code: "NOT_FOUND" });
+      return product;
+    }),
+});
+
+async function main() {
+  const caller = appRouter.createCaller({});
+  console.log(JSON.stringify(await caller.productById({ id: "p1" })));
+  try {
+    await caller.productById({ id: "" });
+  } catch (error) {
+    if (error instanceof TRPCError) {
+      console.log(error.code);
+    }
+  }
+}
+
+main();
+
+export type AppRouter = typeof appRouter;
+```
+
+```text
+{"id":"p1","name":"Mechanical keyboard","stock":4}
+BAD_REQUEST
+```
+
+<TryToBreak items={['不存在但非空的 ID', '用数字而不是字符串表示的 ID', '库存为零的商品']} />
+
+</Depth>
+
+无效调用仍能通过编译，是因为它的值依然是字符串；运行时解析器会强制执行最小长度。向经过类型检查的调用器传入数字字面量会触发 TypeScript 错误，但真实端点仍必须拒绝该值，因为网络客户端可以忽略类型，也可能根本没有类型信息。
+
+导出的 `AppRouter` 是客户端以类型形式导入的契约。它包含推断出的 procedure 结构，不会在运行时包含 `products` 数组。HTTP 部署还需要单独用 adapter 挂载 `appRouter`。
+
+### 收窄上下文并对对象授权
+
+Middleware 证明 viewer 存在，因此后续代码看到的 `ctx.viewer` 非空。Resolver 随后执行对象级授权；完成认证并不能证明调用方拥有 `o1`。
+
+```typescript run title="protected-procedure.ts"
+import { initTRPC, TRPCError } from "@trpc/server";
+import { z } from "zod";
+
+type Context = { viewer: { id: string } | null };
+const t = initTRPC.context<Context>().create();
+const orders = [{ id: "o1", ownerId: "u1", label: "Desk lamp" }];
+
+const protectedProcedure = t.procedure.use(({ ctx, next }) => {
+  if (!ctx.viewer) throw new TRPCError({ code: "UNAUTHORIZED" });
+  return next({ ctx: { viewer: ctx.viewer } });
+});
+
+const appRouter = t.router({
+  renameOrder: protectedProcedure
+    .input(z.object({ orderId: z.string(), label: z.string().min(1) }))
+    .mutation(({ ctx, input }) => {
+      const order = orders.find((item) => item.id === input.orderId);
+      if (!order || order.ownerId !== ctx.viewer.id) {
+        throw new TRPCError({ code: "FORBIDDEN" });
+      }
+      order.label = input.label;
+      return { id: order.id, label: order.label };
+    }),
+});
+
+async function main() {
+  const alice = appRouter.createCaller({ viewer: { id: "u1" } });
+  console.log(JSON.stringify(
+    await alice.renameOrder({ orderId: "o1", label: "Reading lamp" }),
+  ));
+  const bob = appRouter.createCaller({ viewer: { id: "u2" } });
+  try {
+    await bob.renameOrder({ orderId: "o1", label: "Mine" });
+  } catch (error) {
+    if (error instanceof TRPCError) console.log(error.code);
+  }
+}
+
+main();
+```
+
+```text
+{"id":"o1","label":"Reading lamp"}
+FORBIDDEN
+```
+
+调用方无法选择 `ownerId`，身份来自可信上下文。接入数据库后，应优先使用限定租户或所有者的查询或条件更新，让授权谓词始终附着在数据操作上。
+
+无论订单不存在还是属于其他人，这里都返回 `FORBIDDEN`，从而避免暴露哪些 ID 确实存在。服务也可以选择 `NOT_FOUND`，但这种信息披露策略必须经过有意设计，并保持一致。
+
+### 约束输出
+
+这里的 Zod 输出对象充当白名单，默认对象行为会移除额外的 `passwordHash`。第二个 resolver 使用缺少字段的无类型外部数据来模拟故障，结果会在返回前失败。
+
+```typescript run title="output-validation.ts"
+import { initTRPC, TRPCError } from "@trpc/server";
+import { z } from "zod";
+
+const t = initTRPC.create();
+const publicUser = z.object({
+  id: z.string(),
+  displayName: z.string(),
+});
+
+const appRouter = t.router({
+  user: t.procedure.output(publicUser).query(() => ({
+    id: "u1",
+    displayName: "Ari",
+    passwordHash: "do-not-return",
+  })),
+  brokenUser: t.procedure
+    .output(publicUser)
+    .query(() => JSON.parse('{"id":"u2"}')),
+});
+
+async function main() {
+  const caller = appRouter.createCaller({});
+  console.log(JSON.stringify(await caller.user()));
+  try {
+    await caller.brokenUser();
+  } catch (error) {
+    if (error instanceof TRPCError) {
+      console.log(`${error.code}: ${error.message}`);
+    }
+  }
+}
+
+main();
+```
+
+```text
+{"id":"u1","displayName":"Ari"}
+INTERNAL_SERVER_ERROR: Output validation failed
+```
+
+如果结果来自无类型 SDK、原始 SQL 或渐进式迁移，输出验证尤其有用。还应把敏感记录映射为公开结果对象，再用解析器对漂移做第二层检查。
+
+外部客户端应收到稳定的内部错误形状，而不是验证器的完整诊断信息。详细原因应进入服务端日志，并与请求或 trace 标识关联。
+
+### 转换传输表示
+
+这个 mutation 接收 ISO 8601 字符串，验证后将其转换为 resolver 使用的 `Date`。应用代码可以得到更丰富的值，而传输表示仍然明确。
+
+```typescript run title="wire-input.ts"
+import { initTRPC } from "@trpc/server";
+import { z } from "zod";
+
+const t = initTRPC.create();
+const scheduleInput = z.object({
+  name: z.string().min(1),
+  startsAt: z.iso.datetime().transform((value) => new Date(value)),
+});
+
+const appRouter = t.router({
+  schedule: t.procedure
+    .input(scheduleInput)
+    .mutation(({ input }) => ({
+      name: input.name,
+      year: input.startsAt.getUTCFullYear(),
+    })),
+});
+
+async function main() {
+  const caller = appRouter.createCaller({});
+  const result = await caller.schedule({
+    name: "launch",
+    startsAt: "2026-10-03T09:30:00.000Z",
+  });
+  console.log(JSON.stringify(result));
+}
+
+main();
+```
+
+```text
+{"name":"launch","year":2026}
+```
+
+验证器的输入类型是字符串，解析后的输出则包含 `Date`。传输数据与 resolver 数据不同时，这项区分很有用。若改用已配置的 transformer 传输日期，应在滚动部署期间验证两端使用同一 transformer。
+
+时区含义仍是业务决策。强制要求偏移量或 `Z` 可以避免两台服务器用不同方式解释本地墙钟时间，但排期规则还可能需要具名时区和夏令时策略。
+
+## 陷阱
+
+> [!PITFALL]
+> **把类型推断当成运行时验证。** 生成的 procedure 使用 `input as CreateOrderInput`，或者直接省略 `.input()`，误以为客户端类型能让畸形请求无法出现。类型断言和网络调用方都能绕过该假设。
+>
+> 应在每个不可信边界附加运行时 schema。通过已部署的 adapter 测试错误的基本类型、多余或缺失字段、大小限制和验证器转换，不能只测试类型化调用器。
+
+> [!PITFALL]
+> **只检查认证，不检查对象授权。** `protectedProcedure` 只能证明有人已经登录，不能证明 `input.accountId`、`orderId` 或 `tenantId` 属于该主体。
+>
+> 应从上下文推导租户身份，并把它绑定到查询或更新谓词。角色、价格、所有者和审批状态等服务端字段不能出现在调用方可控制的展开对象中。
+
+> [!PITFALL]
+> **把服务端值导入客户端 bundle。** 生成的客户端导入 `appRouter` 而不是 `type AppRouter`，可能把数据库模块、秘密或 Node 专用代码带向浏览器构建。
+>
+> 应从服务端安全边界导出 router 类型，并在客户端使用 `import type`。检查生产 bundle，并把运行时客户端配置与服务端初始化分开。
+
+> [!PITFALL]
+> **假设批处理具有事务语义。** 通过 `httpBatchLink` 发送的两个 mutation 可以独立成功或失败，重试还可能重放先前已经执行、但结果丢失的操作。
+>
+> 必须一起提交的操作应放在同一个应用事务后面。对于需要重试的写入，在业务边界定义幂等性，并测试重复投递与部分失败。
+
+> [!PITFALL]
+> **把破坏性 router 变更当成实时类型协商来部署。** 即使共享源码类型已经变化，构建完成的客户端仍保留旧假设。重命名 procedure 或缩窄输入可能让它们在运行时失败。
+>
+> 先进行增量变更，观察旧客户端流量，并在受支持的部署窗口结束后才移除兼容行为。契约测试应让旧版序列化请求调用新服务端。
+
+## AI 时代
+
+**生成代码的常见错误。** 模型经常复现其他 tRPC 主版本的旧配置，混用客户端集成 API，或者把运行时 router 导入浏览器代码。更严重的问题包括省略运行时输入 schema、用 `protectedProcedure` 代替资源授权、通过 `data: input` 盲写服务端字段，以及让缓存失效操作指向错误的 router 路径。
+
+**要求 AI 检查。** 要求它跟踪一个 procedure，从序列化请求开始，经过解析、middleware、授权、resolver、输出映射，直到客户端处理。要求它列出每个由调用方控制的字段和每个从上下文推导的字段，并用锁定的 tRPC 与 TypeScript 版本编译客户端和服务端。还要让它把旧版请求形状重放到新 router，并解释实际错误。
+
+**审查清单**
+
+- 每个外部可达的 procedure 都有有界运行时输入验证，以及有意设计的公开输出形状。
+- 认证来自可信上下文，租户与对象授权则始终附着在数据访问或状态转换上。
+- HTTP 路径测试覆盖序列化、实际使用的批处理或部分失败、稳定错误码，以及与已部署客户端的兼容性。
+
+**提示词汇。** 使用 `router type`（router 类型）、`procedure builder`（procedure 构建器）、`runtime input parser`（运行时输入解析器）、`context narrowing`（上下文类型收窄）、`object-level authorization`（对象级授权）、`output validator`（输出验证器）、`server-side caller`（服务端调用器）和 `rolling-deployment compatibility`（滚动部署兼容性）。这些术语能迫使模型区分静态推断与运行时信任边界。
+
+<Depth level="deep">
+
+## 类型图不是传输模式
+
+`AppRouter` 会保留 procedure 路径，以及构建器链产生的输入与输出类型。TypeScript 可以跨 package 边界跟踪这张图，为客户端提供精确补全。但编译完成后，服务端不会把类型图发送给调用方，其他语言也无法据此发现接口契约。
+
+因此，在共享 TypeScript 代码库中，tRPC 可以省去代码生成，但它不会自动成为公开 API 描述。文档、示例、变更日志、错误语义和兼容策略仍需主动发布。如果独立调用方需要机器可读的接口发现能力，schema-first 协议可能是更稳固的边界。
+
+输入验证器更接近传输模式，但它本身不会描述传输 header、认证、限流、重试安全或全部错误结果。Zod transform 还会让可接受的输入类型不同于 resolver 收到的解析值。修改 procedure 时，应同时审查转换的两侧。
+
+输出推断会跟随 resolver 成功返回的类型。如果没有输出解析器，意外出现的额外属性可能进入推断出的客户端契约，并被序列化。显式数据传输对象或输出验证器可以防止数据库记录形状悄悄定义 API。
+
+结构类型还会形成另一种审查陷阱。两个 ID 即使分别表示用户和订单，只要都表示为 `string`，就可以互相赋值。品牌化标识或具有语义名称的 schema 能改善静态审查，但服务端仍须验证对象存在性与所有权。
+
+### 共享 package 与构建边界
+
+共享契约 package 应导出类型和有意共享的 schema，不能在导入时产生服务端初始化副作用。数据库客户端、环境变量读取和含秘密配置应留在仅服务端模块中。还要验证 package export map 与 bundler 条件不会通过便利的 barrel 文件暴露这些模块。
+
+仅包含类型的循环导入仍会让项目难以构建和重构。使用小型 router 聚合模块和单向依赖，可以保持各功能 router 相互独立。应用服务不应反过来导入调用自己的传输 router。
+
+静态类型检查只能证明源码修订之间的关系，不能证明部署拓扑。应记录测试实际覆盖的客户端与服务端版本。Monorepo 构建通过，不代表昨天的浏览器 bundle 一定能调用今天的服务端。
+
+## 运行时执行与故障边界
+
+`createCaller()` 适合可信的进程内调用和聚焦示例。它不经过 HTTP 就能执行 router procedure，但需要调用方自行提供上下文。不要根据未经验证的函数参数构造该上下文，再误认为它等同于经过 adapter 认证的状态。
+
+不要把通过调用器调用另一个 procedure 当成 procedure 之间的普通代码复用。这会重复面向传输的管线，还可能掩盖事务所有权、日志记录和错误语义。应把共享业务行为提取为服务函数，再让两个 procedure 带着明确的授权与事务上下文调用它。
+
+HTTP adapter 会引入直接调用无法复现的故障。请求体可能截断，header 可能缺失，proxy 可能超时，mutation 提交后响应也可能丢失。只要这些结果会影响重试或用户可见错误，集成测试就需要覆盖真实 adapter。
+
+### 上下文生命周期与批处理
+
+上下文通常应按传入请求创建。如果一个批次共享一份上下文，不可变身份与请求级服务适合放在其中，可变临时数据则可能让原本独立的 procedure 相互耦合。进程全局上下文更危险，因为凭据、loader 或事务 handle 可能泄漏到其他用户。
+
+批次大小与请求大小都需要明确上限。一个 HTTP 请求仍可包含很多昂贵操作，resolver 内部并发还会放大数据库压力。声称批处理更快之前先测量真实负载，再限制服务端接受的工作量。
+
+部分失败需要客户端策略。如果批次中一个 query 验证失败，无关操作仍可能返回结果；如果传输失败，客户端可能无法判断哪些 mutation 已提交。对于确实需要重放的写入，应设计幂等机制，而不是不加区分地重试整个批次。
+
+### 序列化与错误
+
+<Term id="serialization">序列化（serialization）</Term>决定哪些值能通过传输以及如何通过。普通 JSON 的数据模型有意保持精简。Transformer 可以保留更多类型，但必须在两端对称配置，其编码格式也会成为兼容性与安全边界。
+
+错误码应保持稳定；除非明确对消息做版本管理，否则错误消息不应成为契约。把已知领域故障映射到有意选择的错误码，用关联元数据记录意外原因，并返回有界公开形状。前端应根据稳定错误码分支，而不是匹配英文消息文本。
+
+最后，需要双向测试边界。发送任何 TypeScript 客户端都不会构造的原始畸形请求，再让虚假依赖返回畸形数据，以触发输出解析器。这些测试覆盖的正是端到端类型推断无法消除的缺口。
+
+</Depth>
+
+<Checkpoint id="backend/trpc" />
+
+## 延伸阅读
+
+- [tRPC 文档](https://trpc.io/docs)
+- [tRPC router](https://trpc.io/docs/server/routers)
+- [tRPC procedure](https://trpc.io/docs/server/procedures)
+- [tRPC 上下文](https://trpc.io/docs/server/context)
+- [tRPC middleware](https://trpc.io/docs/server/middlewares)
+- [tRPC 服务端调用](https://trpc.io/docs/server/server-side-calls)
