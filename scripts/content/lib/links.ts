@@ -224,7 +224,7 @@ function count(text: string, char: string): number {
  * a substring match turns every `Rvalue References` or `快速参考表` section — 241 of the
  * 1436 candidates in the staging corpus — into a wall of false book titles.
  */
-const READING_HEADING = /^(further reading|延伸阅读|references|参考(资料|文献|链接)?)$/i;
+const READING_HEADING = /^(further reading|延伸阅读|references|参考(资源|资料|文献|链接)?)$/i;
 /** Leading list numbering on a heading (`## 2. Further reading`). */
 const HEADING_NUMBER = /^\d+\s*[.)、]\s*/;
 const CJK_TITLE = /《([^》\n]+)》/;

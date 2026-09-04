@@ -177,6 +177,7 @@ describe('bookTitles', () => {
     expect(bookTitles(['## 2. Further Reading', ...section].join('\n'))).toEqual([
       { line: 3, title: '书名' },
     ]);
+    expect(bookTitles(['## 参考资源', ...section].join('\n'))).toEqual([{ line: 3, title: '书名' }]);
     for (const heading of ['## Rvalue References', '## Circular References', '## 快速参考表']) {
       expect(bookTitles([heading, ...section].join('\n'))).toEqual([]);
     }
