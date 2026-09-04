@@ -1,4 +1,9 @@
-import { checkFence, checkFences, normaliseLang } from '../../../scripts/content/lib/code-check';
+import {
+  checkFence,
+  checkFences,
+  normaliseLang,
+  stripJsonComments,
+} from '../../../scripts/content/lib/code-check';
 
 /** Run a check with the external-tool search path replaced (empty string = no tools at all). */
 async function withPath<T>(path: string, run: () => Promise<T>): Promise<T> {
@@ -77,14 +82,31 @@ describe('checkFence', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBeTruthy();
   });
-  it('accepts jsonc with line comments', async () => {
-    await expect(
-      checkFence({ lang: 'jsonc', code: '{\n  // note\n  "a": "http://x//y"\n}\n' }),
-    ).resolves.toMatchObject({ ok: true });
+  it('accepts comments in json as well as jsonc', async () => {
+    const code = '{\n  // note\n  /* block\n     comment */\n  "a": "http://x//y"\n}\n';
+    await expect(checkFence({ lang: 'jsonc', code })).resolves.toMatchObject({ ok: true });
+    await expect(checkFence({ lang: 'json', code })).resolves.toMatchObject({ ok: true });
+  });
+  it('keeps comment markers that sit inside json strings', () => {
+    expect(stripJsonComments('{"a": "x // y", "b": "p /* q */ r"}')).toBe(
+      '{"a": "x // y", "b": "p /* q */ r"}',
+    );
+    expect(stripJsonComments('{ // c\n  "a": 1\n}')).toBe('{ \n  "a": 1\n}');
+    expect(stripJsonComments('{/* a\nb */ "c": 1}')).toBe('{\n "c": 1}');
   });
   it('checks yaml', async () => {
     await expect(checkFence({ lang: 'yml', code: 'a:\n  b: 1\n' })).resolves.toMatchObject({ ok: true });
     await expect(checkFence({ lang: 'yaml', code: 'a: [1, 2\n' })).resolves.toMatchObject({ ok: false });
+  });
+  it('accepts multi-document yaml streams', async () => {
+    await expect(
+      checkFence({ lang: 'yaml', code: 'kind: A\nspec: {}\n---\nkind: B\nspec: {}\n' }),
+    ).resolves.toMatchObject({ ok: true, tool: 'yaml' });
+  });
+  it('reports the first failing document in a yaml stream with its line', async () => {
+    const result = await checkFence({ lang: 'yaml', code: 'a: 1\n---\nb: [1\n' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/^line 4: /);
   });
 
   it('skips languages with no checker', async () => {
@@ -117,6 +139,30 @@ describe('checkFence', () => {
         skipped: true,
         tool: 'missing',
       });
+  });
+
+  it('separates java syntax errors from fragment diagnostics', async () => {
+    const broken = await checkFence({ lang: 'java', code: 'public class A { void f( { } }\n' });
+    if (broken.tool === 'missing') return; // No JDK here; the absent-tool path is covered above.
+    expect(broken).toMatchObject({ ok: false, tool: 'javac' });
+    // A bare statement is an excerpt, not broken code, and neither is a missing import.
+    await expect(checkFence({ lang: 'java', code: 'System.out.println(1);\n' })).resolves.toMatchObject({
+      ok: true,
+      skipped: true,
+      tool: 'fragment',
+    });
+    await expect(
+      checkFence({ lang: 'java', code: 'public class A { void f() { List<String> x = null; } }\n' }),
+    ).resolves.toMatchObject({ skipped: true, tool: 'fragment' });
+  });
+  it('separates c++ syntax errors from fragment diagnostics', async () => {
+    const broken = await checkFence({ lang: 'cpp', code: 'int main(){ return }\n' });
+    if (broken.tool === 'missing') return; // No C++ compiler here.
+    expect(broken).toMatchObject({ ok: false, tool: 'g++' });
+    // A snippet missing its `#include` reports an unknown name, which says nothing about syntax.
+    await expect(checkFence({ lang: 'cpp', code: 'int main(){ std::cout << 1; }\n' })).resolves.toMatchObject(
+      { ok: true, skipped: true, tool: 'fragment' },
+    );
   });
 
   it('reports placeholder-only fences as errors', async () => {

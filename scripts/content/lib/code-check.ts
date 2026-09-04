@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild-wasm';
-import { parse as parseYaml } from 'yaml';
+import { parseAllDocuments } from 'yaml';
 import { fences } from './markdown';
 
 export interface FenceCheck {
@@ -29,7 +29,7 @@ export interface FenceCheck {
   error?: string;
   /** True when no checker ran; `ok` is then meaningless and always true. */
   skipped?: boolean;
-  /** Which checker answered: a binary name, or `none`/`missing`/`timeout`/`repl`. */
+  /** Which checker answered: a binary name, or `none`/`missing`/`timeout`/`repl`/`fragment`. */
   tool?: string;
   /** True when real code contains an `...` elision line, which is tolerated. */
   elided?: boolean;
@@ -123,8 +123,8 @@ const PROMPT_LINE = /^(?:\$ |>>>|PS[ >]|C:\\)/;
 const TOOL_TIMEOUT_MS = 10_000;
 const PY_CHECK = fileURLToPath(new URL('py-check.py', import.meta.url));
 
-/** No checker ran: `none` for languages we do not parse, `missing`/`timeout` for tools. */
-function skip(tool: 'none' | 'missing' | 'timeout' | 'repl'): FenceCheck {
+/** No usable verdict: `none`, `missing`, `timeout`, `repl` or `fragment`. */
+function skip(tool: 'none' | 'missing' | 'timeout' | 'repl' | 'fragment'): FenceCheck {
   return { ok: true, skipped: true, tool };
 }
 
@@ -183,9 +183,8 @@ async function runChecker(language: Language, code: string): Promise<FenceCheck>
     case 'python':
       return checkPython(code);
     case 'json':
-      return checkJson(code);
     case 'jsonc':
-      return checkJson(stripLineComments(code));
+      return checkJson(stripJsonComments(code));
     case 'yaml':
       return checkYaml(code);
     case 'go':
@@ -193,9 +192,9 @@ async function runChecker(language: Language, code: string): Promise<FenceCheck>
     case 'rust':
       return checkWith('rustfmt', ['rustfmt', '--emit', 'stdout', '--edition', '2021'], { code });
     case 'java':
-      return checkJava(code);
+      return classify('java', await checkJava(code));
     case 'cpp':
-      return checkWith('g++', ['g++', '-fsyntax-only', '-x', 'c++', '-'], { code });
+      return classify('cpp', await checkWith('g++', ['g++', '-fsyntax-only', '-x', 'c++', '-'], { code }));
     case 'csharp':
       return checkCSharp(code);
     case 'swift':
@@ -242,19 +241,32 @@ function checkJson(code: string): FenceCheck {
   }
 }
 
+/** `yaml` appends its own location to every message; `at()` puts it back at the front. */
+const YAML_POSITION = / at line \d+, column \d+:?\s*$/;
+
 function checkYaml(code: string): FenceCheck {
   try {
-    // `logLevel: 'error'` keeps errors throwing while silencing warnings such as
+    // A fence may hold a whole `---`-separated stream (Kubernetes manifests do), which is
+    // valid YAML that the single-document `parse` refuses, so read every document and
+    // report the first one that failed. `logLevel: 'error'` silences warnings such as
     // unresolved custom tags, which the parser would otherwise print to the console.
-    parseYaml(code, { logLevel: 'error' });
-    return { ok: true, tool: 'yaml' };
+    const documents = parseAllDocuments(code, { logLevel: 'error' });
+    const failure = documents.flatMap((document) => document.errors)[0];
+    if (!failure) return { ok: true, tool: 'yaml' };
+    const message = failure.message.split('\n')[0].replace(YAML_POSITION, '');
+    return { ok: false, error: at(failure.linePos?.[0]?.line, message), tool: 'yaml' };
   } catch (error) {
     return { ok: false, error: (error as Error).message.split('\n')[0], tool: 'yaml' };
   }
 }
 
-/** Drop `//` line comments from JSONC, leaving comment markers that sit inside strings. */
-export function stripLineComments(code: string): string {
+/**
+ * Drop `//` and block comments, leaving comment markers that sit inside strings. Fences
+ * tagged `json` carry JSONC as often as fences tagged `jsonc` do — editor and agent
+ * settings samples above all — so both go through this before `JSON.parse`. Newlines
+ * inside a stripped block comment are kept so reported positions stay meaningful.
+ */
+export function stripJsonComments(code: string): string {
   let out = '';
   let inString = false;
   for (let i = 0; i < code.length; i += 1) {
@@ -275,6 +287,15 @@ export function stripLineComments(code: string): string {
     if (char === '/' && code[i + 1] === '/') {
       while (i < code.length && code[i] !== '\n') i += 1;
       out += '\n';
+      continue;
+    }
+    if (char === '/' && code[i + 1] === '*') {
+      i += 2;
+      while (i < code.length && !(code[i] === '*' && code[i + 1] === '/')) {
+        if (code[i] === '\n') out += '\n';
+        i += 1;
+      }
+      i += 1;
       continue;
     }
     out += char;
@@ -381,6 +402,29 @@ function firstDiagnostic(output: string, binary: string): string {
 
 function at(line: number | undefined, text: string): string {
   return line ? `line ${line}: ${text}` : text;
+}
+
+/**
+ * `javac` and `g++` are compilers, not parsers: handed a fence that is a method body or a
+ * class without its imports they report missing symbols and absent headers, which say
+ * nothing about whether the snippet is well-formed. Only diagnostics that name a parse
+ * failure are reported; the rest become `skipped` with `tool: 'fragment'`, so an excerpt
+ * is never mistaken for broken code.
+ */
+const JAVA_SYNTAX =
+  /\b(?:expected|illegal start of|unclosed|reached end of file while parsing|not a statement)\b/i;
+/** A fence holding statements rather than a type: an excerpt, not a syntax error. */
+const JAVA_FRAGMENT = /class, interface, enum, or record expected/i;
+const CPP_SYNTAX = /\b(?:expected|unterminated|missing terminating|stray|unmatched|before)\b/i;
+
+function classify(language: 'java' | 'cpp', result: FenceCheck): FenceCheck {
+  if (result.ok || result.skipped) return result;
+  const message = result.error ?? '';
+  const syntactic =
+    language === 'java'
+      ? !JAVA_FRAGMENT.test(message) && JAVA_SYNTAX.test(message)
+      : CPP_SYNTAX.test(message);
+  return syntactic ? result : skip('fragment');
 }
 
 interface ProcessRun {
