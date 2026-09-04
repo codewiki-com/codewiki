@@ -9,28 +9,32 @@ import { remarkCallouts } from '@/markdown/remark-callouts';
 import { remarkDepth } from '@/markdown/remark-depth';
 import { rehypeSectionActions } from '@/markdown/rehype-section-actions';
 import { shikiMetaTransformer } from '@/markdown/shiki-meta';
+import type { Locale } from '@/lib/urls';
 
 /** One renderer and one result per distinct answer for the lifetime of a static build. */
-const renderer = createMarkdownProcessor({
-  remarkPlugins: [remarkCallouts, remarkDepth],
-  rehypePlugins: [
-    rehypeHeadingIds,
-    rehypeMermaidDiagrams,
-    rehypeCodebox,
-    rehypeDepthHeadings,
-    rehypeSectionActions,
-  ],
-  syntaxHighlight: { type: 'shiki', excludeLangs: ['mermaid'] },
-  shikiConfig: { theme: 'css-variables', transformers: [shikiMetaTransformer] },
-});
+const renderer = (locale: Locale) =>
+  createMarkdownProcessor({
+    remarkPlugins: [[remarkCallouts, { locale }], remarkDepth],
+    rehypePlugins: [
+      rehypeHeadingIds,
+      rehypeMermaidDiagrams,
+      [rehypeCodebox, { locale }],
+      rehypeDepthHeadings,
+      [rehypeSectionActions, { locale }],
+    ],
+    syntaxHighlight: { type: 'shiki', excludeLangs: ['mermaid'] },
+    shikiConfig: { theme: 'css-variables', transformers: [shikiMetaTransformer] },
+  });
+const renderers = { en: renderer('en'), zh: renderer('zh') };
 const rendered = new Map<string, Promise<string>>();
 
 /** Renders authored Markdown through the same remark, rehype and Shiki pipeline as topic pages. */
-export function renderMarkdown(markdown: string): Promise<string> {
-  let html = rendered.get(markdown);
+export function renderMarkdown(markdown: string, locale: Locale = 'en'): Promise<string> {
+  const key = `${locale}\0${markdown}`;
+  let html = rendered.get(key);
   if (!html) {
-    html = renderer.then((processor) => processor.render(markdown)).then((result) => result.code);
-    rendered.set(markdown, html);
+    html = renderers[locale].then((processor) => processor.render(markdown)).then((result) => result.code);
+    rendered.set(key, html);
   }
   return html;
 }

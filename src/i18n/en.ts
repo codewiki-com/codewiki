@@ -314,6 +314,7 @@ export default {
   'paths.planned.threadsGil': 'Threads & the GIL',
   'paths.planned.typeHints': 'Type hints',
   'paths.planned.mypy': 'mypy in practice',
+  'paths.planned.unknown': 'Planned topic: {id}',
 
   'practice.title': 'Practice',
   'practice.lead':
@@ -511,6 +512,10 @@ export default {
   'cheatsheets.onePage': '1 page when printed',
   'cheatsheets.verified': 'verified {date}',
   'cheatsheets.empty': 'Cheatsheets are being written.',
+  'cheatsheets.rulesPack': 'rules pack',
+  'cheatsheets.rulesTitle': '{track} rules for your coding agent',
+  'cheatsheets.rulesDesc':
+    "Download the track's pitfalls and best practices in the format your coding agent reads.",
 
   'glossary.title': 'Glossary',
   'glossary.terms': 'Terms',

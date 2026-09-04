@@ -558,7 +558,7 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
           >
             <span class="lbl">{labels.front}</span>
             <span class="flashcard-title-row">
-              <strong>{face.front.title}</strong>
+              <strong lang="en">{face.front.title}</strong>
               {face.front.alt ? (
                 <span class="flashcard-alt" lang="zh-Hans">
                   {face.front.alt}
@@ -577,7 +577,7 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
         {face ? (
           <div class="flashcard-back" hidden={!flipped}>
             <span class="lbl">{labels.back}</span>
-            <p>{face.back.text}</p>
+            <p lang="en">{face.back.text}</p>
             {face.back.textZh ? (
               <p class="flashcard-back-zh" lang="zh-Hans">
                 {face.back.textZh}

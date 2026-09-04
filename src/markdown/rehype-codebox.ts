@@ -10,6 +10,21 @@
 import type { Element, ElementContent, Root } from 'hast';
 import { SKIP, visit } from 'unist-util-visit';
 
+import { t } from '@/i18n';
+import type { Locale } from '@/lib/urls';
+
+interface Options {
+  locale?: Locale;
+}
+
+interface MarkdownFile {
+  path?: string;
+}
+
+function localeFor(options: Options, file: MarkdownFile): Locale {
+  return options.locale ?? (/\.zh\.mdx?$/u.test(file.path ?? '') ? 'zh' : 'en');
+}
+
 /** Languages that mark an output block rather than source code. */
 const OUTPUT_LANGUAGES = new Set(['text', 'plaintext', 'txt']);
 
@@ -54,14 +69,16 @@ function element(tagName: string, properties: Element['properties'], children: E
 }
 
 function button(className: string[], flag: string, key: string, label: string): Element {
-  // The label is English; `Base.astro` swaps it through the `data-i18n` key on Chinese pages.
+  // The `data-i18n` hook lets Base update legacy output while the supplied locale keeps the
+  // initial, server-rendered label correct when JavaScript is unavailable.
   return element('button', { type: 'button', className, [flag]: '', 'data-i18n': key }, [
     { type: 'text', value: label },
   ]);
 }
 
-export function rehypeCodebox() {
-  return (tree: Root): void => {
+export function rehypeCodebox(options: Options = {}) {
+  return (tree: Root, file: MarkdownFile = {}): void => {
+    const locale = localeFor(options, file);
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'pre' || !parent || index === undefined) return;
       // Only code fences belong in a codebox. Earlier rehype plugins may replace their `<pre>`
@@ -86,8 +103,10 @@ export function rehypeCodebox() {
         return [SKIP];
       }
 
-      const actions: Element[] = [button(['act', 'act-sm'], 'data-copy', 'code.copy', 'Copy')];
-      if (run) actions.push(button(['run'], 'data-run', 'code.run', 'Run'));
+      const actions: Element[] = [
+        button(['act', 'act-sm'], 'data-copy', 'code.copy', t(locale, 'code.copy')),
+      ];
+      if (run) actions.push(button(['run'], 'data-run', 'code.run', t(locale, 'code.run')));
 
       const children: ElementContent[] = [
         element('div', { className: ['codehead'] }, [

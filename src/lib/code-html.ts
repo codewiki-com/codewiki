@@ -32,7 +32,7 @@ function escapeHtml(value: string): string {
  * Highlights a kata's source through the same CSS-variable theme as Markdown code fences and
  * returns the same codebox structure, without the runnable-example controls.
  */
-export async function renderCode(code: string, lang: string, copyLabel = 'Copy'): Promise<string> {
+export async function renderCode(code: string, lang: string, copyLabel: string): Promise<string> {
   const engine = await highlighter;
   await loadLanguage(engine, lang);
   const pre = engine.codeToHtml(code, { lang, theme: 'css-variables' });

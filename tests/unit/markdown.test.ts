@@ -52,6 +52,18 @@ describe('remarkCallouts', () => {
     expect(out).toContain('<p class="callout-label" data-i18n="callout.pitfall">Pitfall</p>');
   });
 
+  it('renders the initial label in Chinese when requested', async () => {
+    const out = String(
+      await unified()
+        .use(remarkParse)
+        .use(remarkCallouts, { locale: 'zh' })
+        .use(remarkRehype, { allowDangerousHtml: true })
+        .use(rehypeStringify, { allowDangerousHtml: true })
+        .process('> [!PITFALL]\n> 不要这样做。'),
+    );
+    expect(out).toContain('<p class="callout-label" data-i18n="callout.pitfall">陷阱</p>');
+  });
+
   it('supports every documented type and leaves plain blockquotes alone', async () => {
     const run = async (source: string) =>
       String(
@@ -247,6 +259,21 @@ describe('rehypeCodebox', () => {
     expect((head.children[1] as Element).children).toHaveLength(1);
   });
 
+  it('localizes server-rendered controls before hydration', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [preFixture({ 'data-lang': 'python', 'data-run': 'true' })],
+    };
+    rehypeCodebox({ locale: 'zh' })(tree);
+
+    const head = (tree.children[0] as Element).children[0] as Element;
+    const buttons = (head.children[1] as Element).children as Element[];
+    expect(buttons.map((item) => item.children[0])).toEqual([
+      { type: 'text', value: '复制' },
+      { type: 'text', value: '运行' },
+    ]);
+  });
+
   it('renders a text fence as a headerless output box', () => {
     const tree: HastRoot = { type: 'root', children: [preFixture({ 'data-lang': 'text' })] };
     rehypeCodebox()(tree);
@@ -401,5 +428,14 @@ describe('rehypeSectionActions', () => {
 
     expect((tree.children[0] as Element).children).toHaveLength(1);
     expect(tree.children).toHaveLength(2);
+  });
+
+  it('localizes both the visible and accessible section-action labels', () => {
+    const tree: HastRoot = { type: 'root', children: [h2('scope')] };
+    rehypeSectionActions({ locale: 'zh' })(tree);
+
+    const button = tree.children[1] as Element;
+    expect(button.properties['aria-label']).toBe('让 AI 讲讲这一节');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这一节' });
   });
 });

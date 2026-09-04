@@ -285,6 +285,7 @@ export default {
   'paths.planned.threadsGil': '线程与 GIL',
   'paths.planned.typeHints': '类型提示',
   'paths.planned.mypy': 'mypy 实战',
+  'paths.planned.unknown': '待编写主题：{id}',
 
   //P2
   'practice.title': '练习',
@@ -485,6 +486,9 @@ export default {
   'cheatsheets.onePage': '打印为 1 页',
   'cheatsheets.verified': '已验证 {date}',
   'cheatsheets.empty': '速查表正在编写中。',
+  'cheatsheets.rulesPack': '规则包',
+  'cheatsheets.rulesTitle': '供编码智能体使用的 {track} 规则',
+  'cheatsheets.rulesDesc': '下载本方向的易错点与最佳实践，格式可供编码智能体直接读取。',
 
   'glossary.title': '术语表',
   'glossary.terms': '术语',
