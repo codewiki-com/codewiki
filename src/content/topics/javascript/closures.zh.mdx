@@ -1,0 +1,401 @@
+---
+title: 闭包
+description: 闭包让函数继续访问定义位置的词法环境；理解共享绑定、循环变量与回调生命周期，才能可靠地使用这种机制。
+track: javascript
+section: core
+difficulty: intermediate
+tags: [closures, scope, functions, callbacks]
+prerequisites: [javascript/fundamentals, javascript/functions]
+related: [javascript/arrow-functions, javascript/call-apply-bind, javascript/debounce-throttle, javascript/memory-management]
+terms: [closure, free-variable, enclosing-scope, lexical-environment]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/closures
+sources:
+  - { title: 'MDN JavaScript Guide - Closures', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Closures' }
+  - { title: 'MDN JavaScript Reference - Functions', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions' }
+  - { title: 'MDN JavaScript Reference - let', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/let' }
+  - { title: 'MDN JavaScript Reference - Function() constructor', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/Function' }
+  - { title: 'MDN JavaScript Guide - Memory management', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Memory_management' }
+origin: old/src/content/docs/javascript/closures.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    闭包（closure）是函数与其定义位置词法环境之间的联系。函数离开该位置执行时，仍可读取或修改所需的外层绑定。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    闭包保留的是绑定，不是创建时的值快照。多个回调可能共享一个后来发生变化的变量。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明确每个闭包应共享还是独占状态；循环回调优先使用 `let` 或参数工厂，长期回调还要提供清理路径。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="closure">闭包（closure）</Term>是一个函数与其定义位置对应词法环境之间的联系。函数可以作为值返回、存入集合或交给另一个 API，之后仍能解析定义位置可见的名称。外层函数是否已经返回，不会改变这条词法查找规则。
+
+在函数体内使用、但没有在该函数中声明的名称叫作<Term id="free-variable">自由变量（free variable）</Term>。为这个名称提供绑定的外层函数作用域是<Term id="enclosing-scope">外层作用域（enclosing scope）</Term>。闭包依赖的是这些绑定，不是调用位置恰好存在的同名变量。
+
+JavaScript 采用词法作用域。名称能指向哪里，取决于函数写在源码的什么位置，而不是之后由谁调用它。这个设计让函数作为值传递时仍保有含义，否则一个返回的函数会失去解释其自由变量所需的上下文。
+
+实际代码里经常会遇到闭包。函数工厂用它保存配置，计数器和状态机用它保存私有状态，事件处理器用它记住所属组件，异步回调用它访问调度任务时可见的数据。模块顶层函数也有创建时的作用域，但最值得分析的情形通常是嵌套函数捕获外层函数绑定。
+
+闭包不是某种特殊函数语法。函数声明、函数表达式和箭头函数都可以形成闭包；关键在于函数体是否引用外层绑定。嵌套函数若只使用参数、局部变量和全局变量，就没有捕获外层函数状态这一层行为。
+
+闭包适合携带少量、所有权明确的上下文。若状态有很多操作、需要公开检查、要参与继承，或生命周期本身就是业务概念，类或普通对象通常更容易维护。选择依据是接口和所有权，不是追求更短的代码。
+
+## 工作原理
+
+JavaScript 在创建函数对象时，会关联创建位置的<Term id="lexical-environment">词法环境（lexical environment）</Term>。该环境提供一组名称到绑定的映射，并连接到更外层的环境。函数执行到自由变量时，会沿这条词法链查找，而不会查看调用者的局部作用域。
+
+绑定可以理解为名称对应的存储位置。闭包随后读取的是该位置当前保存的值，而不是创建函数时复制出来的一份值。只要外层代码和内层函数指向同一个绑定，一方重新赋值后，另一方就能观察到新值。
+
+一次典型的函数工厂调用会经历这些步骤：
+
+1. 调用外层函数，为这次调用创建参数和局部绑定。
+2. 执行到内层函数定义，创建函数对象并关联当前词法环境。
+3. 外层函数返回内层函数；只要返回的函数仍可达，它需要的绑定就继续可用。
+4. 之后调用内层函数时，自由变量从创建时关联的环境解析。
+
+每次调用外层函数都会产生一组新的绑定。因此，两次工厂调用创建的闭包可以运行同一段函数代码，却拥有彼此独立的状态。反过来，同一次外层调用返回的多个函数可以引用同一个绑定，并通过它协作。
+
+### 定义位置决定名称解析
+
+调用位置不会给函数注入局部变量。即使调用者恰好声明了同名名称，闭包仍沿定义位置的词法链解析。动态作用域语言可能按调用栈查找名称，JavaScript 不采用这种规则。
+
+全局名称的查找也遵循环境链，但把“能访问全局变量”说成业务意义上的状态闭包通常没有帮助。分析闭包时，应先标出函数真正依赖的外层局部绑定，再说明这些绑定由哪次外层调用创建。
+
+通过 `Function` 构造器动态创建的函数是一个例外点。它不会捕获调用 `Function` 的局部作用域，而是在全局作用域中创建。不要用它绕开普通的词法规则；它还会带来代码注入与优化方面的问题。
+
+### 读取、重新赋值与对象修改
+
+内层函数可以直接给捕获的 `let` 绑定重新赋值，不需要额外关键字。只要赋值目标沿词法链解析到该绑定，之后的调用就能看到更新。若内层函数自己声明了同名变量，则新声明会遮蔽外层绑定。
+
+`const` 限制的是重新赋值，不会冻结对象。闭包捕获一个 `const state = { count: 0 }` 后，仍可执行 `state.count += 1`。这里对象标识没有改变，改变的是对象内部属性。
+
+这两种变化要分开审查。重新赋值改变某个名称当前指向的值；对象修改则让所有持有同一对象引用的代码看到属性变化。模型生成代码常把两者都笼统称为“捕获了状态”，因此容易漏掉共享对象带来的别名问题。
+
+### 生命周期由可达性决定
+
+外层函数返回后，它的普通执行过程已经结束，但闭包仍需要的绑定不能消失。只要闭包可从程序根部到达，绑定指向的对象也可能继续可达。垃圾回收关注可达性，不以“外层函数已经返回”作为释放信号。
+
+这不等于闭包必然保留整个外层调用中的每个局部变量。没有被闭包语义使用的局部值不必为了闭包而保留。真正需要审查的是自由变量直接或间接指向的对象图，以及谁还持有这个函数。
+
+### 按所有权选择创建位置
+
+创建函数的位置决定它可以捕获什么，调用工厂的次数决定状态有几份。下面的对应关系适合在设计和审查时快速核对。
+
+| 创建方式 | 绑定所有者 | 后续调用关系 | 适合的用途 |
+| --- | --- | --- | --- |
+| 模块顶层创建一次 | 模块实例 | 所有导入方共享 | 明确的进程内单例状态 |
+| 每个消费者调用工厂 | 每次工厂调用 | 消费者之间隔离 | 独立计数器或配置 |
+| 一次工厂返回多个方法 | 一次工厂调用 | 方法之间共享 | 有限的状态操作接口 |
+| 循环中按轮次创建 | 每轮词法环境 | 回调之间隔离循环变量 | 批量注册回调 |
+
+表里的“共享”不是好坏判断。模块缓存可能正需要共享，同一页面上的两个组件则通常不应共用展开状态。先写出所有者，再决定把函数定义和工厂调用放在哪里。
+
+如果所有权无法从创建位置看出来，给工厂和返回值使用能表达范围的名称。`createRequestCounter`、`sharedMetrics` 和 `perUserHandler` 比 `makeThing` 或 `callback` 更容易暴露错误的复用。
+
+### 模块中的闭包
+
+ES 模块提供自己的词法环境。模块中定义并导出的函数可以访问模块级绑定，因此这些函数在模块实例内共享状态。导入方不能直接给导入绑定重新赋值，但会看到导出模块对该绑定所做的更新。
+
+这种共享与函数工厂的每次调用状态不同。模块通常按加载器规则实例化和缓存，所以把可变值放在模块顶层往往意味着进程或页面范围的共享。测试并行运行、服务端请求隔离和热重载都可能暴露错误假设。
+
+现代代码不需要用 IIFE 模拟模块边界。使用 ES 模块表达文件级私有名称；只有在运行时确实需要多份独立状态时，再导出一个工厂函数。这样创建次数与所有权会更清楚。
+
+导出的工厂还能让测试为每个用例创建新实例，从而避免模块级可变状态在用例之间残留。需要单例时则应明确导出单例，并把重置策略写进测试边界。
+
+模块私有名称仍不是安全保险箱。导出函数可以泄露引用，模块状态也可能被日志、错误或调试工具观察。模块边界解决组织和访问接口问题，不替代授权、秘密存储或进程隔离。
+
+## 示例
+
+下面四个示例依次展示只读配置、可变状态、循环绑定和显式清理。它们都可直接由 Node 24 运行，输出来自本地执行结果。
+
+### 保存只读配置
+
+函数工厂可以把一次性参数变成后续调用使用的配置。`formatPrice` 的自由变量是 `currency` 和 `taxRate`，每次调用只读取它们。
+
+<Depth level="quick">
+
+```javascript run title="configured_formatter.js"
+function createPriceFormatter(currency, taxRate) {
+  return function formatPrice(subtotal) {
+    const total = subtotal * (1 + taxRate);
+    return `${currency} ${total.toFixed(2)}`;
+  };
+}
+
+const eurWithTax = createPriceFormatter("EUR", 0.2);
+const usdWithTax = createPriceFormatter("USD", 0.08);
+
+console.log(eurWithTax(50));
+console.log(usdWithTax(50));
+```
+
+```text
+EUR 60.00
+USD 54.00
+```
+
+</Depth>
+
+两次调用 `createPriceFormatter` 会创建不同的参数绑定。`eurWithTax` 和 `usdWithTax` 使用相同的函数形状，却各自解析到自己的 `currency` 与 `taxRate`。调用格式化函数时不必再次传入这两项配置。
+
+这种写法适合把一个通用操作预先配置成更窄的接口。税率在示例中只是演示数值，不代表任何真实地区的税务规则；生产代码应从经过验证的配置取得业务数据。
+
+### 共享一次工厂调用中的状态
+
+一次工厂调用也可以返回多个操作。`increment` 和 `read` 来自同一个词法环境，因此共同访问一个 `count` 绑定。
+
+```javascript run title="independent_counters.js"
+function createCounter(label) {
+  let count = 0;
+
+  return {
+    increment(step = 1) {
+      count += step;
+      return `${label}:${count}`;
+    },
+    read() {
+      return count;
+    },
+  };
+}
+
+const uploads = createCounter("uploads");
+const retries = createCounter("retries");
+
+console.log(uploads.increment());
+console.log(retries.increment(3));
+console.log(uploads.increment());
+console.log(uploads.read(), retries.read());
+```
+
+```text
+uploads:1
+retries:3
+uploads:2
+2 3
+```
+
+`uploads.increment` 与 `uploads.read` 共享第一次调用创建的 `count`。`retries` 来自第二次调用，所以它的计数不会受到 `uploads` 的调用影响。交错输出验证了这种所有权边界。
+
+调用者不能通过返回对象上的普通属性直接给 `count` 赋值，但这种隐藏是接口封装，不是安全边界。返回的方法仍能泄露状态，调试器也可以观察运行过程；不要把访问令牌等秘密的安全性只寄托在闭包上。
+
+若每个使用方需要独立状态，就必须为每个使用方调用一次工厂。复制返回对象的引用、把同一个方法注册到多个位置，或使用对象展开，都不会复制捕获的绑定。
+
+### 对比 `var` 与 `let` 的循环绑定
+
+循环结束后才执行回调时，绑定是否按轮次分离会直接决定结果。下面两组箭头函数的函数体相同，差异只在循环变量声明。
+
+```javascript run title="loop_bindings.js"
+const shared = [];
+for (var index = 0; index < 3; index += 1) {
+  shared.push(() => index);
+}
+
+const separate = [];
+for (let index = 0; index < 3; index += 1) {
+  separate.push(() => index);
+}
+
+console.log(shared.map((read) => read()).join(","));
+console.log(separate.map((read) => read()).join(","));
+```
+
+```text
+3,3,3
+0,1,2
+```
+
+`var` 声明的 `index` 属于外层函数或全局环境，三次回调共享同一个绑定。调用时循环已经结束，该绑定中的值是 `3`。定时器并不是问题根源，即使像示例这样同步地稍后调用，结果也相同。
+
+`let` 的 `for` 循环会为每轮需要捕获的循环变量创建独立绑定。三个回调因此分别读取 `0`、`1` 和 `2`。`for...of` 与 `for...in` 使用 `let` 或 `const` 声明迭代变量时，也有对应的逐轮绑定语义。
+
+若必须维护旧代码中的 `var`，可以调用一个接受当前值的工厂函数，让该参数成为新调用中的绑定。现代代码直接使用 `let` 通常更清楚。
+
+### 返回与注册配对的清理函数
+
+长期存在的事件源会持有处理器，处理器又会持有其自由变量。让注册函数返回清理闭包，可以把建立和解除关系的逻辑放在同一处。
+
+```javascript run title="subscription_cleanup.js"
+function subscribe(handlers, topic, listener) {
+  function handle(message) {
+    listener(`${topic}: ${message}`);
+  }
+
+  handlers.add(handle);
+  return function unsubscribe() {
+    handlers.delete(handle);
+  };
+}
+
+const handlers = new Set();
+const unsubscribe = subscribe(handlers, "build", console.log);
+
+for (const handle of handlers) handle("passed");
+console.log(`handlers=${handlers.size}`);
+unsubscribe();
+console.log(`handlers=${handlers.size}`);
+```
+
+```text
+build: passed
+handlers=1
+handlers=0
+```
+
+`handle` 捕获 `topic` 和 `listener`。`unsubscribe` 捕获同一个 `handle` 函数对象，所以 `Set.delete` 使用的标识与注册时完全一致。临时创建一个内容相同的新函数不会匹配原来的函数标识。
+
+浏览器的 `addEventListener` 与 `removeEventListener`、订阅库的 `subscribe` 与 `unsubscribe` 都有类似的配对要求。具体 API 的选项仍要按其文档检查；这里的 `Set` 只把函数标识和生命周期关系缩成了可运行示例。
+
+## 陷阱
+
+### 把绑定当成值快照
+
+> [!PITFALL]
+> 闭包创建后，外层绑定仍可能变化。异步回调运行时读到的是当前值，不一定是安排任务时的值。
+
+这类错误不只发生在 `var` 循环中。函数外先声明 `let currentRequest`，随后不断给它重新赋值，也会让所有捕获它的回调观察同一个变化中的绑定。
+
+**修复：** 在调度回调前，把本次任务需要的值传给工厂参数，或在本轮块作用域中声明新的 `const snapshot`。若值是对象，还要决定需要共享对象标识、浅拷贝还是经过业务定义的不可变快照。
+
+### 误复用有状态工厂的结果
+
+> [!PITFALL]
+> 把一个有状态闭包交给多个本应独立的消费者，会让它们悄悄共享计数、缓存或重试状态。
+
+给函数增加另一个变量名不会创建新闭包，复制装有方法的对象也不会复制它们捕获的环境。这种错误在依赖注入配置和批量注册处理器时很隐蔽，因为每个调用点看起来都有自己的名称。
+
+**修复：** 在所有权边界内调用工厂，每个独立消费者调用一次。测试时交错调用两个消费者，并断言一方的操作不会改变另一方的可观察结果；若共享是有意的，名称应明确写出 `shared`。
+
+### 把闭包私有性当作安全边界
+
+> [!PITFALL]
+> 词法作用域可以缩小直接访问面，却不能自动阻止返回值、日志、错误对象或回调把捕获的数据泄露出去。
+
+闭包里的数组不作为对象属性暴露，并不代表其中每个值都安全。返回该数组本身、返回包含秘密的记录，或把秘密拼进错误消息，都会越过这层封装。
+
+**修复：** 返回最小且经过脱敏的投影，对可变集合返回按需求构造的副本，并在安全边界上做真正的授权和数据最小化。不要因为变量名在外部不可见，就降低对秘密生命周期的审查标准。
+
+### 混淆闭包与 `this`
+
+> [!PITFALL]
+> 普通函数中的 `this` 由调用形式决定，不是闭包按定义位置捕获的普通词法变量。把方法作为回调传递，可能丢失接收者。
+
+箭头函数没有自己的 `this`，会使用外层执行上下文的 `this`。这条规则经常与闭包一起出现，但它不是自由变量名称查找的同一机制。模型生成代码有时会把所有嵌套函数机械地改成箭头函数，因而改变需要动态接收者的 API 行为。
+
+**修复：** 先确定回调需要词法 `this` 还是调用方提供的接收者。需要固定实例时使用保存下来的包装函数或一次性 `bind`；需要动态接收者时保留普通函数，并用真实调用路径测试。更多接收者规则见 `javascript/call-apply-bind`。
+
+### 忘记解除长期注册
+
+> [!PITFALL]
+> 如果生命周期更长的事件源仍持有处理器，处理器捕获的组件、缓存或请求上下文也可能继续可达。
+
+闭包之间形成环并不自动等于泄漏；现代垃圾回收器可以回收整体不可达的环。真正的问题是仍可达的注册关系，例如全局事件源持有已经卸载组件的处理器。
+
+**修复：** 保存注册时使用的确切函数标识，并在组件销毁、请求结束或订阅取消时解除注册。捕获实际需要的小值，不要为了一个 ID 而捕获整个上下文对象；再用堆快照或生命周期测试确认清理路径执行。
+
+### 在循环体外创建唯一的状态容器
+
+> [!PITFALL]
+> 即使循环变量用 `let`，循环外声明的可变对象仍会被所有回调共享。`let` 只解决逐轮变量绑定，不会自动复制其他状态。
+
+例如，所有处理器都向循环外的 `history` 数组写入时，它们会得到独立的索引绑定，却仍共享一份历史记录。把循环问题全部归因于 `var` 会漏掉这种所有权错误。
+
+**修复：** 为每个消费者调用一个小型工厂，在工厂内部创建需要独占的对象。逐个列出自由变量，并给每个变量标注“共享”或“每实例”；这个检查比只搜索 `var` 更可靠。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+生成的注册代码常在循环中关闭 `var` 变量，或把一个工厂结果放到循环外，导致每个处理器指向最后一个实体或共享重试计数。另一类错误把“闭包会记住值”理解成快照，使延迟回调读到后来变化的绑定；模型还会为解除监听器生成一个新的箭头函数，导致函数标识不匹配。看到嵌套异步回调、批量注册和组件清理代码时，应专门检查这些模式。
+
+**让 AI 检查**
+
+- 列出每个嵌套函数的自由变量，并标明它们来自哪个外层调用、应共享还是应独占。
+- 画出创建、重新赋值、异步调度和实际调用的时间线，给出每次读取会看到的值。
+- 核对注册与解除注册使用的函数标识和选项是否完全匹配，并说明谁负责调用清理函数。
+
+**审查清单**
+
+- 在循环结束或外层变量变化后再调用回调，验证结果是否仍属于正确的实体。
+- 交错调用两个本应独立的工厂结果，检查计数、缓存和错误状态是否串用。
+- 追踪长期处理器的所有者与自由变量，确认卸载路径会解除最后一条外部可达引用。
+
+**提示词词汇**
+
+使用精确术语：`closure`（闭包）、`lexical environment`（词法环境）、`free variable`（自由变量）、`captured binding`（捕获的绑定）、`per-iteration binding`（逐轮绑定）、`function identity`（函数标识）和 `reachability`（可达性）。要求 AI 区分“捕获绑定”和“复制值”，并按时间线与所有权说明结果；“检查这里的闭包”过于含糊。
+
+<Depth level="deep">
+
+## 绑定与环境记录
+
+语言语义使用环境记录描述名称解析。环境记录保存当前作用域中的绑定，并连接到外层记录；函数对象记住创建它时应从哪个环境开始解析。具体引擎可以用不同的数据结构优化这套语义，应用代码不应假设某种栈帧或堆对象布局。
+
+“闭包捕获变量”是一种方便说法，但绑定比变量当前值更准确。外层执行 `rate = 0.2` 后创建函数，再把 `rate` 改成 `0.25`，后续调用会从同一绑定读到新值。若要保留原值，必须把值放入另一次函数调用的参数绑定或新的块级绑定。
+
+同一次外层调用创建的多个函数可以共享环境。计数器中的 `increment` 和 `read` 就依靠这个性质协作；其中一个更新 `count`，另一个读取同一个绑定。不同外层调用则产生不同环境，这使工厂函数可以自然地表达每实例状态。
+
+遮蔽会切断某个名称的外层查找。内层函数声明自己的 `let count` 后，该函数中的 `count` 指向新绑定，外层 `count` 不再由这个名称访问。代码审查时不能只按变量名搜索，必须结合声明位置判断绑定标识。
+
+对象引用又增加一层共享关系。两个独立闭包可能捕获不同绑定，但两个绑定恰好保存同一个对象引用，此时对象属性仍会共享。判断隔离性时，要分别追踪环境绑定与对象标识。
+
+### 异步暂停不会冻结绑定
+
+把内层函数声明为 `async` 不会改变闭包规则。函数在 `await` 处暂停后，其他代码可以继续运行并重新赋值它捕获的绑定。恢复执行时，对自由变量的新读取会看到恢复当时的绑定值。
+
+这会产生一种不明显的竞态：请求开始时从 `currentUser` 读取用户，等待网络响应后又读取同一绑定，而等待期间登录用户已经改变。两次读取来自同一个闭包，却可能得到不同用户。
+
+如果一个操作必须始终属于启动它的实体，应在异步操作开始前创建本地 `const owner = currentUser`，后续只使用 `owner`。这固定的是对象引用；若对象属性仍会被别处修改，还需要领域定义的快照策略。
+
+相反，有些回调就是要读取最新配置，例如下一次重试使用刚更新的退避上限。此时共享绑定是需求的一部分，不应机械地复制旧值。变量名和注释应说明读取最新值的意图。
+
+Promise 不会自动复制创建 `.then` 回调时的环境，定时器也不会。它们只安排函数稍后调用。分析结果时，应把闭包的词法查找与调度机制分开。
+
+测试这类代码时，要控制暂停点。在异步操作继续之前修改外层绑定，然后断言回调使用的是启动时快照还是最新值。只覆盖没有交错的成功路径，很难发现所有权错误。
+
+取消也需要明确边界。若闭包捕获 `AbortController`、重试计数和请求所有者，应说明它们属于单次请求还是共享客户端。生成代码经常复用一个控制器，结果取消一个操作时同时取消了不相关请求。
+
+### `eval` 与 `Function` 的边界
+
+直接调用 `eval` 会与当前执行上下文发生复杂交互，严格模式和非严格模式的规则也不同。它会让静态分析名称依赖变得困难，因此不应作为构造闭包的常规工具。能用普通函数、对象或数据结构表达时，就不要引入动态源码执行。
+
+`Function` 构造器创建的函数只在全局作用域执行，不会关闭构造器调用点的局部绑定。把字符串变成函数既不能模拟普通嵌套函数的捕获行为，也不应接收不可信输入。相关差异需要测试时，应直接写最小示例并在目标运行时执行。
+
+## 逐轮环境
+
+传统 `var` 循环只有一个循环变量绑定。每个箭头函数都保存到同一环境的访问路径，因此它们之后读取的是循环完成后的值。回调是否由 `setTimeout`、Promise 或数组保存并不改变这一点；延迟只是让最终值更容易暴露。
+
+使用 `let` 的经典 `for` 循环会在进入下一轮时建立新的逐轮环境，并把本轮需要的循环变量值带入新绑定。当前轮创建的函数与当前轮环境关联。循环更新表达式作用于对应的逐轮绑定，所以示例最终得到三个不同结果。
+
+这条规则只覆盖循环头中按轮次处理的词法绑定。循环外的对象、模块变量和工厂外状态仍按原本的环境共享。`let` 不是“自动深拷贝”开关，也不会冻结本轮对象的属性。
+
+参数工厂能显式建立同样的隔离边界。每次调用辅助函数都会创建新的参数绑定，返回的回调捕获该次调用的参数。维护旧式代码时，这比 IIFE 更容易命名和测试；新代码通常直接选择 `let`。
+
+## 可达性与清理边界
+
+JavaScript 规范规定可观察行为，不规定某个引擎必须怎样布局或回收闭包。只要程序仍可能调用函数并观察自由变量，引擎就必须保持相应语义。除此之外，优化器可以消除不可观察的存储，因此“闭包复制整个作用域到堆上”不是可靠模型。
+
+实际保留链应从长期所有者开始追踪。例如，全局事件目标指向处理器，处理器的环境指向组件对象，组件对象再指向缓存。只要第一条注册关系存在，后面的对象就可能保持可达；外层初始化函数早已返回并不重要。
+
+清理闭包的价值在于把解除关系所需的标识保存在正确环境中。它不是垃圾回收 API，也不会强制立即释放内存。清理只是移除应用创建的强引用；何时回收仍由运行时决定。
+
+在性能结论上要克制。闭包创建是否成为瓶颈取决于调用频率、引擎优化和捕获对象，不能靠“把箭头函数移出循环”这类口号判断。先用目标运行时的性能分析器找到真实热点，再优化有数据支持的路径。
+
+</Depth>
+
+<Checkpoint id="javascript/closures" />
+
+## 延伸阅读
+
+- [MDN JavaScript 指南：闭包](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Closures)
+- [MDN JavaScript 参考：函数](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions)
+- [MDN JavaScript 参考：`let`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/let)
+- [MDN JavaScript 参考：`Function()` 构造器](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/Function)
+- [MDN JavaScript 指南：内存管理](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Memory_management)

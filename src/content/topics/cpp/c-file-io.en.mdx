@@ -1,0 +1,422 @@
+---
+title: C File I/O
+description: Open, read, write, and seek files reliably with C23 stdio streams while handling EOF, short counts, buffering, and close errors.
+track: cpp
+section: basics
+difficulty: intermediate
+tags: [c, file-io, stdio, streams, error-handling]
+prerequisites: [cpp/c-basics, cpp/c-pointers, cpp/c-arrays]
+related: [cpp/c-memory, cpp/c-structs-unions, cpp/filesystem, cpp/raii]
+terms: [file-stream, end-of-file-indicator, short-count, object-representation]
+verified: { version: 'C23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/c-file-io
+sources:
+  - { title: 'GNU C Library - Input/Output on Streams', url: 'https://sourceware.org/glibc/manual/latest/html_node/I_002fO-on-Streams.html' }
+  - { title: 'GNU C Library - Opening Streams', url: 'https://sourceware.org/glibc/manual/latest/html_node/Opening-Streams.html' }
+  - { title: 'GNU C Library - Block Input/Output', url: 'https://sourceware.org/glibc/manual/latest/html_node/Block-Input_002fOutput.html' }
+  - { title: 'GNU C Library - End-Of-File and Errors', url: 'https://sourceware.org/glibc/manual/latest/html_node/EOF-and-Errors.html' }
+  - { title: 'cppreference - C input/output', url: 'https://en.cppreference.com/w/c/io' }
+origin: old/src/content/docs/cpp/c-file-io.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    C's `<stdio.h>` represents buffered, stateful streams with `FILE *`. A program opens a stream, transfers characters, lines, formatted data, or byte blocks, and then closes it.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `EOF` does not predict when a loop should stop, and neither `fread()` nor `fwrite()` promises to complete a request. Ignoring return values or a `fclose()` error can make a truncated file look successful.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Let each I/O return value drive control flow, use `feof()` and `ferror()` to explain a short read, and handle open, write, and close failures explicitly.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+C file I/O is the standard interface in `<stdio.h>` for transferring data between a program and external objects such as files and terminals. After opening an object, the library returns a `FILE *` that points to a <Term id="file-stream">file stream</Term>. This value is neither file content nor a public structure whose members a program may inspect. It is the handle required by later transfer, positioning, and status operations.
+
+A stream gives different external objects one interface. Functions such as `fgetc()`, `fgets()`, `fprintf()`, and `fread()` all accept `FILE *`, so the same processing logic can work with regular files or the standard streams `stdin`, `stdout`, and `stderr`. The library can also buffer data between the program and host environment, avoiding a low-level operation for every character.
+
+You use these interfaces to read configuration, process logs line by line, import text data, copy arbitrary bytes, and store a defined custom format. File names, permissions, directories, and concurrent changes belong to the host environment; standard C specifies only the stream interface and its observable behavior. If a program must enumerate directories, inspect metadata, or perform asynchronous I/O, use a platform API or higher-level library instead of assuming `stdio` provides those abilities.
+
+The central file I/O contract is the complete lifecycle and state management, not merely calling a function. Choose an open mode that will not destroy unintended data, check every transfer result, distinguish end of file from an error, and verify the final close. A failure at any stage can make read data incomplete or leave an output containing only a prefix.
+
+| Need | Interface | Fact expressed by the return value |
+|---|---|---|
+| Open or create | `fopen()` | `FILE *` or `NULL` |
+| Read a character or line | `fgetc()`, `fgets()` | data, `EOF`, or `NULL` |
+| Transfer object blocks | `fread()`, `fwrite()` | number of complete elements |
+| Format text | `fprintf()`, `fscanf()` | characters written or conversions completed, with specific failure values |
+| Position | `fseek()`, `ftell()` | success status or a restorable position |
+| End the lifecycle | `fclose()` | `0` or `EOF` |
+
+## How it works
+
+### Stream lifecycle and state
+
+`fopen(path, mode)` associates an external file with a new stream. On success, the stream has an access mode, current position, buffering state, end-of-file indicator, and error indicator. On failure, it returns `NULL` and may set `errno`. `perror()` can turn the current `errno` into a human-readable diagnostic, but program logic should still propagate failure through its own status contract.
+
+A stream is valid only after a successful open and before its close. `fclose()` processes pending buffered output and ends the association; passing the old pointer to any I/O function afterward has no valid meaning. Closing can also fail, for example when previously buffered output fails during final delivery. A write path therefore cannot treat “the last `fwrite()` succeeded” as its full success condition.
+
+`stdin`, `stdout`, and `stderr` are already open when the host environment provides them to a program. They represent standard input, standard output, and diagnostic output, but they need not be connected to a keyboard or screen. Redirection can connect them to a file or pipe, so do not infer device type or interactive behavior from a stream's name.
+
+### Open mode is a data contract
+
+The first mode character selects basic access. `r` requires an existing file, `w` creates a file or immediately truncates one that exists, and `a` creates a file or sends every output operation to the file's then-current end. Adding `+` creates an update stream that permits input and output. Adding `b` requests binary mode.
+
+| Mode | Input | Output | Existing content | Initial position |
+|---|---:|---:|---|---|
+| `r` | yes | no | preserved | beginning |
+| `w` | no | yes | truncated | beginning |
+| `a` | no | yes | preserved; output appends | end |
+| `r+` | yes | yes | preserved | beginning |
+| `w+` | yes | yes | truncated | beginning |
+| `a+` | yes | yes | preserved; output appends | input starts at beginning |
+
+Use a mode containing `b`, such as `rb`, `wb`, or `r+b`, for binary data. On some systems, text mode translates newlines or treats certain bytes specially; binary mode preserves the file's byte sequence. POSIX systems usually do not distinguish the modes, but portable code should still state its actual intent.
+
+C23 also permits `x` with a `w` mode, such as `wbx`, to request exclusive creation. Opening fails if the file already exists. This fits a “must not replace an existing target” contract. It does not replace path authorization, symbolic-link policy, or directory-boundary checks, which remain concerns for the application and host environment.
+
+### Character, line, and formatted input
+
+`fgetc()` returns a byte converted to `unsigned char` and then promoted to `int`; it returns `EOF` when it cannot provide another character. The receiving variable must therefore be an `int`, or a valid byte can become indistinguishable from `EOF`. `fputc()` likewise returns the written character or `EOF`, and callers should check for failure.
+
+`fgets(buffer, size, stream)` stores at most `size - 1` characters and appends `\0`. If it reads a newline and has room, that newline remains in the buffer. When the buffer fills before a newline is reached, the result contains only a fragment of the line. A program that needs complete records must keep assembling fragments or reject an overlong line.
+
+`fprintf()` suits text with a defined output format. With `fscanf()`, whitespace can be skipped or retained depending on the conversion, and the number of successful conversions can be smaller than requested. For input that must validate a whole line, it is usually clearer to fetch bounded text with `fgets()` and then use parsing functions that check fields, ranges, and trailing characters.
+
+### Block transfers and short counts
+
+`fread(pointer, size, count, stream)` attempts to read `count` elements of `size` bytes each and returns the number of complete elements read. `fwrite()` uses the same counting convention. The return value counts elements, not bytes. It equals a byte count directly only when `size` is `1`.
+
+A return value below `count` is a <Term id="short-count">short count</Term>. For input, it can mean end of file or an error, so the caller queries `feof()` and `ferror()` after the short read. For output, a short count means the transfer did not finish; the program cannot continue to report the destination as a valid complete file.
+
+When copying blocks, one `fwrite()` can in principle accept only a prefix of the input block. A reliable write helper advances the pointer and retries the remaining bytes until all are accepted or the operation makes no progress and reports an error. Whether retrying is appropriate depends on the destination and application contract, but ignoring a short write is never correct handling.
+
+### End of file and error indicators
+
+End of file is not a state that can be predicted before an input operation. A stream's <Term id="end-of-file-indicator">end-of-file indicator</Term> is set only after a read attempt cannot obtain the next character. Call the read function first and exit according to its return value. `while (!feof(stream))` executes a loop body once more after the final read has already failed.
+
+`feof()` and `ferror()` query different state. After input returns `EOF`, `NULL`, or a short count, the first says that input stopped at end of file, while the second says a read error occurred. Both indicators remain set until `clearerr()`, `rewind()`, or another rule explicitly changes them. Do not use `errno` as the sole way to distinguish ordinary EOF from a stream error.
+
+### Positioning and update streams
+
+`fseek()` changes position relative to `SEEK_SET`, `SEEK_CUR`, or `SEEK_END`, and `ftell()` returns information usable for later positioning. `fgetpos()` and `fsetpos()` save and restore a position with `fpos_t`. Not every stream supports random access. Calls can fail on objects such as pipes, so their return values still need checks.
+
+An update stream permits both reads and writes but adds sequencing requirements when direction changes. Before input directly follows output, call `fflush()` or a file-positioning function successfully. Before output directly follows input, normally call a file-positioning function unless the input operation encountered end of file. The easiest pattern to review is an explicit, checked `fseek()` at every direction change.
+
+## Examples
+
+### Write and read back text lines
+
+The first example creates two lines of text, checks the write and close, and then reads the lines back. `fgets()` preserves each newline, so `printf()` does not add another one.
+
+<Depth level="quick">
+
+```c title="line_reader.c"
+#include <stdio.h>
+
+int main(void) {
+    const char *path = "scores.txt";
+    FILE *stream = fopen(path, "w");
+    if (stream == NULL) {
+        perror("open for writing");
+        return 1;
+    }
+
+    if (fputs("Ada 91\nLin 88\n", stream) == EOF) {
+        perror("write scores");
+        fclose(stream);
+        return 1;
+    }
+    if (fclose(stream) == EOF) {
+        perror("close after writing");
+        return 1;
+    }
+
+    stream = fopen(path, "r");
+    if (stream == NULL) {
+        perror("open for reading");
+        return 1;
+    }
+
+    char line[32];
+    size_t line_number = 0;
+    while (fgets(line, sizeof line, stream) != NULL) {
+        printf("%zu: %s", ++line_number, line);
+    }
+
+    int failed = ferror(stream);
+    if (fclose(stream) == EOF) failed = 1;
+    printf("lines: %zu\n", line_number);
+    remove(path);
+    return failed ? 1 : 0;
+}
+```
+
+```text
+1: Ada 91
+2: Lin 88
+lines: 2
+```
+
+</Depth>
+
+The loop is driven by the return value of `fgets()`. A final line without a newline is still returned as a line. A line longer than 31 characters arrives in several pieces. The fixed buffer limits one read operation; it does not define a “complete line” by itself.
+
+### Store integers with an explicit byte order
+
+A binary file needs its own format contract. This example encodes three 16-bit unsigned integers as a fixed six-byte record with the high byte first instead of writing a compiler's memory layout directly.
+
+```c title="binary_values.c"
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+static_assert(CHAR_BIT == 8, "example needs 8-bit bytes");
+int main(void) {
+    const uint16_t values[] = {300, 1024, 65535};
+    unsigned char encoded[6] = {0};
+    for (size_t index = 0; index < 3; ++index) {
+        encoded[index * 2] = (unsigned char)(values[index] >> 8);
+        encoded[index * 2 + 1] = (unsigned char)values[index];
+    }
+    FILE *stream = fopen("values.bin", "w+b");
+    if (stream == NULL) {
+        perror("open binary output");
+        return 1;
+    }
+    const size_t written = fwrite(encoded, 1, sizeof encoded, stream);
+    if (written != sizeof encoded || fseek(stream, 0, SEEK_SET) != 0) {
+        fputs("binary write failed\n", stderr);
+        fclose(stream);
+        return 1;
+    }
+    unsigned char loaded[sizeof encoded] = {0};
+    const size_t read = fread(loaded, 1, sizeof loaded, stream);
+    const int read_close = fclose(stream);
+    if (read != sizeof loaded || read_close == EOF) {
+        fputs("binary read failed\n", stderr);
+        return 1;
+    }
+    for (size_t index = 0; index < 3; ++index) {
+        const unsigned value =
+            ((unsigned)loaded[index * 2] << 8) | loaded[index * 2 + 1];
+        printf("%u%c", value, index == 2 ? '\n' : ' ');
+    }
+    remove("values.bin");
+    return 0;
+}
+```
+
+```text
+300 1024 65535
+```
+
+The format explicitly defines two bytes per value and their order, so it does not depend on structure padding or host endianness. The example also stores the transfer count and close result separately, avoiding short-circuit logic that could prevent `fclose()` from running at all.
+
+### Copy blocks while handling short writes
+
+When copying arbitrary data, pass the actual return value from `fread()` to the write loop. This example creates a temporary input with `tmpfile()` and copies it to standard output, so no pre-existing input file is required.
+
+```c title="checked_copy.c"
+#include <stdio.h>
+
+static int write_all(FILE *stream, const unsigned char *data, size_t length) {
+    while (length > 0) {
+        const size_t written = fwrite(data, 1, length, stream);
+        if (written == 0 || ferror(stream)) {
+            return -1;
+        }
+        data += written;
+        length -= written;
+    }
+    return 0;
+}
+int main(void) {
+    FILE *input = tmpfile();
+    if (input == NULL) {
+        return 1;
+    }
+    if (fputs("alpha\nbeta\ngamma\n", input) == EOF ||
+        fseek(input, 0, SEEK_SET) != 0) {
+        fclose(input);
+        return 1;
+    }
+    unsigned char buffer[8];
+    size_t total = 0;
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof buffer, input)) > 0) {
+        if (write_all(stdout, buffer, count) != 0) {
+            fclose(input);
+            return 1;
+        }
+        total += count;
+    }
+    int failed = ferror(input);
+    printf("copied: %zu bytes\n", total);
+    if (fclose(input) == EOF) failed = 1;
+    if (fflush(stdout) == EOF) failed = 1;
+    return failed ? 1 : 0;
+}
+```
+
+```text
+alpha
+beta
+gamma
+copied: 17 bytes
+```
+
+The buffer size is `8`, but the final `fread()` returns only the remaining `1` byte. `write_all()` writes only the range actually read and advances the pointer after a short write. The program queries `ferror()` after the input loop and uses `fflush(stdout)` to confirm that output reached the host environment.
+
+### Backfill a binary record header
+
+An update stream can write content first and then return to the beginning to add metadata such as a length. Before every direction change, this example uses `fseek()` to establish an explicit position and satisfy the update-stream sequencing rule.
+
+```c title="record_header.c"
+#include <stdio.h>
+
+int main(void) {
+    const char *path = "record.bin";
+    const unsigned char payload[] = {'h', 'e', 'l', 'l', 'o'};
+    const unsigned char empty_header[2] = {0, 0};
+    FILE *stream = fopen(path, "w+b");
+    if (stream == NULL) {
+        perror("open record");
+        return 1;
+    }
+
+    if (fwrite(empty_header, 1, 2, stream) != 2 ||
+        fwrite(payload, 1, sizeof payload, stream) != sizeof payload) {
+        fclose(stream);
+        return 1;
+    }
+
+    const unsigned char header[2] = {0, sizeof payload};
+    if (fseek(stream, 0, SEEK_SET) != 0 ||
+        fwrite(header, 1, 2, stream) != 2 ||
+        fseek(stream, 0, SEEK_SET) != 0) {
+        fclose(stream);
+        return 1;
+    }
+
+    unsigned char loaded_header[2];
+    if (fread(loaded_header, 1, 2, stream) != 2) {
+        fclose(stream);
+        return 1;
+    }
+
+    const unsigned length =
+        ((unsigned)loaded_header[0] << 8) | loaded_header[1];
+    printf("payload bytes: %u\n", length);
+    const int close_result = fclose(stream);
+    remove(path);
+    return close_result == EOF ? 1 : 0;
+}
+```
+
+```text
+payload bytes: 5
+```
+
+The first `fseek()` moves from the record's end to its header, where the two-byte length replaces the placeholder. The second call both returns to the beginning and separates output from input. A real format must also bound the length and say whether it includes the header.
+
+## Pitfalls
+
+> [!PITFALL]
+> Using `while (!feof(stream))` to predict the end processes stale buffer contents after the final read fails. Storing an `fgetc()` result in `char` can also mistake a valid byte for `EOF`.
+
+**Fix:** let the return value of `fgetc()`, `fgets()`, or `fread()` control the loop, and store `fgetc()` in an `int`. After the loop, use `feof()` and `ferror()` to explain why it stopped. Do not query EOF before a read to decide whether the buffer is valid.
+
+> [!PITFALL]
+> Generated code often checks only `fopen()` and ignores `fprintf()`, `fwrite()`, `fflush()`, and `fclose()`. If storage fills or a delayed low-level write fails, the function still reports a successful save.
+
+**Fix:** check every output operation that can fail and include a successful close in the transaction result. If leaving a partial file would mislead the next startup, write a temporary file in a controlled directory and use the host environment's atomic replacement mechanism only after writing and closing succeed.
+
+> [!PITFALL]
+> `w` and `w+` truncate an existing file as soon as it is successfully opened. Passing an unauthorized or unnormalized path directly to a generated save function can also overwrite data outside the application's boundary.
+
+**Fix:** state whether the target must exist, may be replaced, or must be new before opening it. For new-only creation, use a mode containing `x` in C23 and restrict the path to a directory the caller is authorized to use. Path safety needs host-platform facilities; checking a file extension is not enough.
+
+> [!PITFALL]
+> Switching directly from writing to reading on an `r+`, `w+`, or `a+` stream, or from a read that did not reach EOF to writing, violates update-stream sequencing rules. Small-file tests can appear to work because of a particular buffer layout.
+
+**Fix:** represent a direction switch as an explicit state transition. After output, check `fflush()` or a positioning call. After input, use a successful positioning call before output. If the algorithm naturally has separate phases, closing and reopening with a precise mode can be easier to prove correct.
+
+> [!PITFALL]
+> `fwrite(&record, sizeof record, 1, stream)` writes the current implementation's <Term id="object-representation">object representation</Term>, which can include padding, host byte order, and implementation-specific type widths. It is not an automatically portable file format and must not be trusted and used to allocate memory without validation.
+
+**Fix:** define a version, field widths, byte order, length bounds, and integrity rules, then encode fields individually. When reading an untrusted file, validate its header and every length before allocating or indexing. Raw layout can be a local convention only when the file is deliberately constrained to one ABI and controlled lifetime, and even then short reads require handling.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models routinely reproduce `while (!feof(file))`, receive `fgetc()` in a `char`, or assume one `fread()` or `fwrite()` completes a request. They also overwrite targets unconditionally with `wb`, treat raw structures as cross-platform formats, allocate from unvalidated counts in a file, and ignore `fclose()` after writing. With update streams, generated code is especially likely to omit the flush or positioning operation required when direction changes.
+
+**Ask your AI to check**
+
+- List every exit path for each `FILE *`, prove that each path closes it exactly once, and show that write paths handle close failures.
+- For every input loop, identify which return value controls progress and how a short read distinguishes EOF from an error.
+- Check the open mode, path trust boundary, and binary field format so the code cannot truncate a file unintentionally or allocate from an unvalidated length.
+
+**Review checklist**
+
+- Test the read path with an empty file, text without a final newline, a line larger than the buffer, and a truncated binary record.
+- Inject open, read, short-write, flush, and close failures, and verify that no one failure is hidden by a success result.
+- Compare file bytes on another byte order or with an independent decoder to prove the format does not depend on structure layout or native type width.
+
+**Prompt vocabulary**
+
+Use the exact terms `file stream`, `open mode`, `update stream`, `short read`, `short write`, `EOF indicator`, `error indicator`, `object representation`, and `byte order`. Ask the AI for the return-value contract of every operation and all failure paths. “Read the file safely” is too vague to constrain overwrite policy, record bounds, and file format.
+
+<Depth level="deep">
+
+## Stream state, positions, and durability boundaries
+
+### Indicators record the past
+
+The end-of-file indicator says that an earlier input operation tried to read beyond available input. A read that obtains exactly the final byte still succeeds, and the EOF indicator need not be set immediately. The next read that cannot get data sets it. “The position equals the file length” and “`feof()` is true” are therefore different states.
+
+The error indicator is sticky as well. A later successful read does not automatically prove that an earlier error was handled. Use `clearerr()` only after the caller understands the failure and has decided to retry. Clearing blindly loses diagnostic state and can keep a no-progress loop running.
+
+A successful `fseek()` clears the EOF indicator and cancels pushback from `ungetc()`. `rewind()` moves to the beginning and clears both error and EOF indicators, but it has no return value with which to report a positioning failure. When positioning errors matter, `fseek(stream, 0, SEEK_SET)` expresses the contract more clearly.
+
+### A text-stream position is not a general byte offset
+
+In a binary stream, positions suit byte ranges defined by the file format, though `fseek()` and `ftell()` still require checks. In a text stream, implementation rules such as newline translation can make the value from `ftell()` differ from a visible character count. Portable code treats that value as a position token to give back to `fseek()`, not as a number for text-length arithmetic.
+
+For a text stream, the most portable positioning operations use an offset of `0` or a value previously returned by `ftell()` together with `SEEK_SET`. Arbitrary text offsets relative to the file's end are not generally guaranteed. If the application needs record N, parse sequentially and build an index of valid position values instead of guessing the number of bytes in each newline.
+
+`fgetpos()` and `fsetpos()` use `fpos_t`, which can preserve extra parsing state needed to position a text stream. `fpos_t` is not promised to be an integer and should not be serialized or used in arithmetic. It is suitable for saving and restoring a position on the same stream during one execution.
+
+### Buffer completion is not media durability
+
+A fully buffered stream normally accumulates more output before passing it to the host environment. A line-buffered stream can submit output on a newline, while an unbuffered stream tries to pass each operation directly. Defaults can depend on the object attached to the stream, and a program should not rely on a regular file having a particular buffer size. If used, `setvbuf()` must run before other operations on that stream, and a caller-provided buffer must remain alive until the stream closes.
+
+For an output stream, `fflush()` guarantees delivery of data still held by the C library to the host environment. It does not guarantee that data survives a power failure on physical storage. That durability usually needs operating-system-specific synchronization, directory handling, and an atomic replacement protocol. Standard C alone cannot provide a complete crash-safe file commit.
+
+Calling `fflush()` on an input stream is not a portable way to “clear keyboard input.” Input can come from a file, pipe, or terminal, and standard C has no universal call that discards “one line.” Read according to the protocol until its record boundary, or use platform terminal APIs for device-specific behavior.
+
+### Define the file format before the memory layout
+
+A structure can contain padding between fields and at its end, and unwritten padding bytes can leak old process memory. Integer and floating types also have implementation-defined widths and byte orders. Even when reader and writer use the same source, compiler options or an ABI change can invalidate a raw-structure file.
+
+A stable format starts at the byte level: a magic value identifies it, a version controls field interpretation, fixed-width fields use a specified byte order, and every length and count has a bound. The decoder validates total length and relationships between fields before requesting resources. For compatible evolution, a new version should reject unknown required fields or skip length-delimited optional fields instead of casting the file to the current structure.
+
+Formatted text needs a contract too. Locale can change numeric formatting, `fprintf()` precision controls whether information can round-trip, and delimiters can occur inside fields. If CSV, JSON, or another specification already defines the data format, use a conforming parser. A few lines built around `strtok()` or `fscanf("%s")` rarely cover escaping, empty fields, and range validation.
+
+</Depth>
+
+<Checkpoint id="cpp/c-file-io" />
+
+## Further reading
+
+- [GNU C Library: Input/Output on Streams](https://sourceware.org/glibc/manual/latest/html_node/I_002fO-on-Streams.html)
+- [GNU C Library: Opening Streams](https://sourceware.org/glibc/manual/latest/html_node/Opening-Streams.html)
+- [GNU C Library: Block Input/Output](https://sourceware.org/glibc/manual/latest/html_node/Block-Input_002fOutput.html)
+- [GNU C Library: End-Of-File and Errors](https://sourceware.org/glibc/manual/latest/html_node/EOF-and-Errors.html)
+- [cppreference: C input/output library](https://en.cppreference.com/w/c/io)

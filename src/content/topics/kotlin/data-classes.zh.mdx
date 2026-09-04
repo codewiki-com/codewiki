@@ -1,0 +1,401 @@
+---
+title: 数据类
+description: 用数据类定义值语义，理解编译器生成的相等性、解构与浅拷贝，并避开可变键、数组和敏感字段陷阱。
+track: kotlin
+section: functions-classes
+difficulty: intermediate
+tags: [data-classes, equality, copy, destructuring]
+prerequisites: [kotlin/fundamentals, kotlin/oop]
+related: [kotlin/collections, kotlin/sealed-classes, kotlin/inline-classes]
+terms: [data-class, structural-equality, shallow-copy, read-only-collection, hash-table]
+verified: { version: 'Kotlin 2.4.10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: kotlin/data-classes
+sources:
+  - { title: 'Kotlin documentation source: Data classes', url: 'https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/data-classes.md' }
+  - { title: 'Kotlin documentation source: Equality', url: 'https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/equality.md' }
+origin: old/src/content/docs/kotlin/data-classes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    数据类用主构造函数中的属性定义一组值，并由编译器生成相等性、哈希、字符串表示、解构和复制成员。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `copy()` 只做浅拷贝，而类体属性不参与生成的成员；`val` 也不会让嵌套对象自动变成不可变对象。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把值语义所需的状态放进主构造函数，并让参与相等性与哈希的整张对象图保持稳定。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="data-class">数据类（data class）</Term>是以 `data` 修饰的类，适合表示主要由一组值描述的对象。编译器根据主构造函数中的属性生成常用成员，省去容易彼此不一致的 `equals()`、`hashCode()`、`toString()`、`componentN()` 和 `copy()` 样板代码。
+
+数据类解决的不只是代码长度问题。它把对象的值语义明确放在类声明的入口：哪些属性进入主构造函数，哪些属性就默认参与比较、哈希、显示、解构和复制。审查数据模型时，你可以直接从这条边界判断两个实例何时代表相同的值。
+
+你会在 API 数据传输对象、不可变状态快照、配置值、事件载荷和小型领域值中遇到数据类。它不等于数据库实体，也不保证不可变；是否适用取决于对象应否按内容比较，以及其状态能否稳定表达为构造函数属性。
+
+普通类默认继承 `Any.equals()` 的标识语义。数据类则默认提供<Term id="structural-equality">结构相等性（structural equality）</Term>：`a == b` 会调用 `equals()`，两个不同实例只要参与比较的属性相等，就可以得到 `true`。比较两个引用是否指向同一实例时，仍使用 `===`。
+
+一个实用判断是：如果把实例重新构造为同一组公开值后，它就应当与原实例互换，数据类通常合适。若对象的生命周期、资源所有权或独立标识比属性内容更重要，普通类通常更准确。
+
+## 工作原理
+
+### 主构造函数划定边界
+
+数据类的主构造函数至少要有一个参数，而且每个参数都必须声明为 `val` 或 `var`。数据类不能声明为 `abstract`、`open`、`sealed` 或 `inner`。它可以实现接口，也可以继承允许继承的普通类或密封类。
+
+编译器只根据主构造函数中的属性派生成员。类体中声明的属性仍是实例状态，但默认不进入相等性、哈希、字符串表示、解构或复制。把属性移入或移出主构造函数会改变对象的公开语义，而不只是改变代码排版。
+
+| 声明位置 | `equals()` 与 `hashCode()` | `toString()` | `componentN()` | `copy()` |
+| --- | --- | --- | --- | --- |
+| 主构造函数属性 | 参与 | 参与 | 按声明顺序生成 | 作为参数复制 |
+| 类体属性 | 不参与 | 不参与 | 不生成 | 重新执行初始化 |
+
+### 编译器生成的成员
+
+对于 `data class Parcel(val id: String, val zone: Int)`，编译器生成基于 `id` 和 `zone` 的 `equals()` 与 `hashCode()`。相等的实例必须得到相同的哈希码，这让它们能按值作为 `HashSet` 元素或 `HashMap` 键。
+
+生成的 `toString()` 会以 `Parcel(id=..., zone=...)` 的形式包含类名和构造函数属性。它适合诊断普通数据，却不是安全的审计格式；构造函数中若含令牌、密码或个人数据，直接记录实例会把这些值一并写入日志。
+
+编译器还按属性声明顺序生成 `component1()`、`component2()` 等 `operator` 函数。`val (id, zone) = parcel` 分别调用前两个组件函数，因此变量名不会参与映射。名字写反也能通过编译，只是取得错误的值。
+
+`copy()` 的每个参数都以当前实例的对应属性为默认值，并调用构造函数创建新实例。指定一个命名参数只替换那一项。未指定的引用仍指向原对象，所以 `copy()` 是<Term id="shallow-copy">浅拷贝（shallow copy）</Term>，不会递归复制嵌套对象。
+
+### 显式实现与继承
+
+你可以在数据类中显式实现 `equals()`、`hashCode()` 或 `toString()`。只重写相等性而不保持哈希契约会破坏哈希集合，因此 `equals()` 与 `hashCode()` 应作为一对设计和测试。
+
+你不能显式实现编译器负责的数据类 `copy()` 或 `componentN()`。若超类型提供可重写且返回类型兼容的 `componentN()`，生成函数会覆盖它；签名不兼容或成员为 `final` 时，声明会编译失败。
+
+数据类本身是最终类，但“最终”不代表它不能有父类。它可以继承开放的父类，只是不能再被其他类继承。若父类把 `equals()`、`hashCode()` 或 `toString()` 标成 `final`，数据类会沿用该实现，而不会为对应成员生成覆盖。
+
+### 构造验证与派生状态
+
+数据类可以使用 `init` 块验证构造参数，也可以声明普通方法和计算属性。`copy()` 会再次调用构造逻辑，因此被替换参数和沿用参数都会一起接受当前验证规则。验证失败会在创建副本时抛出与直接构造相同的异常。
+
+能由构造函数属性纯粹计算出来的值通常不必再进入构造函数。例如，`fullName` 可以是根据 `givenName` 和 `familyName` 计算的只读属性。它不需要单独参与相等性，因为输入相同已经保证结果相同。
+
+缓存则需要更谨慎。把可变缓存留在类体可以避免它影响值语义，但每个 `copy()` 都会得到重新初始化的缓存。若缓存持有外部资源或需要显式关闭，数据类往往不是合适的所有者。
+
+默认构造参数属于创建 API，也会成为 `copy()` 的默认机制的一部分。添加或修改默认值前，要分别检查新建实例与复制现有实例的行为；前者使用声明中的默认值，后者默认沿用接收者的当前属性。
+
+## 示例
+
+### 值相等、标识与解构
+
+两个 `Delivery` 实例分别创建，却含有相同的构造函数值。结构相等性比较内容，引用相等性比较实例本身；解构则按声明顺序取出属性。
+
+<Depth level="quick">
+
+```kotlin
+data class Delivery(
+    val id: String,
+    val city: String,
+    val priority: Int = 0,
+)
+
+fun main() {
+    val first = Delivery("D-17", "Paris", priority = 2)
+    val sameValue = Delivery("D-17", "Paris", priority = 2)
+
+    println(first)
+    println(first == sameValue)
+    println(first === sameValue)
+
+    val (id, city, priority) = first
+    println("$id -> $city (priority $priority)")
+}
+```
+
+```text
+Delivery(id=D-17, city=Paris, priority=2)
+true
+false
+D-17 -> Paris (priority 2)
+```
+
+</Depth>
+
+`first == sameValue` 调用生成的 `equals()`，所以结果是 `true`。`first === sameValue` 检查对象标识，两个构造调用产生不同实例，因此结果是 `false`。
+
+最后一行中的变量依次对应 `component1()`、`component2()` 和 `component3()`。如果只需要 `id`，直接写 `first.id` 通常比解构三个属性更能抵抗以后调整属性顺序造成的错误。
+
+### 用 `copy()` 表达状态变化
+
+数据类常用来表示状态快照。下面的代码同时替换订单状态和商品列表；`items + "keyboard"` 会产生一个新列表，因此旧订单观察不到新增项。
+
+```kotlin
+enum class OrderStatus { CREATED, PAID }
+
+data class Order(
+    val id: String,
+    val status: OrderStatus,
+    val items: List<String>,
+)
+
+fun main() {
+    val created = Order(
+        id = "O-204",
+        status = OrderStatus.CREATED,
+        items = listOf("monitor"),
+    )
+
+    val paid = created.copy(
+        status = OrderStatus.PAID,
+        items = created.items + "keyboard",
+    )
+
+    println(created)
+    println(paid)
+    println(created === paid)
+}
+```
+
+```text
+Order(id=O-204, status=CREATED, items=[monitor])
+Order(id=O-204, status=PAID, items=[monitor, keyboard])
+false
+```
+
+`copy()` 总会构造新的外层 `Order`，即使没有参数也不会返回原实例。这里的隔离来自显式创建了新列表，而不是来自 `copy()` 自动递归复制。
+
+`List` 是<Term id="read-only-collection">只读集合（read-only collection）</Term>接口，只表示该引用不暴露修改操作。若底层对象仍被其他 `MutableList` 引用修改，`List` 视图依然会看到变化；需要稳定快照时，要在所有权边界复制数据并约束元素的可变性。
+
+### 观察浅拷贝的共享引用
+
+把可变列表放进数据类后，无参数 `copy()` 会让两个外层对象共享同一个列表。修改副本中的列表，也会改变原实例观察到的内容。
+
+```kotlin
+data class Team(
+    val name: String,
+    val members: MutableList<String>,
+)
+
+fun main() {
+    val original = Team(
+        name = "platform",
+        members = mutableListOf("Mina", "Noah"),
+    )
+    val sharedCopy = original.copy()
+    sharedCopy.members += "Omar"
+
+    val isolatedCopy = original.copy(
+        members = original.members.toMutableList(),
+    )
+    isolatedCopy.members += "Priya"
+
+    println(original.members)
+    println(sharedCopy.members)
+    println(isolatedCopy.members)
+}
+```
+
+```text
+[Mina, Noah, Omar]
+[Mina, Noah, Omar]
+[Mina, Noah, Omar, Priya]
+```
+
+`sharedCopy` 与 `original` 的 `members` 是同一引用，所以两行输出相同。`toMutableList()` 只复制列表结构；如果元素本身可变，两个列表仍可能共享元素对象。
+
+实际建模时，优先暴露不需要修改的集合，并在接收外部可变集合时明确所有权。确实需要可变副本时，应为每一层规定复制策略，而不是把 `copy()` 当作通用的深拷贝操作。
+
+### 类体属性不进入值语义
+
+类体中的 `displayName` 不参与生成的成员。两个客户即使显示名称不同，只要 `id` 相同就会比较为相等；复制时，新实例还会重新执行类体初始化。
+
+```kotlin
+data class Customer(val id: String) {
+    var displayName: String = "anonymous"
+}
+
+fun main() {
+    val first = Customer("C-8").apply {
+        displayName = "Ada"
+    }
+    val second = Customer("C-8").apply {
+        displayName = "Grace"
+    }
+    val copied = first.copy()
+
+    println(first == second)
+    println(first)
+    println(first.displayName)
+    println(copied.displayName)
+}
+```
+
+```text
+true
+Customer(id=C-8)
+Ada
+anonymous
+```
+
+这种设计只有在 `displayName` 明确不属于客户值语义时才合理。如果业务认为显示名称是状态快照的一部分，就应把它移到主构造函数中；这样相等性、字符串表示和 `copy()` 才会采用一致边界。
+
+类体属性适合缓存、派生值或刻意排除的运行时附加状态，但它们很容易造成“看起来像完整复制，实际丢字段”的错觉。为这类排除写出理由，并用相等性与复制测试固定约定。
+
+## 陷阱
+
+> [!PITFALL]
+> 把业务状态放进类体，会让生成的相等性和 `copy()` 忽略它。两个状态不同的实例可能比较为相等，副本还会回到该属性的初始化值。
+
+**修复方法：** 先写出对象的相等性定义，再让所有构成该定义的状态进入主构造函数。只有缓存、派生值或明确属于实例而不属于值的状态才放进类体，并针对排除行为编写测试。
+
+> [!PITFALL]
+> `val` 只禁止重新给属性赋值，`List` 也只限制当前接口；两者都不会冻结底层对象。生成代码常把外部 `MutableList` 直接保存后再用 `copy()`，误以为已经得到独立快照。
+
+**修复方法：** 在模型边界明确集合所有权，需要快照时复制集合，并检查元素是否也可变。状态模型优先使用只读类型，但不要把只读类型当作不可变性的证明。
+
+> [!PITFALL]
+> 修改参与 `equals()` 与 `hashCode()` 的 `var` 或嵌套可变对象后，已经放进<Term id="hash-table">哈希表（hash table）</Term>的键可能无法再按新状态找到。条目仍在旧哈希位置，但查找使用了变化后的哈希码。
+
+**修复方法：** 用稳定、不可变的专用键作为 `HashMap` 键或 `HashSet` 元素。若模型允许编辑，先从集合移除旧键，再以新值插入；更清楚的做法通常是创建新实例。
+
+> [!PITFALL]
+> `Array` 的 `equals()` 使用引用语义，所以含 `Array` 属性的两个数据类实例不会仅因数组元素相同而自动相等。模型经常把 `ByteArray` 放进数据类，然后生成一个看似合理但失败的值相等测试。
+
+**修复方法：** 值集合优先使用 `List`。必须使用数组时，同时重写 `equals()` 与 `hashCode()`，分别采用匹配的 `contentEquals()` 和 `contentHashCode()`；嵌套数组需要相应的深层版本。
+
+> [!PITFALL]
+> 生成的 `toString()` 会显示所有主构造函数属性。把访问令牌、密码、会话标识或受保护的个人数据放入数据类后，日志插值可能在没有显式字段访问的情况下泄露它们。
+
+**修复方法：** 不要依赖通用 `toString()` 记录含敏感值的模型。使用经过字段白名单筛选的日志结构，或提供遮盖敏感值的显式表示，并用测试确认日志输出不含原值。
+
+> [!PITFALL]
+> 解构按 `componentN()` 的位置工作，不按局部变量名工作。调整构造函数属性顺序后，类型相同的组件可能悄悄交换含义，而调用点仍然通过编译。
+
+**修复方法：** 跨 API 边界优先按属性名访问。只在位置短小且稳定时解构，并在修改公开数据类的属性顺序前查找所有解构调用点。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把普通类机械改成数据类，却不先定义相等性边界：瞬时 UI 状态被留在类体，或数据库实体的可变字段进入哈希计算。它们也会把 `copy()` 描述成深拷贝，在状态更新器里复用 `MutableList`，导致旧状态随新状态一起变化。
+
+另一类错误来自“看起来像值”的字段。生成的二进制载荷模型常使用 `ByteArray` 并假定数据类会按元素比较；认证模型则把令牌放进主构造函数，又在调试日志中直接插值整个对象。两种代码都能编译，但测试和安全边界不符合意图。
+
+**让 AI 检查**
+
+- 列出主构造函数和类体中的每个属性，并说明它是否应参与相等性、哈希、显示、解构和复制。
+- 沿每次 `copy()` 跟踪引用，标出仍与原实例共享的可变集合、数组和嵌套对象。
+- 找出所有作为哈希键、使用数组属性或可能被完整写入日志的数据类，并为每处生成一个失败优先的测试。
+
+**审查清单**
+
+- 用两个独立构造的实例测试 `==`，并在修改允许变化的字段后复测哈希集合查找。
+- 复制实例后修改每个嵌套可变对象，确认共享或隔离行为符合所有权约定。
+- 检查 `toString()` 和日志调用，确保构造函数中的敏感字段不会以原值出现。
+
+**提示词词汇**
+
+使用准确术语：`data class`（数据类）、`primary-constructor property`（主构造函数属性）、`structural equality`（结构相等性）、`referential equality`（引用相等性）、`hash-code contract`（哈希码契约）、`shallow copy`（浅拷贝）、`componentN order`（组件顺序）和 `mutable key`（可变键）。要求 AI 给出“属性参与矩阵”和“复制后的引用别名图”，比笼统地要求“检查这个 DTO”更容易暴露语义错误。
+
+<Depth level="deep">
+
+## 值语义的边界
+
+### 相等性与哈希是一份契约
+
+生成的 `equals()` 按主构造函数属性比较两个实例，生成的 `hashCode()` 使用同一组属性。具体哈希数值不是跨平台或跨版本保存的业务标识；只能依赖“相等对象拥有相同哈希码”这一契约。
+
+哈希集合通常先按哈希码定位候选位置，再用相等性确认键。若键的参与属性变化，集合不会自动搬迁已有条目。这就是数据类使用 `var` 或嵌套可变值时，比普通状态对象更容易暴露错误的原因。
+
+自定义相等性时，先列出规范化规则。例如，电子邮件地址是否忽略大小写，订单是否只按编号识别，都不是 `data` 关键字能决定的。如果相等性只依赖一个稳定标识，普通类或专用键类型往往比覆盖数据类的默认语义更直白。
+
+### 复制调用的是构造边界
+
+概念上，`copy()` 为每个主构造函数参数提供 `this.property` 默认值，再调用主构造函数。被替换的参数使用新实参，未替换的引用原样传递。初始化块、属性初始化器和构造过程中执行的验证会对新实例再次运行。
+
+因此，类体属性不是从旧实例传给新实例，而是重新初始化。嵌套引用也不会自动调用其 `copy()`。需要更新嵌套不可变状态时，可以逐层显式调用 `copy()`；需要复制可变对象图时，则必须定义对象所有权和每层复制规则。
+
+默认参数让调用点只写变化项，但也可能掩盖新增属性。当数据类增加一个带默认值的构造参数，旧 `copy()` 调用会沿用当前实例中的该值；这通常合理，但仍应检查序列化、持久化和状态迁移是否有不同的默认策略。
+
+### 组件顺序是源码接口
+
+`componentN()` 与主构造函数属性一一对应，编号来自声明顺序。解构声明中的变量名只是新的局部名称，不会与属性名匹配。跳过某一项时使用 `_`，对应的组件函数也不会被调用。
+
+对公开数据模型重新排序属性，既会改变位置实参，也会改变解构结果。命名构造实参可以保护调用方免受前一种变化，但不能保护解构调用。将解构限制在局部、短小的代码中，可以降低这种位置耦合。
+
+### 数组不是集合值
+
+Kotlin 的数组是专用对象，普通 `equals()` 不按元素递归比较。数据类生成的相等性调用属性自身的相等性，因此不会替数组增加内容语义。`contentEquals()` 按对应索引比较一层元素，`contentDeepEquals()` 才用于嵌套数组。
+
+哈希实现必须使用同一深度的规则。采用 `contentEquals()` 就配对 `contentHashCode()`；采用 `contentDeepEquals()` 就配对 `contentDeepHashCode()`。如果只改比较而不改哈希，相等对象可能落入不同哈希位置，违反集合依赖的契约。
+
+### 数据类不是不可变性声明
+
+`data` 负责生成成员，`val` 负责固定属性引用，二者都不控制引用对象的内部方法。一个全部使用 `val` 的数据类仍可以持有 `MutableList`、可变服务对象或外部缓冲区。真正的不可变性需要从根对象到所有可达状态都没有可观察的修改路径。
+
+只读集合接口可以缩小当前调用方的能力，却不能阻止另一个别名修改底层集合。稳定快照需要在边界取得独立数据，并避免继续泄露可变别名。元素也是可变对象时，仅复制集合结构仍然不够。
+
+### 选择相邻的表示方式
+
+数据类不是每种“小类”的默认答案。先确定对象需要值语义、标识语义还是单例语义，再选择对应声明。
+
+| 需求 | 常见选择 | 关键理由 |
+| --- | --- | --- |
+| 多个属性共同定义一个值 | 数据类 | 自动生成完整的值成员 |
+| 对象以生命周期或稳定 ID 区分 | 普通类 | 避免把所有可变字段混入相等性 |
+| 一个底层值需要新的静态类型 | 值类 | 限制包装语义和表示成本 |
+| 封闭状态中的无数据单例 | `data object` | 单例也有稳定的数据式表示 |
+
+DTO 经常适合数据类，因为它通常是某一边界上的值快照。不过，传输字段、领域相等性和持久化身份不一定相同。不要仅因为数据库表或 JSON 对象“有字段”，就假定全部字段都应进入同一份值语义。
+
+具有长期生命周期和大量内部状态的服务通常适合普通类。服务实例的连接池、缓存和协作者并不是用来逐项比较的数据，把它声明为数据类会产生误导性的相等性与日志输出。
+
+只有一个底层值时，可以比较数据类与值类。值类有不同的装箱和标识规则，适合在类型系统中区分同一底层类型的不同含义；数据类则适合需要多个组件、解构或常规对象表示的值。
+
+无数据的封闭状态应与 `data object` 比较，而不是创建没有有效载荷的数据类。带数据的状态分支仍可用数据类，并与密封类或密封接口组合；具体层级属于密封类型主题。
+
+### 演进公开数据类
+
+公开数据类的主构造函数同时影响构造调用、相等性、哈希、输出、组件顺序和复制。修改它的风险面比普通私有载体更大，审查时不能只看构造调用是否还能编译。
+
+在末尾添加带默认值的属性，通常能让既有命名调用继续编译，但会改变相等性、哈希和字符串输出。快照测试、缓存键和日志处理可能随之变化。默认值解决的是调用兼容性，不是语义兼容性。
+
+重新排序同类型属性尤其危险。位置实参和解构都可能继续编译，却把值交给错误的名称。公开 API 应鼓励命名实参，并把解构视为需要单独查找的调用形式。
+
+删除属性会移除一个组件函数，并改变后续所有组件的编号。即使项目源码全部重新编译，调用方逻辑也可能因位置变化而错误。跨模块二进制兼容性还需要使用专门工具检查，不能从源码测试通过推断出来。
+
+把属性从主构造函数移到类体不是保持行为的重构。它会同时把该属性移出五类生成成员。相反，把类体属性移入构造函数会扩大相等性与日志表示，可能暴露原本被排除的状态。
+
+演进前先记录旧契约：哪些实例相等、哪些字段可出现在日志、复制后哪些引用应共享、哪些调用使用解构。变更后按同一张契约表复测，才能区分有意变化与回归。
+
+### 测试生成的语义
+
+数据类几乎没有手写代码，却仍需要围绕生成行为测试。测试目标不是证明编译器能生成成员，而是证明你选择的构造函数边界符合领域约定。
+
+| 测试轴 | 最小反例 |
+| --- | --- |
+| 相等性 | 两个独立实例只改变一个属性 |
+| 哈希稳定性 | 插入集合后尝试所有允许的修改 |
+| 复制隔离 | 修改副本中的每个嵌套可变值 |
+| 类体排除 | 让类体属性不同，再比较并复制 |
+| 输出安全 | 用哨兵秘密值检查所有日志表示 |
+
+相等性测试应同时覆盖正例与反例。只断言两个相同实例相等，无法发现某个必要属性被留在类体；每次只改变一个构成值的属性，才能验证边界完整。
+
+哈希测试要使用真实的 `HashSet` 或 `HashMap` 操作，而不只比较两次 `hashCode()`。先插入，再执行模型允许的状态变化，最后查找和删除，可以暴露键稳定性问题。
+
+复制测试应从引用别名出发。对每个列表、数组或嵌套对象，明确副本是应共享、复制容器，还是递归复制元素，然后通过副本与原实例两边的修改验证决定。
+
+输出测试可以把唯一的哨兵字符串放进敏感字段，再检查 `toString()` 和结构化日志结果。这样即使以后新增日志调用或调整字段，测试也能以具体泄漏值失败。
+
+</Depth>
+
+<Checkpoint id="kotlin/data-classes" />
+
+## 延伸阅读
+
+下面是 Kotlin 官方语言指南所使用的持续维护源页面。相等性页面还链接到前文陷阱中使用的标准库数组内容操作。
+
+- [Kotlin 文档源文件：数据类](https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/data-classes.md)
+- [Kotlin 文档源文件：相等性](https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/equality.md)
+- [Kotlin 文档源文件：解构声明](https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/destructuring-declarations.md)
