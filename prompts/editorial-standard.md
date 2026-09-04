@@ -10,7 +10,7 @@ A topic explains one concept or tool so that a smart colleague can (a) understan
 
 1. **Frontmatter** (see §8).
 2. **TL;DR** — `<TLDR>` with three cells. Default labels `what` / `trap` / `fix`; for tool topics use `what` / `when` / `how`. Each cell is one or two sentences.
-3. **What it is and why it exists** — `## ` heading in the reader's language. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
+3. **What it is and why it exists** — `## ` heading in the reader's language. The skeleton sections use exactly these H2 names (en / zh): `What it is and why it exists` / `是什么，为什么存在`, `How it works` / `工作原理`, `Examples` / `示例`, `Pitfalls` / `陷阱`, `In the AI era` / `AI 时代`, `Further reading` / `延伸阅读`; only deep-dive sections choose their own headings. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
 4. **How it works** — the mechanics. One Mermaid diagram (` ```mermaid `) if a structure or flow is clearer drawn than described; none otherwise.
 5. **Examples** — two to four runnable examples that build on each other. Every example that the language allows to run in the browser carries the fence meta `run title="file.ext"` (Python, JavaScript, TypeScript; SQL when the example is self-contained). Every example shows its output in a fenced block ` ```text ` immediately after it, and that output was produced by actually running the code (see §6).
 6. **Pitfalls** — three to six, each as `> [!PITFALL]` followed by the fix. "Best practices" belong here as the fix side of a pitfall; do not write a separate best-practices list.
@@ -79,7 +79,7 @@ sources:
 origin: old/src/content/docs/python/closures.zh.md
 ---
 ```
-`title` and `description` are in the file's language. Everything else is identical between the two files.
+`title` and `description` are in the file's language. Everything else is identical between the two files. A `title` is a noun phrase of at most 40 characters with no colon or subtitle (`Closures`, `CAP theorem`, `asyncio`); everything that explains the title belongs in `description` (≤ 160 characters).
 
 ## 9. Sidecars
 
