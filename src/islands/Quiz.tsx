@@ -16,6 +16,8 @@ export interface QuizProps {
   locale: Locale;
   labels: Record<string, string>;
   onDone?: (score: number, total: number) => void;
+  /** Checkpoints aggregate persistence after the last item instead. */
+  persistResult?: boolean;
 }
 
 function showAnswer(root: HTMLElement, score: number, total: number): void {
@@ -29,7 +31,7 @@ function showAnswer(root: HTMLElement, score: number, total: number): void {
 }
 
 /** Multiple-choice, predict-the-output, and fill-in answer controller for a server KataShell. */
-export default function Quiz({ bank, item, labels, onDone }: QuizProps) {
+export default function Quiz({ bank, item, labels, onDone, persistResult = true }: QuizProps) {
   const mount = useRef<HTMLDivElement>(null);
   const choice = useSignal<number | null>(null);
   const answered = useSignal(false);
@@ -87,7 +89,7 @@ export default function Quiz({ bank, item, labels, onDone }: QuizProps) {
       showAnswer(root, score, 1);
       if (!persisted) {
         persisted = true;
-        persist(bank, item.id, score, 1, item, new Date());
+        if (persistResult) persist(bank, item.id, score, 1, item, new Date());
         onDone?.(score, 1);
       }
     };
@@ -132,7 +134,7 @@ export default function Quiz({ bank, item, labels, onDone }: QuizProps) {
       form?.removeEventListener('submit', onSubmit);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [bank, item, labels, onDone, answered, choice]);
+  }, [bank, item, labels, onDone, persistResult, answered, choice]);
 
   return <div ref={mount} class="quiz-mount" aria-hidden="true" data-quiz-controller="quiz" />;
 }

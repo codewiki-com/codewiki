@@ -17,6 +17,8 @@ export interface SpotBugProps {
   locale: Locale;
   labels: Record<string, string>;
   onDone?: (score: number, total: number) => void;
+  /** Checkpoints aggregate persistence after the last item instead. */
+  persistResult?: boolean;
 }
 
 function inIssue(line: number, issue: Issue): boolean {
@@ -47,7 +49,7 @@ function showExplanation(root: HTMLElement, score: number, total: number): void 
 }
 
 /** Clickable line-gutter controller for spot-the-bug kata shells. */
-export default function SpotBug({ bank, item, locale, labels, onDone }: SpotBugProps) {
+export default function SpotBug({ bank, item, locale, labels, onDone, persistResult = true }: SpotBugProps) {
   const mount = useRef<HTMLDivElement>(null);
   const marked = useSignal<number[]>([]);
   const answered = useSignal(false);
@@ -109,7 +111,7 @@ export default function SpotBug({ bank, item, locale, labels, onDone }: SpotBugP
       showExplanation(root, grade.score, grade.total);
       if (!persisted) {
         persisted = true;
-        persist(bank, item.id, grade.score, grade.total, item, new Date());
+        if (persistResult) persist(bank, item.id, grade.score, grade.total, item, new Date());
         onDone?.(grade.score, grade.total);
       }
     };
@@ -131,7 +133,7 @@ export default function SpotBug({ bank, item, locale, labels, onDone }: SpotBugP
       for (const issueNote of addedNotes) issueNote.remove();
       mounted.undo();
     };
-  }, [bank, item, labels, locale, onDone, answered, marked]);
+  }, [bank, item, labels, locale, onDone, persistResult, answered, marked]);
 
   return <div ref={mount} class="quiz-mount" aria-hidden="true" data-quiz-controller="spotbug" />;
 }

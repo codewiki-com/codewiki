@@ -145,6 +145,16 @@ export default {
 
   'checkpoint.soon': 'Checkpoint available in Practice',
   'checkpoint.label': 'checkpoint',
+  'checkpoint.start': 'Start',
+  'checkpoint.count': '{n} questions',
+  'checkpoint.predict': '{n} predict-the-output',
+  'checkpoint.spotbug': '{n} spot-the-bug',
+  'checkpoint.result': 'You scored {score} of {total}',
+  'checkpoint.passed': 'Passed',
+  'checkpoint.failed': 'Not yet',
+  'checkpoint.addMisses': 'Add misses to flashcards',
+  'checkpoint.continue': 'Continue to {title}',
+  'checkpoint.backToTrack': 'Back to the track',
 
   'code.copy': 'Copy',
   'code.copied': 'Copied',
