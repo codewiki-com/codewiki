@@ -638,4 +638,13 @@ export default {
   'bilingual.pairedExplain': '上下对照会把每段译文放在对应原文下方。',
   'bilingual.sideExplain': '左右对照需要至少 1440 像素宽的屏幕。',
   'bilingual.notAligned': '尚未对齐',
+
+  // Task 15
+  'ask.explainCode': '逐行讲解这段代码',
+  'ask.port': '移植到另一种语言',
+  'ask.tests': '为这段代码编写测试',
+  'ask.checkPitfall': '检查我的代码是否有这个陷阱',
+  'ask.block': '让 AI 讲讲这段代码',
+  'nudge.title': '试着找出漏洞',
+  'nudge.try': '试一试',
 } satisfies Record<keyof typeof en, string>;

@@ -41,6 +41,8 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 - APIs removed or deprecated in the verified version must not be taught as current. Mention a deprecated form only inside a pitfall ("code generated from older tutorials still uses…").
 - AI/LLM content: name current models and SDK entry points only; anything older than the verified date must be labelled as historical.
 
+Place `<TryToBreak items={[...]} />` after the main runnable example and its output when two to four concrete edge cases would help the reader test the example's limits. Keep the English and Chinese item lists aligned in count and meaning; the component receives the preceding runnable code at build time, so authors provide only `items`.
+
 ## 6. Code
 
 - Runs. Before publishing, every runnable block is executed with the local toolchain (`python3`, `node`, `tsc`/`tsx`, `go run`, `cargo run`, `java`, `dotnet`, `php`, `swift`, `kotlinc` where installed) and the shown output is the real output. Where a toolchain is missing, the block is marked with a comment `# not executed here: {reason}` and the reviewer is told in the report.

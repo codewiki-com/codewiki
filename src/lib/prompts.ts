@@ -1,7 +1,7 @@
 /**
  * The Ask-AI prompts — spec §14.2.
  *
- * One template, six presets. The template is written in English whatever the reader's locale is,
+ * One template, page and block presets. The template is written in English whatever the reader's locale is,
  * because it addresses the assistant, not the reader: what the locale decides is the language the
  * answer comes back in. The page's own text is quoted verbatim between triple quotes so the model
  * works from what the reader is looking at rather than from its memory of the subject.
@@ -11,8 +11,14 @@
  */
 import type { Locale } from '@/lib/urls';
 
-/** The six presets, in the order the panel lists them. */
-export const PRESETS = ['explain', 'quiz', 'bugs', 'compare', 'apply', 'feynman'] as const;
+/** The original page and section presets, in the order the panel lists them. */
+export const PAGE_PRESETS = ['explain', 'quiz', 'bugs', 'compare', 'apply', 'feynman'] as const;
+
+/** Presets offered only when a code block or pitfall opens the panel. */
+export const BLOCK_PRESETS = ['explain-code', 'port', 'tests', 'check-pitfall'] as const;
+
+/** Every preset the prompt builder accepts. */
+export const PRESETS = [...PAGE_PRESETS, ...BLOCK_PRESETS] as const;
 
 export type Preset = (typeof PRESETS)[number];
 
@@ -30,6 +36,10 @@ export interface PromptContext {
   sectionText: string;
   /** The programming language of the examples, e.g. `Python`. */
   language: string;
+  /** The destination selected for `port`; ignored by other presets. */
+  targetLanguage?: string;
+  /** Reader code supplied to `check-pitfall`; ignored by other presets. */
+  userCode?: string;
   /** What the reader is assumed to know already; `explain` builds on it. */
   prerequisite?: string;
 }
@@ -52,6 +62,13 @@ const INSTRUCTIONS: Record<Preset, string> = {
     'Here is my own code:\n"""\n(paste your code here)\n"""\nShow me how the idea above applies to it, and what I should change.',
   feynman:
     'I will explain this section back to you in my own words. Grade my explanation against the text above: name what I got wrong, what I left out, and what I only repeated without understanding.',
+  'explain-code':
+    'Explain this code block line by line at my level. Assume I know {prerequisite}. Start with what it does overall, then connect each line to that result.',
+  port: 'Port this code block to {targetLanguage}. Make the result idiomatic, then name any semantic differences that could change its behavior.',
+  tests:
+    'Write tests for this code block that cover its edge cases and likely failure modes. Explain what each test protects against.',
+  'check-pitfall':
+    'Check my code for the pitfall described above. Point to the exact lines that are vulnerable, explain why, and propose the smallest safe fix.\nMy code:\n"""\n{userCode}\n"""',
 };
 
 /** The outer bound on a deep link, in the characters the reader would see. */
@@ -69,12 +86,26 @@ const CUT_MARKER = ' […]';
 
 /** The prompt text for one preset, ready to be copied or handed to an assistant. */
 export function buildPrompt(context: PromptContext): string {
-  const { preset, locale, title, url, section, sectionText, language, prerequisite } = context;
+  const {
+    preset,
+    locale,
+    title,
+    url,
+    section,
+    sectionText,
+    language,
+    targetLanguage,
+    userCode,
+    prerequisite,
+  } = context;
 
   const scope = section.trim() ? `, section "${section.trim()}"` : '';
   const instruction = INSTRUCTIONS[preset]
     .replace('{prerequisite}', prerequisite?.trim() || DEFAULT_PREREQUISITE)
-    .replace('{language}', language);
+    .replace('{language}', language)
+    .replace('{targetLanguage}', targetLanguage?.trim() || language)
+    .replace('{userCode}', userCode?.trim() || '(paste your code here)');
+  const codeLanguage = preset === 'port' ? targetLanguage?.trim() || language : language;
 
   return [
     `I am reading "${title}" on codewiki (${url})${scope}.`,
@@ -83,7 +114,7 @@ export function buildPrompt(context: PromptContext): string {
     sectionText.trim(),
     '"""',
     instruction,
-    `Answer in ${READER_LANGUAGE[locale]}. Keep code examples in ${language}. Where you are unsure, say so.`,
+    `Answer in ${READER_LANGUAGE[locale]}. Keep code examples in ${codeLanguage}. Where you are unsure, say so.`,
   ].join('\n');
 }
 

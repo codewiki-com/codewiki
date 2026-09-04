@@ -504,4 +504,100 @@ describe('rehypeSectionActions', () => {
     expect(button.properties['aria-label']).toBe('让 AI 讲讲这一节');
     expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这一节' });
   });
+
+  it('localizes both the visible and accessible block-action labels', () => {
+    const codebox: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox'] },
+      children: [preFixture({ 'data-lang': 'python' })],
+    };
+    const tree: HastRoot = { type: 'root', children: [codebox] };
+    rehypeSectionActions({ locale: 'zh' })(tree);
+
+    const button = tree.children[1] as Element;
+    expect(button.properties['aria-label']).toBe('让 AI 讲讲这段代码');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这段代码' });
+  });
+
+  it('adds focused actions after code and pitfall blocks', () => {
+    const codebox: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox'], 'data-lang': 'python', 'data-run': 'true' },
+      children: [preFixture({ 'data-lang': 'python' })],
+    };
+    const pitfall: Element = {
+      type: 'element',
+      tagName: 'aside',
+      properties: { className: ['callout', 'callout-pitfall'], dataCallout: 'pitfall' },
+      children: [
+        {
+          type: 'element',
+          tagName: 'p',
+          properties: {},
+          children: [{ type: 'text', value: 'Late binding' }],
+        },
+      ],
+    };
+    const tree: HastRoot = { type: 'root', children: [codebox, pitfall] };
+    rehypeSectionActions()(tree);
+
+    const [code, codeAction, warning, warningAction] = tree.children as Element[];
+    expect(code.properties['data-block']).toBe('ask-block-1');
+    expect(codeAction.properties).toEqual({
+      type: 'button',
+      className: ['ask-block'],
+      'data-preset': 'explain-code|port|tests',
+      'data-block': 'ask-block-1',
+      'data-i18n': 'ask.block',
+      'aria-label': 'Ask AI about this block',
+    });
+    expect(codeAction.children[0]).toEqual({ type: 'text', value: 'Ask AI about this block' });
+    expect(warning.properties['data-block']).toBe('ask-block-2');
+    expect(warningAction.properties['data-preset']).toBe('check-pitfall');
+  });
+
+  it('adds a code action after an output codebox too', () => {
+    const output: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox', 'codebox-output'] },
+      children: [preFixture({ 'data-lang': 'text' })],
+    };
+    const tree: HastRoot = { type: 'root', children: [output] };
+    rehypeSectionActions()(tree);
+
+    expect(tree.children).toHaveLength(2);
+    expect((tree.children[1] as Element).properties['data-preset']).toBe('explain-code|port|tests');
+  });
+
+  it('moves the nearest runnable code onto TryToBreak without replacing authored items', () => {
+    const source = preFixture({ 'data-lang': 'python', 'data-run': 'true' });
+    const codeTree: HastRoot = { type: 'root', children: [source] };
+    rehypeCodebox()(codeTree);
+    const figure = codeTree.children[0] as Element;
+    const output: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox', 'codebox-output'] },
+      children: [],
+    };
+    const nudge = {
+      type: 'mdxJsxFlowElement',
+      name: 'TryToBreak',
+      attributes: [{ type: 'mdxJsxAttribute', name: 'items', value: null }],
+      children: [],
+    };
+    const tree = { type: 'root', children: [figure, output, nudge] } as unknown as HastRoot;
+    rehypeSectionActions()(tree);
+
+    const transformed = tree.children.at(-1) as unknown as typeof nudge;
+    expect(transformed.attributes).toContainEqual({
+      type: 'mdxJsxAttribute',
+      name: 'data-code',
+      value: 'print(1)',
+    });
+    expect(transformed.attributes[0]?.name).toBe('items');
+  });
 });

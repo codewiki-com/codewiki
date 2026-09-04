@@ -668,4 +668,13 @@ export default {
   'bilingual.pairedExplain': 'Paired puts each translated paragraph under its matching paragraph.',
   'bilingual.sideExplain': 'Side by side needs a screen at least 1440 px wide.',
   'bilingual.notAligned': 'not aligned yet',
+
+  // Task 15
+  'ask.explainCode': 'Explain this code line by line',
+  'ask.port': 'Port to another language',
+  'ask.tests': 'Write tests for this code',
+  'ask.checkPitfall': 'Check my code for this pitfall',
+  'ask.block': 'Ask AI about this block',
+  'nudge.title': 'Try to break it',
+  'nudge.try': 'Try it',
 } as const;
