@@ -20,4 +20,12 @@ export const termSchema = z.object({
   topics: z.array(z.string()).default([]),
 });
 
+/** A proposal term carries an id because extraction uses it as the target filename. */
+export const glossaryProposalTermSchema = termSchema.extend({ id: slug });
+
+/** One per-topic proposal file written beside the polished content. */
+export const glossaryProposalSchema = z.object({
+  terms: z.array(glossaryProposalTermSchema),
+});
+
 export type Term = z.infer<typeof termSchema>;
