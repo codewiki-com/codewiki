@@ -6,7 +6,9 @@ import {
   courseLd,
   definedTermLd,
   definedTermSetLd,
+  faqPageLd,
 } from '@/lib/seo';
+import { stripMarkdown } from '@/lib/md';
 
 describe('buildHead', () => {
   it('formats titles per locale', () => {
@@ -277,5 +279,31 @@ describe('content json-ld builders', () => {
     };
     expect(set['@type']).toBe('DefinedTermSet');
     expect(set['@id']).toBe('https://codewiki.com/glossary/');
+  });
+
+  it('builds an FAQPage with accepted answers', () => {
+    const faq = faqPageLd([
+      { question: 'What is a closure?', answer: 'A function with retained bindings.' },
+      { question: 'What is late binding?', answer: 'A name is read when the closure runs.' },
+    ]) as {
+      '@type': string;
+      mainEntity: Array<{
+        '@type': string;
+        name: string;
+        acceptedAnswer: { '@type': string; text: string };
+      }>;
+    };
+
+    expect(faq['@type']).toBe('FAQPage');
+    expect(faq.mainEntity).toHaveLength(2);
+    expect(faq.mainEntity[0]).toEqual({
+      '@type': 'Question',
+      name: 'What is a closure?',
+      acceptedAnswer: { '@type': 'Answer', text: 'A function with retained bindings.' },
+    });
+  });
+
+  it('strips Markdown formatting to visible text', () => {
+    expect(stripMarkdown('**a** `b`')).toBe('a b');
   });
 });

@@ -223,3 +223,16 @@ export function definedTermSetLd(input: { name: string; url: string }): object {
     url: input.url,
   };
 }
+
+/** An interview bank represented as the questions and accepted answers search engines understand. */
+export function faqPageLd(items: { question: string; answer: string }[]): object {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: items.map((item) => ({
+      '@type': 'Question',
+      name: item.question,
+      acceptedAnswer: { '@type': 'Answer', text: item.answer },
+    })),
+  };
+}
