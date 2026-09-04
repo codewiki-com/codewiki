@@ -209,21 +209,26 @@ async function loadFonts(): Promise<OgFont[]> {
       console.warn(`[og] ${face.file} is missing; rendering without it.`);
     }
   }
-  const usable = loaded.some((f) => f.name === 'Plex');
-  if (usable && !loaded.some((f) => f.name === 'Noto')) {
-    console.warn('[og] no CJK face available — Chinese cards will render their Latin text only.');
-  }
-  return usable ? loaded : [];
+  return loaded;
 }
 
 /**
  * Loads the build-time faces once per process, downloading them on first use when the cache is
- * cold. Returns an empty array when even Plex is unavailable, which is the signal to draw the
- * text-free placeholder rather than to fail.
+ * cold. May come back short — or empty — when the network is unavailable; `renderOg` decides
+ * what to do with what it gets, so a cold offline build degrades instead of failing.
  */
 export function ensureFonts(): Promise<OgFont[]> {
   fonts ??= loadFonts();
   return fonts;
+}
+
+const warned = new Set<string>();
+
+/** One warning per degraded mode per process, rather than one per card. */
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(message);
 }
 
 /* ----------------------------------------------------------------- layout */
@@ -428,11 +433,30 @@ function placeholderSvg(): string {
   ].join('');
 }
 
+export interface RenderOptions {
+  /**
+   * Faces to lay the card out with, instead of the process-wide cache. Only the tests pass this,
+   * to exercise the degraded paths — a build always wants `ensureFonts()`.
+   */
+  fonts?: OgFont[];
+}
+
+/** The card as SVG, stepping down to the placeholder when there is nothing to set type with. */
+function cardSvg(input: OgCard, faces: OgFont[]): Promise<string> | string {
+  if (!faces.some((f) => f.name === 'Plex')) {
+    warnOnce('placeholder', '[og] no text face available — writing text-free placeholder cards.');
+    return placeholderSvg();
+  }
+  const text = `${input.title} ${input.subtitle}`;
+  if (CJK.test(text) && !faces.some((f) => f.name === 'Noto')) {
+    warnOnce('cjk', '[og] no CJK face available — Chinese text is dropped from the cards.');
+  }
+  return satori(card(input), { width: WIDTH, height: HEIGHT, fonts: faces });
+}
+
 /** Renders one card to a 1200×630 PNG. */
-export async function renderOg(input: OgCard): Promise<Buffer> {
-  const faces = await ensureFonts();
-  const svg = faces.length
-    ? await satori(card(input), { width: WIDTH, height: HEIGHT, fonts: faces })
-    : placeholderSvg();
+export async function renderOg(input: OgCard, options: RenderOptions = {}): Promise<Buffer> {
+  const faces = options.fonts ?? (await ensureFonts());
+  const svg = await cardSvg(input, faces);
   return new Resvg(svg, { fitTo: { mode: 'width', value: WIDTH } }).render().asPng();
 }

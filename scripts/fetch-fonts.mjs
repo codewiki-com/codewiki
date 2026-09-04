@@ -77,7 +77,7 @@ async function download({ file, url }, outDir, quiet) {
     return;
   }
 
-  console.log(`fetch ${file} <- ${url}`);
+  if (!quiet) console.log(`fetch ${file} <- ${url}`);
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) {
     throw new Error(`Failed to download ${url} — HTTP ${res.status} ${res.statusText}`);
@@ -89,12 +89,14 @@ async function download({ file, url }, outDir, quiet) {
   }
 
   await writeFile(dest, bytes);
-  console.log(`saved ${file} (${bytes.byteLength.toLocaleString('en-US')} bytes)`);
+  if (!quiet) console.log(`saved ${file} (${bytes.byteLength.toLocaleString('en-US')} bytes)`);
 }
 
 /**
  * Fills `outDir` with every missing font. Required faces throw when they cannot be fetched;
- * optional ones only warn, which is what keeps an offline build alive.
+ * optional ones only warn, which is what keeps an offline build alive. `quiet` silences the
+ * progress log entirely — warnings and throws still get through — so the build output stays
+ * readable when `og.ts` calls this mid-render.
  *
  * @param {string} [outDir]
  * @param {{ quiet?: boolean }} [options]

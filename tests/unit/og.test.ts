@@ -76,6 +76,46 @@ describe.skipIf(!canRender)('renderOg', () => {
     expect(png.byteLength).toBeGreaterThan(10_000);
   }, 60_000);
 
+  // The two degraded paths a CI or offline build can land on. Injecting the faces keeps them
+  // testable without deleting the font cache or unplugging the network.
+  it('renders Chinese with Plex alone, warning once', async () => {
+    const plexOnly = fonts.filter((f) => f.name === 'Plex');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const first = await renderOg(
+        { title: '闭包', subtitle: '延迟绑定', locale: 'zh' },
+        { fonts: plexOnly },
+      );
+      const second = await renderOg(
+        { title: '装饰器', subtitle: '语法糖', locale: 'zh' },
+        { fonts: plexOnly },
+      );
+      expect(isPng(first)).toBe(true);
+      expect(isPng(second)).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain('no CJK face');
+    } finally {
+      warn.mockRestore();
+    }
+  }, 60_000);
+
+  it('falls back to a placeholder when there is no face at all', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const png = await renderOg(
+        { title: 'Closures', subtitle: 'No fonts here', locale: 'en' },
+        { fonts: [] },
+      );
+      expect(isPng(png)).toBe(true);
+      // The placeholder carries no glyphs, so it is far smaller than a typeset card.
+      expect(png.byteLength).toBeLessThan(10_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toContain('no text face');
+    } finally {
+      warn.mockRestore();
+    }
+  }, 60_000);
+
   it('renders long titles without throwing', async () => {
     const png = await renderOg({
       title: 'Architecture and system design, distributed systems and observability in practice',
