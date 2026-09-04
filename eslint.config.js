@@ -3,7 +3,7 @@ import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', '.astro/**', 'public/**', 'docs/design/**'] },
+  { ignores: ['.worktrees/**', 'dist/**', 'node_modules/**', '.astro/**', 'public/**', 'docs/design/**'] },
   ...astro.configs.recommended,
   {
     files: ['**/*.{ts,tsx}'],
