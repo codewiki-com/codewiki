@@ -1,0 +1,182 @@
+topic: security/api-security
+items:
+  - id: predict-object-authorization
+    type: predict
+    prompt:
+      en: What does this object-level authorization policy print?
+      zh: 这项对象级授权策略会输出什么？
+    code: |
+      function mayRead(principal, order) {
+        if (principal.tenantId !== order.tenantId) return false;
+        return order.ownerId === principal.subject ||
+          principal.permissions.includes('orders:read:any');
+      }
+
+      const order = { tenantId: 't-1', ownerId: 'u-7' };
+      console.log(mayRead(
+        { subject: 'u-7', tenantId: 't-1', permissions: [] }, order,
+      ));
+      console.log(mayRead(
+        { subject: 'u-7', tenantId: 't-2', permissions: ['orders:read:any'] }, order,
+      ));
+    lang: javascript
+    options:
+      - text: { en: "true then false", zh: "先输出 true，再输出 false" }
+        correct: true
+      - text: { en: "true then true", zh: "先输出 true，再输出 true" }
+        correct: false
+      - text: { en: "false then true", zh: "先输出 false，再输出 true" }
+        correct: false
+    explanation:
+      en: The owner passes inside tenant t-1. The second principal has a broad read permission, but the tenant boundary fails first and cannot be overridden by that permission.
+      zh: 所有者在租户 t-1 内通过检查。第二个主体虽然拥有广泛读取权限，但租户边界先失败，该权限不能覆盖租户限制。
+    difficulty: beginner
+    tags: [authorization, bola, predict-output]
+
+  - id: authentication-is-not-authorization
+    type: mcq
+    prompt:
+      en: A request carries a correctly verified access token. What must the order endpoint still decide?
+      zh: 请求携带了已经正确验证的访问令牌，订单端点仍必须决定什么？
+    options:
+      - text:
+          en: Whether this principal may perform this action on this order and view the selected fields
+          zh: 该主体能否对这笔订单执行此动作并查看选定字段
+        correct: true
+      - text:
+          en: Whether the token can be Base64url-decoded
+          zh: 令牌能否使用 Base64url 解码
+        correct: false
+      - text:
+          en: Whether the browser displayed the order button
+          zh: 浏览器是否显示了订单按钮
+        correct: false
+    explanation:
+      en: Token verification establishes a principal under an authentication policy. Object, action, and property authorization remain separate decisions at the operation boundary.
+      zh: 令牌验证只是在认证策略下建立主体。对象、动作和属性授权仍是操作边界上的独立决定。
+    difficulty: beginner
+    tags: [authentication, authorization, trust-boundary]
+
+  - id: spot-missing-object-check
+    type: spotbug
+    prompt:
+      en: Find the security bug in this generated order reader.
+      zh: 找出这段生成的订单读取代码中的安全缺陷。
+    code: |
+      async function getOrder(request, db) {
+        const principal = await authenticate(request.headers.authorization);
+        const order = await db.orders.find(request.params.orderId);
+        if (!order) return { status: 404 };
+        return { status: 200, body: order };
+      }
+    lang: javascript
+    issues:
+      - line: 3
+        kind: security
+        note:
+          en: The lookup uses only a client-controlled ID. It never checks that the authenticated principal may read this order, its tenant, or all returned properties.
+          zh: 查询只使用客户端控制的 ID，没有检查已认证主体能否读取该订单、所属租户以及返回的全部属性。
+    explanation:
+      en: Constrain the lookup by tenant and visibility or run one default-deny policy for the read action, then serialize an allowlisted response. Authentication alone does not prevent BOLA.
+      zh: 应按租户与可见性约束查询，或对读取动作执行统一的默认拒绝策略，再序列化允许字段。仅有认证无法防止 BOLA。
+    difficulty: intermediate
+    tags: [bola, object-authorization, code-review]
+
+  - id: distributed-rate-limit
+    type: mcq
+    prompt:
+      en: Which design keeps one authenticated user's quota consistent across four API instances?
+      zh: 哪种设计能让一名已认证用户的配额在四个 API 实例之间保持一致？
+    options:
+      - text:
+          en: Atomically update a subject-keyed counter or bucket in shared storage
+          zh: 在共享存储中原子更新以主体为键的计数器或令牌桶
+        correct: true
+      - text:
+          en: Give every process its own in-memory counter with the full quota
+          zh: 让每个进程各自维护一份完整配额的内存计数器
+        correct: false
+      - text:
+          en: Trust the first X-Forwarded-For value supplied by any client
+          zh: 信任任意客户端提供的第一个 X-Forwarded-For 值
+        correct: false
+    explanation:
+      en: Shared atomic state makes all instances consume one budget. Per-process state multiplies the quota, while an untrusted forwarding header lets a caller choose its own key.
+      zh: 共享的原子状态让所有实例共同消耗一份预算。进程内状态会让配额成倍增加，未经信任的转发头则允许调用方自行选择键。
+    difficulty: intermediate
+    tags: [rate-limiting, distributed-systems, resource-budget]
+
+  - id: review-generated-order-update
+    type: review
+    prompt:
+      en: Review this generated order update before it is exposed as an API endpoint.
+      zh: 在把这段生成的订单更新代码暴露为 API 端点前，请审查它。
+    task:
+      en: Authenticate a signed caller, authorize an update to that caller's mutable order, accept only a permitted state change, write a redacted audit event, and return a bounded public representation.
+      zh: 验证调用方签名，只允许其更新自己可变更的订单，仅接受获准的状态变更，写入脱敏审计事件，并返回有界的公开表示。
+    code: |
+      async function updateOrder(request, db, audit) {
+        const claims = JSON.parse(
+          Buffer.from(request.token.split('.')[1], 'base64url'),
+        );
+        const order = await db.orders.find(request.params.orderId);
+        const patch = await request.json();
+        if (claims.role === 'user') {
+          Object.assign(order, patch);
+        }
+        await db.orders.save(order);
+        await audit.write({
+          token: request.token,
+          order,
+          event: 'order.updated',
+        });
+        const history = await db.orders.history(order.id);
+        return {
+          status: 200,
+          body: { ...order, history },
+        };
+      }
+    lang: javascript
+    right:
+      en: The function receives storage and audit collaborators explicitly, awaits persistence before responding, and names the event it intends to record.
+      zh: 函数显式接收存储与审计协作者，在响应前等待持久化完成，并为准备记录的事件命名。
+    issues:
+      - line: 2
+        kind: security
+        note:
+          en: Decoding the payload does not verify its signature, issuer, audience, expiration, or type, so an attacker can invent the role used as identity.
+          zh: 解码载荷不会验证签名、签发方、受众、有效期或类型，因此攻击者可以伪造被当作身份使用的角色。
+      - line: 5
+        kind: edge-case
+        note:
+          en: A missing order is not handled before later property access and persistence, turning an ordinary not-found case into an uncontrolled failure.
+          zh: 代码没有在后续属性访问与持久化前处理订单不存在的情况，使普通的未找到场景变成失控失败。
+      - line: 8
+        kind: correctness
+        note:
+          en: The unrestricted patch can overwrite identifiers, ownership, price, or terminal state without an allowlist or state-transition check.
+          zh: 更新没有允许列表或状态转换检查，可以覆盖标识、所有权、价格或终态。
+      - line: 11
+        kind: readability
+        note:
+          en: The ad hoc audit shape mixes a raw credential and a mutable domain object instead of naming stable, reviewed event fields and redaction rules.
+          zh: 临时拼出的审计结构混入原始凭据和可变领域对象，没有明确稳定、经过审查的事件字段与脱敏规则。
+      - line: 16
+        kind: performance
+        note:
+          en: Loading and returning the complete order history gives the caller an unbounded storage query and response size on every update.
+          zh: 每次更新都读取并返回完整订单历史，使调用方能够触发无界的存储查询与响应体。
+    checklist:
+      - en: Verify credentials under server policy, then authorize subject, tenant, action, and object at the update operation.
+        zh: 按服务端策略验证凭据，再在更新操作处对主体、租户、动作和对象授权。
+      - en: Parse a size-bounded body, reject unknown properties, and enforce the permitted state transition atomically.
+        zh: 解析大小受限的请求体，拒绝未知属性，并原子执行允许的状态转换。
+      - en: Test missing, cross-owner, cross-tenant, repeated, and oversized requests while asserting that denied paths have no side effects.
+        zh: 测试不存在、跨所有者、跨租户、重复和超大请求，并断言被拒绝路径没有副作用。
+      - en: Emit an explicit redacted audit schema and return only a bounded, allowlisted representation.
+        zh: 按明确且脱敏的模式生成审计事件，并只返回有界的允许字段表示。
+    explanation:
+      en: Use a maintained verifier, validate the body before expensive work, and apply one default-deny policy to the current order inside the write boundary. Persist only permitted changes, audit named identifiers without credentials, and keep history behind a separately authorized paginated operation.
+      zh: 应使用成熟验证器，在昂贵操作前验证请求体，并在写入边界内对当前订单执行默认拒绝策略。只持久化获准变更，审计命名标识且不含凭据，把历史记录放到单独授权并分页的操作中。
+    difficulty: advanced
+    tags: [generated-code, authorization, mass-assignment, audit, resource-budget]
