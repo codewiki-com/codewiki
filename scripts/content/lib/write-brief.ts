@@ -11,10 +11,11 @@ import { renderBrief } from '../render-brief';
 import { parseFrontmatter } from './frontmatter';
 import { REPO_ROOT, repoPath, STAGING_ROOT, TOPICS_ROOT } from './paths';
 
-export const WRITE_KINDS = ['quiz', 'kata', 'interview', 'path', 'cheatsheet'] as const;
+export const WRITE_KINDS = ['topic', 'quiz', 'kata', 'interview', 'path', 'cheatsheet'] as const;
 export type WriteKind = (typeof WRITE_KINDS)[number];
 
 const TEMPLATES: Record<WriteKind, string> = {
+  topic: 'prompts/write-topic.md',
   quiz: 'prompts/write-quiz-bank.md',
   kata: 'prompts/write-review-kata.md',
   interview: 'prompts/write-interview-bank.md',
@@ -38,14 +39,17 @@ export interface WriteBriefOptions {
   topicsRoot?: string;
   glossaryRoot?: string;
   templatesRoot?: string;
+  newTopicsPath?: string;
   today?: string;
   /** Git fallback for branches where P0 staging has not been merged; null disables it. */
   inventoryRef?: string | null;
 }
 
 export interface OutputPathOptions {
+  topicsRoot?: string;
   quizzesRoot?: string;
   interviewRoot?: string;
+  proposalsRoot?: string;
   pathsRoot?: string;
   cheatsheetsRoot?: string;
 }
@@ -54,7 +58,7 @@ export interface OutputPathOptions {
 export function identityFor(kind: WriteKind, id: string): Identity {
   const parts = id.split('/');
   if (parts.some((part) => !SLUG.test(part))) throw new Error(`invalid ${kind} id: ${id}`);
-  if (kind === 'quiz' || kind === 'kata') {
+  if (kind === 'topic' || kind === 'quiz' || kind === 'kata') {
     if (parts.length !== 2) throw new Error(`${kind} needs a {track}/{slug} id: ${id}`);
     return { runId: id, track: parts[0], slug: parts[1], topicId: id };
   }
@@ -200,7 +204,125 @@ function formatList(lines: string[], empty = '- (none)'): string {
   return [...lines.slice(0, MAX_INVENTORY), `- … and ${lines.length - MAX_INVENTORY} more`].join('\n');
 }
 
-/** Build every variable used by the five write prompts. */
+interface PlannedTopic {
+  id: string;
+  track: string;
+  section: string;
+  title: { en: string; zh: string };
+  description: { en: string; zh: string };
+  difficulty: 'beginner' | 'intermediate' | 'advanced';
+  prerequisites: string[];
+  why: string;
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '')
+    throw new Error(`${field} must be a non-empty string`);
+  return value.trim();
+}
+
+function localized(value: unknown, field: string): { en: string; zh: string } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${field} must have en and zh strings`);
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    en: requiredString(record.en, `${field}.en`),
+    zh: requiredString(record.zh, `${field}.zh`),
+  };
+}
+
+/** The approved new-topic plan, indexed by its full topic id. */
+async function plannedTopics(options: WriteBriefOptions): Promise<Map<string, PlannedTopic>> {
+  const file = options.newTopicsPath ?? repoPath('content/new-topics.yaml');
+  const parsed = YAML.parse(await readFile(file, 'utf8')) as { tracks?: unknown } | null;
+  if (parsed?.tracks === null || typeof parsed?.tracks !== 'object' || Array.isArray(parsed.tracks)) {
+    throw new Error(`${displayPath(file)}: expected a tracks mapping`);
+  }
+  const topics = new Map<string, PlannedTopic>();
+  for (const [track, entries] of Object.entries(parsed.tracks as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) throw new Error(`${displayPath(file)}: tracks.${track} must be a list`);
+    entries.forEach((value, index) => {
+      const label = `${displayPath(file)}: tracks.${track}.${index}`;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error(`${label} must be a mapping`);
+      }
+      const entry = value as Record<string, unknown>;
+      const id = requiredString(entry.id, `${label}.id`);
+      const identity = identityFor('topic', id);
+      if (identity.track !== track) throw new Error(`${label}.id must belong to track ${track}`);
+      const difficulty = requiredString(entry.difficulty, `${label}.difficulty`);
+      if (!['beginner', 'intermediate', 'advanced'].includes(difficulty)) {
+        throw new Error(`${label}.difficulty is invalid: ${difficulty}`);
+      }
+      if (
+        !Array.isArray(entry.prerequisites) ||
+        entry.prerequisites.some((item) => typeof item !== 'string')
+      ) {
+        throw new Error(`${label}.prerequisites must be a string list`);
+      }
+      if (topics.has(id)) throw new Error(`${displayPath(file)}: duplicate topic id ${id}`);
+      topics.set(id, {
+        id,
+        track,
+        section: requiredString(entry.section, `${label}.section`),
+        title: localized(entry.title, `${label}.title`),
+        description: localized(entry.description, `${label}.description`),
+        difficulty: difficulty as PlannedTopic['difficulty'],
+        prerequisites: entry.prerequisites as string[],
+        why: requiredString(entry.why, `${label}.why`),
+      });
+    });
+  }
+  return topics;
+}
+
+async function plannedTopicFor(id: string, options: WriteBriefOptions): Promise<PlannedTopic> {
+  const topic = (await plannedTopics(options)).get(id);
+  if (!topic)
+    throw new Error(
+      `${id} is not approved in ${displayPath(options.newTopicsPath ?? repoPath('content/new-topics.yaml'))}`,
+    );
+  return topic;
+}
+
+/** Whether an approved topic already has a reviewed English article and should be skipped. */
+export async function topicWriteStatus(
+  id: string,
+  options: WriteBriefOptions = {},
+): Promise<'pending' | 'reviewed'> {
+  const topic = await plannedTopicFor(id, options);
+  const file = path.join(options.topicsRoot ?? repoPath(TOPICS_ROOT), `${topic.id}.en.mdx`);
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'pending';
+    throw error;
+  }
+  try {
+    return parseFrontmatter(text).data.status === 'reviewed' ? 'reviewed' : 'pending';
+  } catch {
+    // A malformed existing article is an input to replace, not a completed topic.
+    return 'pending';
+  }
+}
+
+function topicSiblings(topic: PlannedTopic, plan: Map<string, PlannedTopic>, inventory: string[]): string[] {
+  const siblings = new Map<string, string>();
+  for (const entry of plan.values()) {
+    if (entry.track === topic.track && entry.id !== topic.id) siblings.set(entry.id, entry.title.en);
+  }
+  for (const line of inventory) {
+    const match = /^- ([a-z0-9-]+\/[a-z0-9-]+) — (.+)$/.exec(line);
+    if (match && match[1] !== topic.id && !siblings.has(match[1])) siblings.set(match[1], match[2]);
+  }
+  return [...siblings.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, title]) => `- ${id} — ${title}`);
+}
+
+/** Build every variable used by the write prompts. */
 export async function writeVarsFor(
   kind: WriteKind,
   id: string,
@@ -210,6 +332,32 @@ export async function writeVarsFor(
   const track = getTrack(identity.track);
   if (!track) throw new Error(`unknown track: ${identity.track}`);
   const inventory = await topicInventory(identity.track, options);
+  if (kind === 'topic') {
+    const plan = await plannedTopics(options);
+    const topic = plan.get(id);
+    if (!topic) {
+      throw new Error(
+        `${id} is not approved in ${displayPath(options.newTopicsPath ?? repoPath('content/new-topics.yaml'))}`,
+      );
+    }
+    return {
+      TOPIC_ID: topic.id,
+      TRACK: topic.track,
+      SLUG: identity.slug,
+      SECTION: topic.section,
+      TITLE_EN: topic.title.en,
+      TITLE_ZH: topic.title.zh,
+      DESCRIPTION_EN: topic.description.en,
+      DESCRIPTION_ZH: topic.description.zh,
+      DIFFICULTY: topic.difficulty,
+      PREREQUISITES: `[${topic.prerequisites.join(', ')}]`,
+      WHY: topic.why,
+      SIBLINGS: formatList(topicSiblings(topic, plan, inventory)),
+      GLOSSARY_IDS: formatList((await glossaryIds(options)).map((term) => `- ${term}`)),
+      TODAY: options.today ?? new Date().toISOString().slice(0, 10),
+      SLUG_FLAT: identity.runId.replace(/\//g, '__'),
+    };
+  }
   const topicPair = kind === 'quiz' || kind === 'kata';
   const inventoryTopic = inventory[0]?.match(/^- ([a-z0-9-]+\/[a-z0-9-]+) —/)?.[1];
   const topicId = topicPair ? identity.topicId : (inventoryTopic ?? `${identity.track}/getting-started`);
@@ -255,6 +403,19 @@ export async function outputPathsFor(
   options: OutputPathOptions = {},
 ): Promise<string[]> {
   const identity = identityFor(kind, id);
+  if (kind === 'topic') {
+    const topics = options.topicsRoot ?? 'src/content/topics';
+    const quizzes = options.quizzesRoot ?? 'src/content/quizzes';
+    const interview = options.interviewRoot ?? 'src/content/interview';
+    const proposals = options.proposalsRoot ?? 'content/glossary-proposals';
+    return [
+      path.join(topics, identity.track, `${identity.slug}.en.mdx`),
+      path.join(topics, identity.track, `${identity.slug}.zh.mdx`),
+      path.join(quizzes, identity.track, `${identity.slug}.yaml`),
+      path.join(interview, `${identity.track}.yaml`),
+      path.join(proposals, `${identity.track}-${identity.slug}.yaml`),
+    ];
+  }
   if (kind === 'quiz' || kind === 'kata') {
     return [path.join(options.quizzesRoot ?? 'src/content/quizzes', `${identity.topicId}.yaml`)];
   }
@@ -290,13 +451,15 @@ interface Args {
   kind?: WriteKind;
   id: string;
   outputs: boolean;
+  status: boolean;
 }
 
 export function parseWriteBriefArgs(argv: string[]): Args {
-  const args: Args = { id: '', outputs: false };
+  const args: Args = { id: '', outputs: false, status: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--outputs') args.outputs = true;
+    else if (arg === '--status') args.status = true;
     else if (arg === '--kind') {
       const value = argv[++index];
       if (!WRITE_KINDS.includes(value as WriteKind)) throw new Error(`unknown write kind: ${value ?? ''}`);
@@ -306,14 +469,21 @@ export function parseWriteBriefArgs(argv: string[]): Args {
     } else throw new Error(`unknown argument: ${arg}`);
   }
   if (!args.kind || !args.id) {
-    throw new Error('usage: write-brief --kind quiz|kata|interview|path|cheatsheet --id <id> [--outputs]');
+    throw new Error(
+      'usage: write-brief --kind topic|quiz|kata|interview|path|cheatsheet --id <id> [--outputs|--status]',
+    );
+  }
+  if (args.status && (args.outputs || args.kind !== 'topic')) {
+    throw new Error('--status is only valid by itself for --kind topic');
   }
   return args;
 }
 
 async function main(): Promise<void> {
   const args = parseWriteBriefArgs(process.argv.slice(2));
-  if (args.outputs) {
+  if (args.status) {
+    process.stdout.write(`${await topicWriteStatus(args.id)}\n`);
+  } else if (args.outputs) {
     process.stdout.write(`${(await outputPathsFor(args.kind!, args.id)).join('\n')}\n`);
   } else {
     process.stdout.write(await renderWriteBrief(args.kind!, args.id));

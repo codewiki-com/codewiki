@@ -1,0 +1,402 @@
+---
+title: 'Floating-point arithmetic'
+description: 'Predict representation error, rounding, overflow, and reliable comparisons in binary floating-point calculations.'
+track: foundations
+section: text-numbers
+difficulty: intermediate
+tags: [floating-point, ieee-754, rounding, numeric-comparison]
+prerequisites: []
+related: [foundations/algorithmic-complexity, foundations/hash-maps, foundations/sorting-and-searching]
+terms: [binary-floating-point]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: foundations/floating-point-arithmetic
+sources:
+  - { title: 'ECMAScript specification - The Number type', url: 'https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-number-type' }
+  - { title: 'MDN Web Docs - Number.EPSILON', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/EPSILON' }
+  - { title: 'MDN Web Docs - Number.isFinite()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isFinite' }
+  - { title: 'Oracle Numerical Computation Guide - What Every Computer Scientist Should Know About Floating-Point Arithmetic', url: 'https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html' }
+  - { title: 'IEEE 754-2019 standard', url: 'https://standards.ieee.org/ieee/754/6210/' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Binary floating-point stores a fixed number of significant bits and a base-two exponent, so it covers a huge range but approximates most decimal fractions.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Rounding happens after operations, precision changes with magnitude, and `NaN`, infinities, or signed zero can make ordinary-looking comparisons misleading.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Choose a representation from the domain contract, reject unexpected nonfinite values, and compare computed measurements with justified absolute and relative tolerances.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="binary-floating-point">Binary floating-point</Term> represents a finite number with a sign, a fixed-width significand, and a power-of-two exponent. It resembles scientific notation, but its digits are binary. A 64-bit format can therefore represent very small and very large magnitudes with roughly constant significant precision.
+
+The format is an approximation system, not a store for arbitrary real numbers. Fractions whose reduced denominator contains factors other than two have repeating binary expansions. Decimal `0.1` is one example, so a runtime must select a nearby representable value when it converts that literal.
+
+Arithmetic produces the same kind of choice. The mathematical result is computed conceptually, then rounded to a representable value. A sequence of individually small rounding decisions can make an expected equality fail, and changing the order of operations can change which information is lost.
+
+Floating-point exists because fixed storage cannot encode every real number. Its design trades exactness for range, predictable hardware operations, and an error that usually scales with the value's magnitude. That trade is well suited to measurements, graphics, simulations, statistics, and many machine-learning calculations.
+
+You also meet floating-point where the domain did not choose it deliberately. JavaScript's `Number` type uses the IEEE 754 binary64 value set for ordinary numeric values, so JSON data, browser APIs, and application formulas often inherit these semantics. The examples use Node 24 to make those rules directly runnable.
+
+Approximation is not automatically a bug. A temperature sensor with resolution of `0.01` degrees already has physical uncertainty, and a much smaller representation error may be irrelevant. The engineering question is whether the representation and accumulated error fit a stated accuracy contract.
+
+Some domains require different semantics. Account balances often use integer minor units or a decimal type with an explicit scale and rounding rule. Identifiers and counters need integer operations, while symbolic or rational computation may preserve exact relationships at a higher cost.
+
+## How it works
+
+### Finite encodings
+
+IEEE 754 binary64, the format behind JavaScript `Number`, divides 64 bits into three fields. The fraction field contributes 52 stored bits, and normal values have an implicit leading `1`, giving 53 bits of precision.
+
+| Field | Bits | Purpose |
+| --- | ---: | --- |
+| Sign | 1 | Selects a positive or negative value |
+| Exponent | 11 | Scales the significand by a power of two |
+| Fraction | 52 | Stores the trailing significant binary digits |
+
+For a normal finite value, the fields describe `(-1)^sign × (1.fraction) × 2^(exponent - 1023)`. This notation explains why moving to a larger exponent spreads adjacent representable values farther apart. The bit pattern does not carry a fixed number of decimal places.
+
+Exponent patterns at the edges have special meanings. An all-zero exponent represents zero or a subnormal number, allowing values to approach zero gradually. An all-one exponent represents an infinity when the fraction is zero and a `NaN` when the fraction is nonzero.
+
+### Conversion and rounding
+
+When source text such as `0.1` is parsed, the implementation chooses the binary64 value required by the language's conversion rule. The stored value can be above or below the mathematical decimal value. Printing usually chooses a short decimal string that parses back to the same binary value, so the approximation may stay hidden.
+
+Basic `Number` arithmetic rounds results to the nearest representable binary64 value, resolving an exact halfway case with an even low bit. This round-to-nearest, ties-to-even rule avoids a persistent upward or downward bias across many ties. It cannot prevent error when the exact result falls between representable values.
+
+Each operation receives already-rounded operands. For `0.1 + 0.2`, neither input is the exact decimal fraction, and the exact sum of their stored values needs another rounding. The final value is slightly above the binary64 value selected for the literal `0.3`.
+
+Rounding error is bounded relative to an ordinary result, but it is not a fixed decimal offset. `Number.EPSILON` is the gap between `1` and the next larger `Number`. Near `2`, the gap is twice as large; near very small normal values, it is far smaller.
+
+### Precision, range, and spacing
+
+Binary64 represents every integer from `-2^53 + 1` through `2^53 - 1` exactly. Beyond that safe-integer range, some integers are skipped. Adding `1` to `2^53` produces no change because the next representable value is two units away.
+
+Range and precision are separate limits. `Number.MAX_VALUE` is the largest finite `Number`; a result beyond the overflow boundary rounds to an infinity. `Number.MIN_VALUE` is the smallest positive subnormal value, and dividing it by two rounds to positive zero.
+
+Subnormal numbers trade significant precision for gradual underflow. They fill the interval between the smallest normal magnitude and zero with evenly spaced values. An algorithm near that boundary can lose relative accuracy even before its result becomes zero.
+
+### Operations are not real-number algebra
+
+Floating-point addition and multiplication are commutative for ordinary finite operands, apart from details involving `NaN` and signed zero. They are not generally associative. `(a + b) + c` can round at a different point from `a + (b + c)` and produce another value.
+
+Subtraction between nearly equal values is especially risky. Leading significant digits cancel, leaving a result whose remaining digits came from lower-precision parts of the operands. This catastrophic cancellation does not make subtraction itself faulty; it reveals that earlier approximation now dominates the small difference.
+
+Optimizers, vector libraries, databases, and parallel reductions may group operations differently. A numerically valid result may therefore vary in its last bits across execution plans or platforms. Reproducibility must be an explicit requirement with a defined algorithm, not an assumption derived from the same source expression.
+
+### Comparison contracts
+
+Exact equality is appropriate when the contract promises the same representation. Examples include comparing a value with itself after excluding `NaN`, checking a parsed integer inside the safe range, or detecting an exact sentinel produced by the same operation. It is not a universal mistake.
+
+Computed measurements often need a tolerance. An absolute tolerance protects comparisons near zero, while a relative tolerance scales with the operand magnitudes. A robust predicate commonly accepts a difference no larger than the greater of those two bounds.
+
+The tolerances must come from the domain and the algorithm's error budget. Copying `Number.EPSILON` compares only at the spacing near `1`, while multiplying it by a large arbitrary constant merely hides the missing requirement. Units, sensor resolution, iteration count, and acceptable business error are better inputs.
+
+Special values need policy before tolerance logic. `NaN` is unequal to every value under `===`, including itself. Positive and negative zero compare equal with `===`, although `Object.is()` distinguishes them and their reciprocals have opposite infinities.
+
+| Value | Typical origin | Comparison concern |
+| --- | --- | --- |
+| `Infinity` | Overflow or nonzero divided by zero | It can pass through later arithmetic without throwing |
+| `NaN` | Invalid arithmetic or an accepted `NaN` input | Every ordered comparison is false |
+| `0` and `-0` | Exact zero or tiny rounded result | `===` merges signs; some operations preserve the sign |
+| Subnormal | A tiny nonzero result | Relative precision is reduced near underflow |
+
+## Examples
+
+The examples progress from representation and comparison to information loss and range boundaries. Every output shown below came from executing the file with Node `v24.14.0`.
+
+### Seeing the stored approximation
+
+This tax calculation prints the familiar short representation, then asks for 17 significant decimal digits. The comparison helper combines a relative bound with an optional absolute floor and handles nonfinite values before subtracting them.
+
+<Depth level="quick">
+
+```javascript run title="representation.js"
+const computedTax = 0.1 + 0.2;
+const declaredTax = 0.3;
+
+function nearlyEqual(left, right, { absolute = 0, relative = 1e-12 } = {}) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return left === right;
+  const difference = Math.abs(left - right);
+  const scale = Math.max(Math.abs(left), Math.abs(right));
+  return difference <= Math.max(absolute, relative * scale);
+}
+
+console.log(computedTax);
+console.log(computedTax === declaredTax);
+console.log(computedTax.toPrecision(17));
+console.log(declaredTax.toPrecision(17));
+console.log(nearlyEqual(computedTax, declaredTax));
+```
+
+```text
+0.30000000000000004
+false
+0.30000000000000004
+0.29999999999999999
+true
+```
+
+<TryToBreak items={['two values close to zero', 'Infinity compared with Infinity', 'positive zero compared with negative zero']} />
+
+</Depth>
+
+The exact comparison is false because the two expressions select adjacent binary64 values. `toPrecision(17)` exposes enough decimal digits to distinguish those values. It does not reveal the bits directly, but it makes the representation difference visible.
+
+The `1e-12` relative tolerance is an example policy, not a universal constant. A production tax system should normally avoid binary floating-point for monetary amounts and define exact decimal rounding. The helper better fits approximate measurements whose accepted relative error is actually `1e-12`.
+
+Near zero, a relative tolerance alone shrinks toward zero and may reject harmless noise. Set `absolute` from the smallest meaningful magnitude in the domain. Nonfinite values bypass the subtraction because `Infinity - Infinity` would produce `NaN` and accidentally fail an intended exact-infinity policy.
+
+### Watching addition lose information
+
+These adjustments have a mathematical total of `1`. The same three values produce different results when the two large terms cancel before the small term is added.
+
+```javascript run title="summation-order.js"
+const adjustments = [1e16, 1, -1e16];
+
+function sum(values) {
+  let total = 0;
+  for (const value of values) total += value;
+  return total;
+}
+
+const smallFirst = [...adjustments].sort(
+  (left, right) => Math.abs(left) - Math.abs(right),
+);
+const cancelFirst = [adjustments[0], adjustments[2], adjustments[1]];
+
+console.log(`input order: ${sum(adjustments)}`);
+console.log(`small first: ${sum(smallFirst)}`);
+console.log(`cancel first: ${sum(cancelFirst)}`);
+console.log(`mathematical total: 1`);
+```
+
+```text
+input order: 0
+small first: 0
+cancel first: 1
+mathematical total: 1
+```
+
+At magnitude `1e16`, the gap between nearby binary64 values is larger than `1`. Adding the small adjustment to either large value rounds it away. Sorting by increasing magnitude does not save it here because the next operation still combines the partial sum with `1e16`.
+
+The `cancelFirst` order forms an exact zero from the large opposite values, then adds `1`. This is a demonstration, not a general instruction to search for canceling pairs. Pairwise summation, compensated summation, or a higher-precision representation should be chosen from the data's scale and accuracy requirement.
+
+Order sensitivity matters in batch and parallel work. Splitting a dataset into chunks changes the partial sums, and merging those partial sums introduces another rounding tree. Tests should state an error bound unless bit-for-bit reproducibility is a real interface promise.
+
+### Checking range and special values
+
+This example crosses both ends of the positive range and then inspects special comparison behavior. Console formatting hides the sign of zero, so the code uses `Object.is()` and a reciprocal to expose it.
+
+```javascript run title="range-boundaries.js"
+const overflowed = Number.MAX_VALUE * 2;
+const underflowed = Number.MIN_VALUE / 2;
+const invalidRatio = 0 / 0;
+const signedZero = -1 / Infinity;
+
+console.log(`overflow: ${overflowed}`);
+console.log(`underflow: ${underflowed}`);
+console.log(`invalid equals itself: ${invalidRatio === invalidRatio}`);
+console.log(`invalid detected: ${Number.isNaN(invalidRatio)}`);
+console.log(`finite overflow result: ${Number.isFinite(overflowed)}`);
+console.log(`signed zero prints as: ${signedZero}`);
+console.log(`signed zero preserved: ${Object.is(signedZero, -0)}`);
+console.log(`reciprocal: ${1 / signedZero}`);
+```
+
+```text
+overflow: Infinity
+underflow: 0
+invalid equals itself: false
+invalid detected: true
+finite overflow result: false
+signed zero prints as: 0
+signed zero preserved: true
+reciprocal: -Infinity
+```
+
+JavaScript floating-point overflow and invalid arithmetic do not necessarily throw. The values can travel through a calculation unless the input or result boundary rejects them. Use `Number.isFinite()` when an API accepts only ordinary finite measurements.
+
+`Number.isNaN()` states the `NaN` check directly and does not coerce strings. The old `value !== value` idiom works because `NaN` is the only JavaScript value unequal to itself, but it hides intent. Prefer the named predicate in application validation.
+
+Whether negative zero matters is domain-specific. It can encode an approach direction in numerical work, but many business domains want to normalize it before formatting, serialization, or hashing. Decide at that boundary rather than assuming the printed `0` proves the sign is gone.
+
+## Pitfalls
+
+### Treating decimal input as exact
+
+> [!PITFALL]
+> A calculation accepts decimal prices as `Number` values and assumes the source digits are preserved exactly. Repeated additions, tax calculations, and midpoint rounding can then disagree with the domain's decimal rules.
+
+**Fix:** choose integer minor units when the range and fixed scale allow them, or use a verified decimal implementation with an explicit scale and rounding mode. Parse and validate the decimal text at the boundary; converting it to binary floating-point first has already changed the representation.
+
+### Using one epsilon everywhere
+
+> [!PITFALL]
+> Generated comparison code often checks `Math.abs(a - b) < Number.EPSILON`. That threshold describes spacing near `1`, so it is too strict for many large results and may still express no meaningful policy near zero.
+
+**Fix:** derive a relative tolerance from the algorithm's error and an absolute tolerance from domain resolution. Handle nonfinite values separately, document units, and test values near zero as well as at the largest expected magnitude.
+
+### Rounding by scaling without a decimal contract
+
+> [!PITFALL]
+> `Math.round(value * 100) / 100` looks like universal two-decimal rounding, but the multiplication and division are themselves binary floating-point operations. A value such as `1.005` can reach the midpoint on an unexpected side.
+
+**Fix:** state whether the requirement concerns display, storage, or settlement and name the midpoint rule. Use formatting for display only; use integer or decimal arithmetic for an exact decimal contract, with range checks before scaling.
+
+### Letting nonfinite results cross a boundary
+
+> [!PITFALL]
+> A division by zero, invalid operation, or overflow yields `Infinity` or `NaN`, and later arithmetic silently propagates it. A JSON serializer may then reject it or convert it under rules far from the original failure.
+
+**Fix:** validate finite inputs and outputs at domain boundaries with `Number.isFinite()`. Decide whether overflow should reject, saturate, or switch representations, and attach the operation and units to the reported error.
+
+### Assuming algebraic rearrangement is harmless
+
+> [!PITFALL]
+> A refactor reassociates a sum, parallelizes a reduction, or replaces a stable formula with an algebraically equivalent one. Real-number algebra says the expressions match, but intermediate rounding, overflow, or cancellation can change the floating-point result.
+
+**Fix:** review intermediate magnitudes and conditioning before rearranging numeric code. Test adversarial scale mixtures, retain a stable algorithm when accuracy matters, and specify a tolerance or reproducibility requirement for the output.
+
+### Ignoring the integer precision boundary
+
+> [!PITFALL]
+> A timestamp, database identifier, or byte count is stored in a `Number` merely because it contains no fraction. Above `Number.MAX_SAFE_INTEGER`, adjacent integers can compare equal and increments can stop changing the value.
+
+**Fix:** require `Number.isSafeInteger()` for integer-valued `Number` inputs. Use `BigInt`, validated decimal text, or another integer representation when the domain can exceed the safe range, and avoid lossy round trips through `Number`.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models commonly generate strict equality for computed measurements, paste `Number.EPSILON` as a universal tolerance, or implement decimal settlement with `Math.round(value * 100) / 100`. They may omit finite-result checks because the formula has no `throw`, and they often refactor sums under real-number associativity. Tests made only from small positive values then miss overflow, cancellation, unsafe integers, `NaN`, and negative zero.
+
+**Ask your AI to check**
+
+- Trace the representation of every numeric input, intermediate, and output, including units, maximum magnitude, and where rounding occurs.
+- Derive absolute and relative error bounds for the comparison instead of choosing a tolerance by convention.
+- Generate boundary tests for cancellation, overflow, subnormal underflow, `NaN`, infinities, signed zero, and `Number.MAX_SAFE_INTEGER`.
+
+**Review checklist**
+
+- Confirm that binary floating-point matches the domain; exact decimal amounts and large integer identifiers use an appropriate representation.
+- Inspect every equality, rounding step, reduction order, and finite-value boundary against a written numeric contract.
+- Run tests across near-zero, ordinary, and maximum magnitudes, including nonfinite results and mixed-scale operands.
+
+**Prompt vocabulary**
+
+Use the exact terms `binary64`, `significand`, `unit in the last place (ULP)`, `round to nearest, ties to even`, `absolute tolerance`, `relative tolerance`, `catastrophic cancellation`, `subnormal`, `overflow`, `underflow`, `NaN`, `signed zero`, and `safe integer`. Ask for an error budget and intermediate-magnitude table; “fix the precision” does not identify a numeric contract.
+
+<Depth level="deep">
+
+## Binary64 spacing and boundary behavior
+
+### Binades and units in the last place
+
+Representable normal values are uniform only inside a fixed exponent interval, sometimes called a binade. Between `2^e` and `2^(e+1)`, adjacent binary64 values are `2^(e-52)` apart. Crossing the power-of-two boundary doubles that spacing.
+
+One unit in the last place, or ULP, is the local gap associated with the low-order stored bit. Error stated in ULPs describes proximity in the representation, while relative error describes proximity to the mathematical value. Neither unit substitutes for the application's acceptable error.
+
+`Number.EPSILON` equals `2^-52`, the gap above `1`. Around `2^53`, the gap is `2`, which is why consecutive mathematical integers no longer all fit. Around `2^-1022`, the normal gap is `2^-1074`, the same absolute step used by subnormals.
+
+| Region | Representative value | Adjacent spacing or outcome |
+| --- | ---: | --- |
+| Around one | `1` | `2^-52`, exposed as `Number.EPSILON` |
+| Safe-integer edge | `2^53` | `2`, so odd neighbors are skipped |
+| Smallest normal | `2^-1022` | `2^-1074` |
+| Smallest subnormal | `2^-1074` | Half of it rounds to zero |
+| Largest finite | `(2 - 2^-52) × 2^1023` | Sufficient growth rounds to infinity |
+
+Spacing is directional at exact powers of two. The gap immediately below `1` is half the gap immediately above it because the lower neighbor belongs to the previous binade. Code that estimates a local ULP with one global constant misses this boundary detail.
+
+### Guard digits and midpoint decisions
+
+Hardware normally carries enough information during a basic operation to decide which representable result is nearest. Guard, round, and sticky information summarize discarded low bits for that choice. The stored result still has only 53 significant bits; extra internal bits do not become permanent precision.
+
+Ties-to-even matters only when the exact result lies exactly halfway between two representable values. The candidate whose low-order significand bit is even wins. Most surprising decimal examples are not exact binary halfway cases; they arise because decimal conversion and earlier operations have already moved the operands.
+
+Double rounding can occur when a value is rounded first to one precision and then to a narrower one. Under particular midpoint relationships, that can differ from rounding the exact value directly to the final precision. Avoid undocumented intermediate conversions when a protocol or file format requires a specific result.
+
+### Gradual underflow
+
+Normal binary64 values use an implicit leading `1`, but subnormals use a leading `0` and the smallest exponent scale. That fills the underflow gap instead of jumping directly from the smallest normal value to zero. Very small differences can therefore remain nonzero.
+
+The cost is declining relative precision. Every subnormal step has the same absolute size, so fewer significant bits remain as the magnitude approaches zero. A relative-error argument that assumes normal values no longer applies unchanged in this region.
+
+Some hardware modes and specialized accelerators flush subnormal inputs or results to zero for throughput. JavaScript language behavior still specifies `Number` results, but cross-language native components may introduce such a boundary. Reproducibility checks should include the actual execution path when tiny values matter.
+
+### Cancellation and stable formulas
+
+Cancellation is harmful when approximate operands are close and their exact difference is much smaller than either operand. Subtraction removes their shared leading digits, so input errors become large relative to the small result. Reporting more decimal digits afterward cannot recover the lost information.
+
+Formula choice can avoid unnecessary cancellation. For example, numerical libraries use alternative quadratic-root arrangements, `log1p(x)` for values of `x` near zero, and `hypot(x, y)` to manage intermediate range. The stable form depends on the operation and input region.
+
+Summation offers several trade-offs. Pairwise reduction limits error growth compared with a naive long chain for many datasets and suits parallel execution. Compensated algorithms retain a correction for low-order information, but they are not magic: overflow, `NaN`, adversarial data, and compiler transformations still need policy.
+
+### Tolerance is not an equivalence relation
+
+A predicate such as “within `0.1`” can be reflexive and symmetric but is not transitive. `0.0` may be close to `0.09`, and `0.09` close to `0.18`, while `0.0` is not close to `0.18`. This makes tolerant equality unsafe as a general hash-map key relation or sorting equivalence.
+
+For bucketing, define a canonical quantization rule and boundary policy rather than comparing every pair approximately. For sorting, use a total ordering suited to the domain, including explicit placement of `NaN`. A comparator that returns zero for “close” values can violate ordering assumptions.
+
+Iteration termination needs a separate contract as well. Stopping when `next === current` detects representational stagnation, while stopping on a residual tolerance expresses solution accuracy. They answer different questions and can trigger at different times.
+
+### Exact and approximate alternatives
+
+Scaled integers give exact addition and subtraction when the scale is fixed and all intermediate values remain in range. They still require a midpoint rule for division and conversion, and mixed currencies or variable decimal scales need explicit metadata. `BigInt` extends integer range but cannot mix directly with `Number` arithmetic.
+
+Decimal floating-point represents decimal fractions using a power-of-ten exponent. It can match financial and human-entered decimal rules more naturally, but finite precision still requires rounding and overflow policy. “Decimal” does not mean every real result is exact.
+
+Rational arithmetic preserves ratios of integers exactly until an operation such as a square root leaves the rational domain. Numerators and denominators can grow quickly, so normalization and resource limits matter. Arbitrary precision shifts the precision boundary; it does not remove computational cost or the need to choose a final rounding rule.
+
+### Parsing, formatting, and transport
+
+A decimal string and a binary64 value are different representations. Parsing maps the string to one binary value, while formatting selects decimal digits according to a presentation rule. A shortest round-trip formatter emits enough digits for a parser to recover the same bits, not necessarily the digits a person originally entered.
+
+Fixed-decimal formatting rounds for presentation and returns text. Parsing that text again creates a new binary approximation and is not a way to increase stored precision. Keep the original decimal text or a decimal representation when those exact digits are business data.
+
+Data formats add their own policies. Standard JSON numeric syntax has no literals for `NaN` or infinities, and JavaScript's `JSON.stringify()` serializes nonfinite numeric property values as `null`. Validate before serialization so a computation failure is not disguised as missing data.
+
+Binary interchange must declare width, byte order, and exceptional-value policy. Writing a `Number` to a 32-bit float field rounds it to 24 bits of significand precision, even though the JavaScript value began as binary64. Reading it back into a `Number` widens the format but cannot recreate discarded bits.
+
+Text protocols should also define maximum exponent and accepted spellings. A parser may accept an exponent whose numeric result becomes infinity even though the token is syntactically valid. Syntax validation and finite-range validation are separate steps.
+
+Logs used for numerical diagnosis need enough significant digits and context. Record units, algorithm version, and relevant intermediates alongside the value. A UI-formatted two-decimal string cannot distinguish a representation problem from an earlier input or formula error.
+
+Treat each conversion boundary as an explicit contract:
+
+| Boundary | Check before crossing | Preserve or reject |
+| --- | --- | --- |
+| Decimal text to binary64 | Syntax, finite range, allowed scale | Preserve source text when its digits matter |
+| Binary64 to float32 | Expected rounding error and range | Reject overflow or accepted precision loss explicitly |
+| Binary64 to JSON | Finite-value policy | Reject or encode exceptional values deliberately |
+| Binary64 to display text | Units, decimal places, midpoint rule | Keep formatting separate from stored value |
+
+### Testing numeric contracts
+
+Example-based tests should include values on both sides of every decision boundary. For rounding, test below a midpoint, at a representable midpoint, and above it with both signs. For range, include the largest expected finite input, overflow-producing combinations, the normal/subnormal boundary, and zero.
+
+Property tests can check invariants without demanding one exact last bit. A distance should be nonnegative and symmetric, a normalized probability vector should have a bounded sum error, and a stable algorithm should stay within an error bound against a higher-precision oracle. Generate mixed magnitudes deliberately because uniform small inputs rarely trigger cancellation.
+
+Snapshotting decimal output can be correct when the formatted string is the public contract. Otherwise, compare semantic results with the stated tolerance and retain diagnostic values on failure: operands, intermediate scale, absolute error, relative error, and ULP distance when available.
+
+Cross-runtime tests need a declared reproducibility level. “Same mathematical accuracy,” “same rounded decimal output,” and “same binary64 bits” are progressively stronger promises. Pick one before optimizing or parallelizing, because the strongest level constrains operation order and library choices.
+
+</Depth>
+
+<Checkpoint id="foundations/floating-point-arithmetic" />
+
+## Further reading
+
+- [ECMAScript specification: the `Number` type](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-number-type)
+- [MDN Web Docs: `Number.EPSILON`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/EPSILON)
+- [MDN Web Docs: `Number.isFinite()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isFinite)
+- [Oracle Numerical Computation Guide: What Every Computer Scientist Should Know About Floating-Point Arithmetic](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html)
+- [IEEE 754-2019 standard](https://standards.ieee.org/ieee/754/6210/)

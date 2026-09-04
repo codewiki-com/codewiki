@@ -1,0 +1,438 @@
+---
+title: 'HTTP semantics'
+description: 'Design and diagnose HTTP exchanges using methods, status codes, fields, caching, idempotency, and connection boundaries.'
+track: 'foundations'
+section: 'networking'
+difficulty: 'beginner'
+tags: ['http', 'methods', 'status-codes', 'caching', 'idempotency']
+prerequisites: []
+related: ['foundations/dns-resolution', 'foundations/http2', 'foundations/network-programming', 'foundations/tls-connections']
+terms: ['idempotency', 'representation', 'content-negotiation']
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: 'reviewed'
+aligned: true
+quiz: 'foundations/http-semantics'
+sources:
+  - { title: 'RFC 9110 - HTTP Semantics', url: 'https://www.rfc-editor.org/rfc/rfc9110' }
+  - { title: 'RFC 9111 - HTTP Caching', url: 'https://www.rfc-editor.org/rfc/rfc9111' }
+  - { title: 'RFC 9112 - HTTP/1.1', url: 'https://www.rfc-editor.org/rfc/rfc9112' }
+  - { title: 'RFC 9113 - HTTP/2', url: 'https://www.rfc-editor.org/rfc/rfc9113' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    HTTP semantics define what requests and responses mean: methods express intent, status codes report outcomes, and fields qualify how a message is handled.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A transport failure does not reveal whether a write took effect, and an idempotent request does not promise an identical response on every attempt.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Design an explicit method, status, cache, validator, and retry contract; then verify it at both the application and connection boundaries.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+HTTP semantics are the shared rules that give an exchange meaning. A request says what operation the client intends for a target resource. A response says how that request was handled and can carry a selected <Term id="representation">representation</Term> of resource state.
+
+These rules are separate from framework routing syntax and from the wire format. The same `GET`, `404 Not Found`, `Cache-Control`, and validator meanings apply whether the message travels over HTTP/1.1, HTTP/2, or HTTP/3. Protocol versions change framing and connection management, not the basic intent of a method or status code.
+
+You meet semantics whenever a browser follows a redirect, a cache reuses a response, an API client retries after a timeout, or a proxy forwards fields. Most production HTTP bugs are not malformed syntax. They are disagreements about what a valid message permits the recipient to do.
+
+A useful mental model separates four concerns:
+
+1. **Intent:** the method describes the requested operation and its safety properties.
+2. **Outcome:** the status code describes the result of handling this request.
+3. **Metadata:** fields describe the representation, caching, authentication, routing, or message handling.
+4. **Transfer:** a protocol version frames messages on one or more connections and streams.
+
+The resource is not the bytes in one response. A resource is the conceptual target identified by a URI; a representation is transferable data that reflects some state of that resource. A JSON document, an HTML page, and an empty `204` response can all participate in operations on the same resource.
+
+HTTP provides defaults, but an application still owns its domain contract. HTTP can say that `PUT` is idempotent, for example, while the API must define what complete state the request body represents, which preconditions apply, and which statuses clients should expect. Clear APIs align those two layers instead of treating HTTP as a generic envelope.
+
+## How it works
+
+An HTTP exchange begins with a request method and target. Request fields add conditions or preferences, and an optional content body carries data. The response begins with a status code, followed by response fields and optional content whose presence depends on the method and status.
+
+### Methods express intent
+
+Method names are case-sensitive tokens with standardized semantics. A server or intermediary can use those semantics before it understands the application payload. That is why choosing `GET`, `POST`, or `PUT` changes caching and retry behavior even when all three routes call similar framework code.
+
+Two method properties matter especially:
+
+- A **safe** method asks for read-only semantics. Incidental effects such as logging, metrics, or billing for a request can still occur, but the client did not ask to change resource state.
+- <Term id="idempotency">Idempotency</Term> means several identical requests have the same intended effect as one. Attempts may return different status codes or metadata as the resource moves from absent to present.
+
+| Method | Safe | Idempotent | Typical intent |
+| --- | --- | --- | --- |
+| `GET` | Yes | Yes | Retrieve a current representation |
+| `HEAD` | Yes | Yes | Retrieve response metadata without response content |
+| `POST` | No | No by default | Ask the target to process enclosed data |
+| `PUT` | No | Yes | Create or replace the target with supplied state |
+| `DELETE` | No | Yes | Remove the association for the target |
+| `PATCH` | No | No by default | Apply a partial modification |
+| `OPTIONS` | Yes | Yes | Discover communication options |
+
+Safety implies idempotency, but idempotency does not imply safety. `DELETE` can change state on its first successful attempt, yet repeating the same deletion should not create an additional intended effect. The second attempt may reasonably return `404` even though the method remains idempotent.
+
+`POST` is deliberately broad. It can create a subordinate resource, submit a command, start a job, or perform a search whose input is too large for a URI. If an application makes repeated `POST` requests deduplicate by an idempotency key, that is an additional API contract; it does not turn every `POST` into a generally idempotent method.
+
+### Status codes report this handling result
+
+The first digit groups a status code, but clients need the specific code to decide what to do. Unknown codes can be understood by class for fallback behavior, while special actions such as cache validation or redirect method handling require the defined code.
+
+| Class | Meaning | Representative decisions |
+| --- | --- | --- |
+| `1xx` | Informational | Continue processing; a final response still follows |
+| `2xx` | Successful | Use the response according to the method and specific code |
+| `3xx` | Redirection | Follow a location or reuse a cached representation |
+| `4xx` | Client-side request problem | Change credentials, input, preconditions, or request rate |
+| `5xx` | Server-side failure | Preserve uncertainty and consider a policy-controlled retry |
+
+`200 OK` is not a universal success wrapper. Creation commonly uses `201 Created` with a `Location` field identifying the created resource. A successful operation with no response content can use `204 No Content`; that status cannot carry content.
+
+Redirection codes encode different follow-up behavior. `303 See Other` tells the client to retrieve another URI with `GET`, which is useful after a submitted command. `307 Temporary Redirect` and `308 Permanent Redirect` preserve the original method and content; that matters for writes.
+
+`304 Not Modified` is not a redirect to a new resource and is not an empty `200`. It answers a conditional `GET` or `HEAD` by telling the client that its stored representation can be reused. The client combines the stored content with metadata updated by the `304` response.
+
+Client-error statuses should preserve distinctions that callers can act on. `400` says the request itself is invalid, `401` initiates or reports an authentication challenge, `403` refuses the request despite understanding it, and `404` says no current representation was found or the server is unwilling to disclose one. `409` reports conflict with current resource state, while `412` says a supplied precondition evaluated false.
+
+Server-error statuses also carry operational meaning. `500` is an unexpected server failure, `502` means a gateway received a bad upstream response, and `503` means the service is currently unable to handle the request. A `Retry-After` field can give timing guidance, but clients still need a retry budget and must consider replay safety.
+
+### Fields refine the message
+
+HTTP fields are named metadata with semantics defined by their field name. Field names are case-insensitive, while field values follow field-specific grammars. Treating every value as an arbitrary comma-separated string breaks fields whose combination rules differ.
+
+Some fields describe the representation. `Content-Type` describes the media type of content actually carried in this message; `Content-Encoding` describes an applied coding such as compression. A request's `Accept` field instead states which response media types the client prefers.
+
+<Term id="content-negotiation">Content negotiation</Term> selects a representation using request preferences and server capabilities. If a cacheable response varies based on `Accept-Encoding` or `Accept-Language`, the server sends an appropriate `Vary` field so a cache does not reuse one variant for an incompatible request. `Vary` is part of the cache key contract, not merely documentation.
+
+Fields are either end-to-end or scoped to one connection hop. HTTP/1.1's `Connection` field names connection-specific options that an intermediary must consume rather than forward. HTTP/2 forbids `Connection` and other connection-specific fields because stream framing replaces those HTTP/1.1 mechanisms.
+
+### Caches reuse responses under policy
+
+A cache stores a response and may reuse it for a later request when the method, target, selecting fields, freshness, and authorization rules allow. Reuse is a semantic decision; merely having bytes stored is not permission to send them. Shared caches add safeguards because responses can cross users.
+
+`Cache-Control: max-age=60` gives a response a freshness lifetime of sixty seconds relative to its generation and age metadata. While fresh, a cache can usually reuse the response without contacting the origin. `s-maxage` can set a different lifetime for shared caches.
+
+`no-cache` means the stored response must be successfully validated before reuse; it does not mean "do not store." `no-store` asks caches not to store the response. `private` permits a private cache, such as a browser cache, but prevents shared-cache storage of that response.
+
+The primary cache key normally includes the request method and target URI. Fields named by `Vary` extend selection among stored responses. A server that serves gzip and identity variants but omits `Vary: Accept-Encoding` risks delivering bytes with the wrong metadata or to a client that did not request that coding.
+
+Validators make stale responses useful without transferring the full representation. An entity tag in `ETag` is an opaque server-selected validator. A client can send it in `If-None-Match`; for `GET` or `HEAD`, a match yields `304`, otherwise the server sends the selected representation normally.
+
+Preconditions also prevent lost updates. A client that read `ETag: "v7"` can send `If-Match: "v7"` with a modification. If the current representation has another tag, the server returns `412 Precondition Failed` instead of overwriting state the client has not seen.
+
+### Retries cross an uncertainty boundary
+
+A response is evidence that the server produced that response, but a missing response is ambiguous. The request might never have left the client, might have reached the server but not committed, or might have committed while the response was lost. TCP reset and timeout errors cannot distinguish those cases.
+
+Clients can usually replay safe and idempotent operations when the request content is reproducible and policy permits. They still need capped attempts, backoff, jitter, deadline propagation, and respect for server guidance. An idempotent method prevents duplicate intended effects; it does not make an overloaded service benefit from unlimited retries.
+
+Non-idempotent operations need an application mechanism when automatic replay is required. A stable idempotency key can let a server remember an operation's completed result and return it for duplicates. The contract must define key scope, request fingerprinting, retention, concurrency, and what happens when the first attempt is still in progress.
+
+### Connections carry messages but do not define their meaning
+
+HTTP/1.1 can carry several exchanges sequentially on one persistent connection. Message framing uses rules such as content length, transfer coding, and statuses that forbid content; connection close is only one possible delimiter. Parsing disagreements about those rules can become request-smuggling vulnerabilities.
+
+HTTP/2 carries concurrent streams as frames on one connection. A stream has its own message sequence and can fail without every other stream failing. HTTP/3 changes the transport again, while methods, status codes, representations, caching, and most fields retain their semantics.
+
+Connection lifetime therefore does not equal resource or operation lifetime. Opening a fresh connection does not make a repeated write a new logical operation, and reusing a connection does not join two requests into one transaction. Diagnose transport state and application outcome as separate dimensions.
+
+## Examples
+
+The examples use Node 24's HTTP server and built-in `fetch`. Each server listens on an ephemeral loopback port, so the programs need no external service and leave no fixed port occupied.
+
+### Repeating an idempotent `PUT`
+
+This endpoint treats `PUT /profiles/7` as complete replacement. The first request creates the target and returns `201`; the identical repeat replaces it with the same state and returns `204`.
+
+<Depth level="quick">
+
+```javascript run title="method_contracts.mjs"
+import { createServer } from "node:http";
+
+const profiles = new Map();
+const server = createServer(async (request, response) => {
+  if (request.method !== "PUT" || request.url !== "/profiles/7") {
+    response.writeHead(405, { Allow: "PUT" }).end();
+    return;
+  }
+
+  let json = "";
+  for await (const chunk of request) json += chunk;
+  const existed = profiles.has("7");
+  profiles.set("7", JSON.parse(json));
+
+  const fields = existed ? {} : { Location: "/profiles/7" };
+  response.writeHead(existed ? 204 : 201, fields).end();
+});
+
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const origin = `http://127.0.0.1:${server.address().port}`;
+const options = {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ displayName: "Ada" }),
+};
+
+for (const label of ["first", "repeat"]) {
+  const response = await fetch(`${origin}/profiles/7`, options);
+  console.log(label, response.status, response.headers.get("location") ?? "-");
+}
+
+const rejected = await fetch(`${origin}/profiles/7`);
+console.log("GET", rejected.status, rejected.headers.get("allow"));
+console.log("stored", JSON.stringify(profiles.get("7")));
+server.close();
+```
+
+```text
+first 201 /profiles/7
+repeat 204 -
+GET 405 PUT
+stored {"displayName":"Ada"}
+```
+
+<TryToBreak items={['invalid JSON content', 'two concurrent first writes', 'a request body larger than the service limit']} />
+
+</Depth>
+
+The differing success statuses do not violate idempotency. After either one request or two identical requests, profile `7` has the same intended state. The server also returns `405 Method Not Allowed` with `Allow: PUT`, distinguishing a known resource with an unsupported method from an unknown route.
+
+Production code would validate `Content-Type`, bound the body size, handle malformed JSON, and define concurrency preconditions. Those concerns reinforce rather than replace method semantics. A generated handler that merely calls `JSON.parse` is not ready for untrusted network input.
+
+### Revalidating a cached representation
+
+The next server assigns an entity tag to one catalog representation. The second request sends that validator, so the server transfers metadata in `304` without retransmitting the JSON body.
+
+```javascript run title="conditional_get.mjs"
+import { createServer } from "node:http";
+
+const body = JSON.stringify({ items: ["tea", "coffee"] });
+const etag = '"catalog-v3"';
+const server = createServer((request, response) => {
+  const fields = { ETag: etag, "Cache-Control": "max-age=60" };
+  if (request.headers["if-none-match"] === etag) {
+    response.writeHead(304, fields).end();
+    return;
+  }
+
+  response.writeHead(200, {
+    ...fields,
+    "Content-Type": "application/json",
+  });
+  response.end(body);
+});
+
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const url = `http://127.0.0.1:${server.address().port}/catalog`;
+
+const first = await fetch(url);
+console.log("first", first.status, first.headers.get("etag"), await first.text());
+
+const second = await fetch(url, { headers: { "If-None-Match": etag } });
+console.log("validated", second.status, "body bytes", (await second.text()).length);
+server.close();
+```
+
+```text
+first 200 "catalog-v3" {"items":["tea","coffee"]}
+validated 304 body bytes 0
+```
+
+The `304` result is only useful to a client that already has the selected representation. A direct caller must not treat its empty content as a new empty catalog. Real caches also update stored metadata from fields allowed in the validation response.
+
+This small server compares one strong tag literally, which is sufficient for the fixed example. A production implementation needs the complete entity-tag grammar, lists and wildcard behavior, weak comparison where specified, and the defined precedence among conditional fields. Framework or HTTP libraries should provide that parsing.
+
+### Separating a message boundary from EOF
+
+The final program inspects two HTTP/1.1 responses already read from one byte stream. Its deliberately narrow parser uses `Content-Length` for the first response and the no-content status for the second, leaving zero bytes after both messages.
+
+```javascript run title="message_framing.mjs"
+const wire = Buffer.from(
+  "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello" +
+  "HTTP/1.1 204 No Content\r\n\r\n",
+);
+
+function readMessage(buffer) {
+  const headerEnd = buffer.indexOf("\r\n\r\n");
+  const head = buffer.subarray(0, headerEnd).toString();
+  const lines = head.split("\r\n");
+  const lengthField = lines.find((line) =>
+    line.toLowerCase().startsWith("content-length:"),
+  );
+  const length = lengthField ? Number(lengthField.split(":", 2)[1]) : 0;
+  const bodyStart = headerEnd + 4;
+  const bodyEnd = bodyStart + length;
+  return {
+    status: lines[0].slice("HTTP/1.1 ".length),
+    body: buffer.subarray(bodyStart, bodyEnd).toString(),
+    rest: buffer.subarray(bodyEnd),
+  };
+}
+
+const first = readMessage(wire);
+const second = readMessage(first.rest);
+console.log(`${first.status} -> ${first.body}`);
+console.log(`${second.status} -> ${second.body || "<empty>"}`);
+console.log("remaining bytes", second.rest.length);
+```
+
+```text
+200 OK -> hello
+204 No Content -> <empty>
+remaining bytes 0
+```
+
+The connection did not close between responses. The first five content octets end exactly before the next status line, and `204` ends after its field section because that status cannot contain content. A caller waiting for EOF after the first response would hang on a persistent connection.
+
+Do not adapt this teaching parser for production. It omits request framing, transfer coding, interim responses, malformed input checks, field-size limits, and conflicting-length defenses. Use a maintained HTTP stack whose parser applies one unambiguous framing policy.
+
+## Pitfalls
+
+### Retrying every timeout
+
+> [!PITFALL]
+> A timeout does not prove that the server skipped the operation. Blindly replaying a payment-style `POST` can perform the side effect twice, while never retrying a `GET` makes harmless transient failures unnecessarily visible.
+
+**Fix:** classify operations by method and application semantics. Retry only reproducible, replay-safe requests within a capped deadline; for non-idempotent writes, define a stable idempotency-key contract and test the lost-response case.
+
+### Returning `200` for every domain outcome
+
+> [!PITFALL]
+> A JSON field such as `{ "success": false }` inside `200 OK` hides authentication, conflict, missing-resource, and overload outcomes from generic clients, caches, gateways, and observability tools.
+
+**Fix:** select the most specific standard status that describes HTTP handling, then put domain detail in a bounded response representation. Document the status set per operation and test that intermediaries preserve it.
+
+### Confusing representation fields
+
+> [!PITFALL]
+> `Content-Type` does not say what response a client wants, and `Accept` does not describe the bytes already sent. Negotiating variants without `Vary` can make a shared cache serve one language or content coding to the wrong request.
+
+**Fix:** validate request `Content-Type`, negotiate against `Accept` fields, set the actual response `Content-Type`, and emit every selecting request field in `Vary`. Include variant and shared-cache tests.
+
+### Treating `304` as an empty representation
+
+> [!PITFALL]
+> A `304 Not Modified` response intentionally has no content. Replacing a stored object with that empty body destroys the cached representation, while sending a body on `304` violates message semantics.
+
+**Fix:** return `304` only for the defined conditional retrieval path. Cache code should retain stored content, merge permitted metadata, and fall back to an unconditional retrieval if it has no usable stored response.
+
+### Making sensitive responses accidentally shareable
+
+> [!PITFALL]
+> A personalized response with a long freshness lifetime and an incomplete cache key can be reused for another user by a shared cache. Cookies alone are not a substitute for an explicit response cache policy.
+
+**Fix:** mark user-specific responses `private` or, when storage itself is unacceptable, `no-store`; design shared responses so authorization and `Vary` rules are explicit. Test through the actual CDN or proxy with two identities.
+
+### Parsing messages by connection close
+
+> [!PITFALL]
+> Assuming one connection equals one message breaks persistence and multiplexing. Hand-written parsers that disagree about `Content-Length` and `Transfer-Encoding` can also expose request-smuggling paths between intermediaries.
+
+**Fix:** use a maintained protocol implementation, reject ambiguous framing, and remove hop-by-hop fields at each intermediary boundary. Log stream or request identifiers separately from connection identifiers.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Generated clients often retry every network exception without checking method semantics, body reproducibility, or an idempotency contract. Generated servers commonly return `200` for all outcomes, send content with `204` or `304`, compare entity tags as arbitrary strings, omit `Vary`, or cache authenticated data as public. Models also mix HTTP/1.1 connection fields into HTTP/2 code and infer that a reset proves the application rolled back.
+
+**Ask your AI to check**
+
+- Build a method-by-method table containing safety, idempotency, request-body replayability, retry triggers, attempt cap, and deadline behavior.
+- Enumerate every response status and verify its content rules, required fields, cacheability, and caller action against RFC 9110 and RFC 9111.
+- Trace one fresh hit, one stale validation, one changed validator, one lost write response, and one connection reset without inferring an unobserved application outcome.
+
+**Review checklist**
+
+- Test each operation with a repeated identical request and confirm both the intended state and allowed response differences.
+- Test cache variants, authenticated identities, `304` metadata merging, and missing stored content.
+- Inspect protocol boundaries for ambiguous framing, forwarded hop-by-hop fields, unbounded retries, and conflated connection and operation identifiers.
+
+**Prompt vocabulary**
+
+Use the exact terms `safe method`, `idempotent method`, `selected representation`, `conditional request`, `strong entity tag`, `freshness lifetime`, `cache key`, `Vary`, `end-to-end field`, `hop-by-hop field`, `message framing`, and `ambiguous commit`. Ask for a status contract and a retry decision table; “make this endpoint RESTful” is too vague to expose the relevant HTTP guarantees.
+
+<Depth level="deep">
+
+## Separating message semantics from connections
+
+HTTP works because senders and recipients can reason about messages without sharing framework state. The difficult cases arise where an application outcome, a cached representation, and a transport event do not line up one-to-one. Diagnostics must keep those layers separate long enough to preserve uncertainty.
+
+### Idempotency is about intended effect
+
+Suppose `PUT /profiles/7` stores a complete profile. The first request can create the resource and return `201`, while a repeat can detect that no visible change is needed and return `204`. Different responses are compatible with one intended final state.
+
+Incidental effects do not normally change the method classification. A server may log every attempt, increment metrics, or charge internal request-accounting units. The important constraint is that the client did not request additional resource-state effects merely by repeating the same idempotent operation.
+
+Idempotency also depends on what counts as an identical request. Reusing the method and URI with a different body is not a repeat of the same request. Time-dependent server rules can make an old request invalid later, and the later response may report that change without making the method non-idempotent.
+
+An idempotency key moves the identity question into the application protocol. Robust servers bind a key to an authenticated principal, operation scope, and request fingerprint. If the same key arrives with different content, silently returning the first result hides a caller bug; a conflict response is usually safer.
+
+Concurrent duplicates need an atomic ownership rule. Two workers must not both observe an absent key and perform the side effect. A record can move through states such as in-progress, completed, and expired, with the original status and response data retained for the documented replay window.
+
+### Preconditions make writes conditional
+
+Validators are not only bandwidth optimizations. `If-Match` turns a write into a compare-and-set operation at the HTTP layer. The server evaluates the precondition against the selected current representation before applying the method.
+
+Strong entity tags change whenever the representation data relevant to equality changes. Weak tags, written with the `W/` prefix, can group representations that are semantically equivalent despite byte differences. `If-Match` uses strong comparison because weak equivalence is not enough to prevent overwriting an unseen change.
+
+`If-None-Match` has two common roles. On `GET` or `HEAD`, a matching tag produces `304` and reuses stored content. With `If-None-Match: *` on a state-changing request, the client can require that no current representation exists, preventing an accidental overwrite during create-if-absent behavior.
+
+Date validators are useful when entity tags are unavailable, but HTTP dates have limited precision and depend on trustworthy modification times. Entity-tag preconditions take precedence where the specification defines both. Avoid inventing a custom `version` JSON field when standard preconditions can express the same concurrency contract to intermediaries and generic clients.
+
+### Cache reuse is a new response decision
+
+A stored response does not remain frozen until eviction. Its current age grows, a freshness lifetime determines when it becomes stale, request directives can constrain reuse, and successful validation can update metadata. A cache constructs a response from stored information under the current request's rules.
+
+Freshness is not the same as truth. A response can be fresh while the origin state has changed, because freshness grants reuse for a bounded time without validation. Conversely, a stale response may still be served under explicitly allowed stale controls or after successful validation.
+
+Shared and private caches have different trust boundaries. A browser cache is scoped to one user agent profile, while a CDN can serve many principals. Responses to authenticated requests and responses marked `private` have special shared-cache constraints that must be considered together with explicit directives.
+
+`Vary` records which request fields influenced representation selection. The value `Vary: *` means the response cannot be matched for reuse without forwarding the request. Omitting a selecting field is a correctness error even if the first cache test passes with only one locale or encoding.
+
+Invalidation is not instantaneous by default. Unsafe requests passing through a cache can invalidate stored responses for relevant URIs when successful, but application changes elsewhere may need explicit purge or versioned resource design. Never promise immediate global cache coherence without measuring the actual invalidation path.
+
+### Message framing has security consequences
+
+HTTP/1.1 recipients determine content length through a precedence order, not by reading until a convenient delimiter. Certain methods and statuses imply no response content, transfer coding can frame content, and a valid `Content-Length` supplies a decimal length where allowed. Closing the connection is the final framing option for some responses, not the universal rule.
+
+Conflicting or malformed length information is dangerous because two recipients might choose different message boundaries. An edge proxy could treat bytes as one request while an origin treats the suffix as a second request. That disagreement is the core shape of HTTP request smuggling.
+
+An intermediary must parse, normalize, and forward messages consistently. It consumes connection-specific fields rather than forwarding them end to end, applies size limits, and rejects ambiguity instead of guessing. Adding a web application firewall after inconsistent parsers does not repair their boundary disagreement.
+
+HTTP/2 replaces text-line framing with typed binary frames associated with stream identifiers. It still has message rules: a response begins with a header block, may carry data, and ends on its stream. Connection errors and stream errors have different scopes, so retry logic needs to know which streams might have been processed.
+
+Translating between protocol versions is semantic work. A gateway cannot blindly copy `Connection`, `Transfer-Encoding`, `Keep-Alive`, or fields named by `Connection` into HTTP/2. It must preserve end-to-end meaning while applying the framing rules of each side independently.
+
+### Observability must retain both identities
+
+A connection identifier answers which transport session carried bytes. A request or trace identifier answers which logical attempt moved through services. An idempotency key answers which attempts belong to one intended operation. These identifiers overlap in traces but are not interchangeable.
+
+Record method, normalized target, status, protocol version, retry attempt, cache result, validator outcome, stream identifier where available, and timings without logging secrets. For writes, record the application operation identifier and final commit evidence. This lets an investigator distinguish “response lost after commit” from “request rejected before handling” when the system exposes enough evidence.
+
+Metrics should not collapse every `4xx` or `5xx` into one failure counter. A rise in `412` can indicate healthy concurrency protection, `429` can show rate policy working, and `502` points toward an upstream boundary. Group by actionable semantics while controlling label cardinality.
+
+### A disciplined exchange review
+
+Start at the API contract rather than the controller implementation. Name the resource, the method intent, whether supplied content is a complete or partial representation, and the successful and failure status set. Then state which response fields callers must understand.
+
+Next, write the retry decision independently of the happy path. Include transport failures before and after sending content, partial response reads, retryable statuses, body replayability, deadline budget, and duplicate suppression. If the outcome is unknowable, expose an “unknown” state rather than relabeling it failed.
+
+Review caching as a separate state machine. Identify private and shared caches, cache keys and `Vary`, freshness directives, validators, invalidation triggers, and behavior when validation fails. Test with two variants and two identities, not only repeated requests from one client.
+
+Finally, inspect each protocol boundary. Confirm that the HTTP library owns framing, that proxies remove hop-by-hop fields, and that HTTP/2 stream failures are not reported as proof about database state. The resulting contract remains valid when a deployment changes frameworks or negotiates another HTTP version.
+
+</Depth>
+
+<Checkpoint id="foundations/http-semantics" />
+
+## Further reading
+
+- [RFC 9110 — HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110)
+- [RFC 9111 — HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111)
+- [RFC 9112 — HTTP/1.1 message framing and connection management](https://www.rfc-editor.org/rfc/rfc9112)
+- [RFC 9113 — HTTP/2](https://www.rfc-editor.org/rfc/rfc9113)

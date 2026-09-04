@@ -90,56 +90,59 @@ items:
     tags: [approval-gate, least-privilege, network]
     minutes: 2
 
-  - id: review-generated-agent-runner
+  - id: review-generated-context-builder
     type: review
-    prompt: { en: 'Review this generated coding-agent runner.', zh: '审查这个生成式编程智能体运行器。' }
-    task: { en: 'Run an agent on one Python package, allow reviewed test commands, keep all writes inside the workspace, and report completion only when verification passes.', zh: '让智能体处理一个 Python 包，只允许运行经过审查的测试命令，把所有写入限制在工作区内，并且只在验证通过后报告完成。' }
+    title: { en: 'Review a generated context builder', zh: '审查生成的上下文构建器' }
+    prompt: { en: 'Review this generated context builder before an agent uses it.', zh: '在智能体使用前审查这个生成的上下文构建器。' }
+    task: { en: 'Assemble requested UTF-8 Python files for a coding agent, keep every read inside the workspace, reject a negative character budget, stop at the budget without reading unnecessary data, and report only files included in full.', zh: '为编程智能体汇集请求的 UTF-8 Python 文件；所有读取都必须位于工作区内，拒绝负数的字符预算，在达到预算时停止且不读取多余数据，并且只报告完整纳入的文件。' }
     code: |
+      from dataclasses import dataclass
       from pathlib import Path
-      import subprocess
 
-      def run_agent(workspace: Path, goal: str, model):
-          files = [path for path in workspace.rglob("*") if path.is_file()]
-          context = "\n".join(path.read_text() for path in files)
-          plan = model.generate(goal + "\n" + context)
+      @dataclass(frozen=True)
+      class ContextBundle:
+          text: str
+          files: tuple[str, ...]
 
-          for step in plan.splitlines():
-              if step.startswith("RUN "):
-                  command = step.removeprefix("RUN ")
-                  result = subprocess.run(command, shell=True, cwd=workspace)
-                  print("command finished", result.returncode)
-              elif step.startswith("WRITE "):
-                  _, name, content = step.split(":", 2)
-                  target = workspace / name
-                  target.write_text(content)
+      def build_context(
+          workspace: Path, requested: list[str], character_budget: int
+      ) -> ContextBundle:
+          sections: list[str] = []
+          included: list[str] = []
 
-          tests = subprocess.run(
-              "python3 -m pytest", shell=True, cwd=workspace,
-              capture_output=True, text=True,
-          )
-          return {"status": "done", "tests": tests.stdout}
+          for name in requested:
+              candidate = workspace / name
+              if candidate.suffix != ".py":
+                  continue
+              source = candidate.read_text(encoding="utf-8")
+              sections.append(f"### {name}\n{source}")
+              included.append(name)
+
+          context = "\n\n".join(sections)
+          context = context[:character_budget]
+          return ContextBundle(context, tuple(included))
     lang: python
-    right: { en: 'The code gives the model a goal plus repository content, sets the command working directory, runs a final test command, and returns some test output.', zh: '代码向模型提供了目标和仓库内容，设置了命令工作目录，运行了最终测试命令，并返回了一部分测试输出。' }
-    checklist:
-      - { en: 'Bound context collection by path, file type, size, and sensitivity.', zh: '按路径、文件类型、大小和敏感性限制上下文收集。' }
-      - { en: 'Validate every tool and argument before any side effect.', zh: '产生副作用前验证每个工具及其参数。' }
-      - { en: 'Exercise malformed actions, denied actions, failures, timeouts, and cancellation.', zh: '测试格式错误、被拒绝、失败、超时和取消等操作路径。' }
-      - { en: 'Derive completion from exit status, required checks, and diff scope.', zh: '根据退出状态、必需检查和差异范围判断是否完成。' }
     issues:
-      - line: 6
-        kind: performance
-        note: { en: 'Reading every file eagerly is unbounded and may load dependencies, binaries, or large generated artifacts before the model does any targeted search.', zh: '无界地预读每个文件，可能在模型执行定向搜索前就加载依赖、二进制文件或大型生成物。' }
-      - line: 12
+      - line: 16
         kind: security
-        note: { en: 'A model-authored command executes through a shell without an argument policy or approval gate.', zh: '模型生成的命令未经参数策略或审批门检查就通过 shell 执行。' }
-      - line: 15
+        note: { en: 'Joining an unchecked name does not enforce containment: an absolute path, .. segment, or symlink can select a Python file outside the workspace.', zh: '直接拼接未经检查的名称不能保证路径包含关系：绝对路径、.. 路径段或符号链接都可能选中工作区外的 Python 文件。' }
+      - line: 19
+        kind: performance
+        note: { en: 'Every candidate is read in full before the budget is applied, including oversized files and files reached after the context is already full.', zh: '预算生效前，每个候选文件都会被完整读取，包括超大文件，以及上下文已满后才遍历到的文件。' }
+      - line: 24
         kind: edge-case
-        note: { en: 'One malformed WRITE line raises during ad hoc parsing; there is no structured schema, error result, or recovery path.', zh: '一条格式错误的 WRITE 行会在临时解析时抛出异常；代码没有结构化模式、错误结果或恢复路径。' }
-      - line: 23
+        note: { en: 'A negative budget is accepted as a Python slice bound, which silently removes characters from the end instead of rejecting the input.', zh: '负数预算被直接用作 Python 切片边界，只会悄悄删掉末尾字符，而不会拒绝输入。' }
+      - line: 25
         kind: correctness
-        note: { en: 'The runner always reports done and discards stderr even when pytest exits nonzero, so failure is presented as completion.', zh: '即使 pytest 以非零状态退出，运行器仍始终报告 done 并丢弃 stderr，因而把失败表示为完成。' }
-    explanation: { en: 'Use targeted retrieval, typed tool calls, path-aware write containment, a narrow command policy, and structured results. The final state must depend on the test exit code and required evidence.', zh: '应使用定向检索、带类型的工具调用、路径感知的写入范围、严格命令策略和结构化结果。最终状态必须取决于测试退出码和必需证据。' }
-    difficulty: advanced
-    tags: [code-review, agent-runner, verification, security]
-    tests: python3 -m py_compile agent_runner.py
-    minutes: 12
+        note: { en: 'The files tuple names every read file even when truncation excludes all or part of its section, so the returned evidence is false.', zh: '即使截断操作排除了某个文件的全部或部分内容，files 元组仍会列出所有已读文件，因此返回的证据并不真实。' }
+    right: { en: 'The builder decodes source explicitly as UTF-8, filters for Python paths, preserves request order, and returns immutable result fields.', zh: '该构建器显式以 UTF-8 解码源码，只处理 Python 路径，保留请求顺序，并返回不可变的结果字段。' }
+    checklist:
+      - { en: 'Resolve each candidate and prove it remains inside the workspace before reading.', zh: '读取前解析每个候选路径，并证明它仍位于工作区内。' }
+      - { en: 'Test negative, zero, exact-fit, and one-character-short budgets.', zh: '测试负数、零、恰好足够和少一个字符的预算。' }
+      - { en: 'Read at most the remaining capacity plus enough data to detect overflow.', zh: '读取量最多为剩余容量，再加上足以判断溢出的少量数据。' }
+      - { en: 'Match file metadata to the complete sections actually returned.', zh: '确保文件元数据只对应实际返回的完整分段。' }
+    explanation: { en: 'Resolve and validate paths and the budget before reading. Build one section at a time, read only enough to decide whether it fits, and record its name only when the complete section is admitted.', zh: '读取前先解析并验证路径与预算。逐段构建上下文，只读取足以判断是否容纳的数据，并且仅在完整纳入该段时记录文件名。' }
+    difficulty: intermediate
+    tags: [code-review, context-window, path-containment, resource-bounds]
+    tests: python3 -m py_compile context_builder.py
+    minutes: 9

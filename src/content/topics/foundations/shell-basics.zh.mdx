@@ -1,0 +1,482 @@
+---
+title: 'Shell 基础'
+description: '在 Shell 中安全地浏览文件、引用参数、展开变量、检查退出状态并运行命令。 '
+track: foundations
+section: git-shell
+difficulty: beginner
+tags: [shell, bash, quoting, expansion, exit-status]
+prerequisites: [foundations/linux]
+related: [foundations/linux, foundations/pipes-and-redirection, foundations/processes-and-threads, foundations/git-deep-dive]
+terms: [argument, process, command-substitution, exit-status, pathname-expansion, word-splitting]
+verified: { version: 'GNU Bash 5.2.21', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: foundations/shell-basics
+sources:
+  - { title: 'Bash Reference Manual - Shell Operation', url: 'https://www.gnu.org/software/bash/manual/html_node/Shell-Operation.html' }
+  - { title: 'Bash Reference Manual - Quoting', url: 'https://www.gnu.org/software/bash/manual/html_node/Quoting.html' }
+  - { title: 'Bash Reference Manual - Shell Parameter Expansion', url: 'https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html' }
+  - { title: 'Bash Reference Manual - Exit Status', url: 'https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html' }
+  - { title: 'POSIX Shell Command Language', url: 'https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Shell 读取命令语言，把它展开成参数与重定向，启动程序，并报告程序的退出状态。
+  </TLDRCell>
+  <TLDRCell label="when">
+    它适合浏览与检查系统、执行可重复的本地任务，以及输入和失败行为都能明确定义的小型自动化。
+  </TLDRCell>
+  <TLDRCell label="how">
+    引用展开结果，用数组传递参数，立即检查状态，校验路径，并在可能像选项的操作数前使用 `--`。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Shell 是命令语言解释器，也是进程控制工具。它把 `git status` 等文本转换成程序名称与<Term id="argument">参数（argument）</Term>列表，安排输入与输出，启动<Term id="process">进程（process）</Term>，再把结果交给调用方。交互式终端和脚本文件使用同一种语言，但交互功能可能不同。
+
+本主题使用 GNU Bash，因为本地已安装该 Shell，其行为可以实际执行和检查。许多基础规则也适用于 POSIX Shell，包括引用、参数展开、当前目录，以及零状态与非零状态的区别。示例中的 Bash 专有功能会明确标出，例如数组、`[[ ... ]]` 与 `pipefail`，不会把它们说成可移植的 `sh` 语法。
+
+Shell 用于组合已有程序，无须把每个程序嵌入另一个应用。你可以用它浏览文件系统、连接命令、选择文件、设置执行环境，并根据成功与否进行分支。这种便利带来了一道解析边界：Shell 先解释字符，随后程序收到参数数组，原始引号已不在其中。
+
+终端命令、包脚本、构建系统、持续集成任务、容器、部署钩子和生成的维护脚本都会遇到这道边界。即使命令看起来合理，空格也可能拆开一个值，通配符可能意外展开，前导连字符也可能变成选项，最终让命令作用于错误文件。因此，Shell 的正确性在目标程序运行前就已经开始。
+
+Shell 适合围绕现有程序编写简短的编排逻辑。如果脚本需要复杂数据结构、大量解析、并发或庞大的领域模型，通用编程语言通常能提供更清晰的类型与错误处理。这个边界取决于可维护性与输入风险，不是一条固定的行数规则。
+
+## 工作原理
+
+### 从文本到命令
+
+Bash 不会把命令行作为一整段未经修改的字符串传给程序。它先读取输入，识别运算符与单词，解析复合语法，执行各种展开，再应用重定向，最后执行内建命令、函数或外部程序。每个阶段都可能改变下一阶段看到的内容。
+
+```mermaid
+flowchart LR
+  A[Shell source text] --> B[Tokens and syntax]
+  B --> C[Expansions]
+  C --> D[Arguments and redirections]
+  D --> E[Builtin or child process]
+  E --> F[Exit status]
+```
+
+Shell 构造单词时，引号用于控制解释，执行前通常会被删除。在 `printf '%s\n' "team notes.txt"` 中，`printf` 之后程序收到两个参数：格式字符串和一个文件名。它不会收到字面量双引号字符。
+
+运算符在普通参数形成前就有语义。分号结束一条命令，`&&` 与 `||` 按条件连接命令，`|` 创建管道，`>` 请求重定向。引用运算符字符可以把它变成普通数据，但字符串已经解析后再补引号，无法撤销不安全的构造方式。
+
+### 当前目录与路径
+
+每个进程都有一个当前工作目录，用于解析相对路径。`pwd` 报告 Shell 的当前位置，`cd directory` 在当前 Shell 中改变目录，`cd ..` 移到父路径，Bash 中的 `cd -` 返回上一个目录。绝对路径从 `/` 开始，相对路径从当前目录开始。
+
+`cd` 必须是 Shell 内建命令，因为外部子进程无法改变父进程的当前目录。通过 `bash script.sh` 运行的脚本可以改变自身工作目录，却不会移动调用方的交互式 Shell。被 `source` 加载的脚本在调用方内部运行，可以改变调用方的目录、变量和选项，因此加载脚本形成的契约要宽得多。
+
+`PWD` 通常记录 Shell 的逻辑路径，可以保留符号链接路径段。`pwd -P` 请求在可能的范围内解析符号链接，给出物理路径。涉及身份判断时要有意选择；仅凭显示出来的路径字符串，无法证明两个引用指向不同的文件系统对象。
+
+如果命令支持 `--`，且操作数可能以 `-` 开头，就应使用它。例如，`rm -- "$name"` 会在文件名前结束选项解析。引用和 `--` 解决的问题不同：引用让一个值保持为一个参数，`--` 则阻止该参数被解释成选项。
+
+### 变量与环境
+
+Shell 赋值的 `=` 两侧不能有空格：`region='eu west'`。这个名称是 Shell 变量，`$region` 或 `${region}` 会执行参数展开。花括号在 `${region}_backup` 等文本中标明名称边界，也支持默认值、必填值、长度和子串处理等运算符。
+
+Shell 变量只属于当前 Shell，除非被导出。`export REGION=$region` 会标记 `REGION`，让之后的子进程在继承的环境中收到它。子进程可以修改自己的副本，但启动后无法改写父进程的变量或环境。
+
+环境值都是字符串。`PATH`、`LANG` 或 `HTTP_PROXY` 等值由具体程序解释，Shell 不会校验这些契约。不要把秘密直接放在命令行上，因为进程列表、日志和历史记录可能暴露它们；还要记住，导出的秘密会流向每个后代进程，除非主动缩小环境。
+
+`$?` 是特殊参数，不是持久变量。它会展开成最近完成的前台管道状态，并被下一条命令覆盖。需要保留时，应立即执行 `status=$?`，或者直接把命令放进 `if` 条件。
+
+### 引用规则
+
+单引号会原样保留字符，直到遇到下一个单引号。变量与命令替换不会在其中展开，单引号字符串内部也不能直接出现单引号。它适合固定文本，例如格式字符串与字面量通配符字符。
+
+双引号让一个值保留在同一个 Shell 单词中，同时仍允许参数展开、算术展开和<Term id="command-substitution">命令替换（command substitution）</Term>。在几乎所有普通用法中，`"$variable"` 都是安全的默认写法。只有在你确实要让 Shell 生成多个参数，并已经选择结构化机制时，才需要采用其他方式。
+
+未引用的展开可能经历<Term id="word-splitting">单词拆分（word splitting）</Term>与<Term id="pathname-expansion">路径名展开（pathname expansion）</Term>。空白可以把一个值变成多个参数，随后各片段中的通配符又可能匹配目录项。两个阶段会叠加：原本只是文本的一个值，可能根据当前目录变成数量完全不同的参数列表。
+
+反斜杠会在引号外保护其后的一个字符，在双引号内则遵循与上下文有关的规则。少量字面量字符适合这样写，但充满反斜杠的长命令很难审查。应根据是否需要展开来选择单引号或双引号。
+
+### 位置参数与数组
+
+脚本与函数通过 `$1`、`$2` 等位置参数接收输入，`$#` 保存数量。使用前先校验必填参数。启用严格的未设置变量检查时，`${1-}` 可以提供空字符串后备值，`${1:?message}` 则会在必填值未设置或为空时停止展开并报告消息。
+
+转发全部位置参数时，正确写法是 `"$@"`。它位于双引号内时，会把每个原始参数展开成独立参数，并保留空值与空格。相比之下，`"$*"` 会使用 `IFS` 的第一个字符把参数连接成一个单词，未引用的 `$@` 又会让参数暴露给后续拆分与通配符展开。
+
+Bash 数组可以保留参数边界。用 `command=(program --flag "$value")` 构造命令，用 `command+=("$path")` 追加参数，再用 `"${command[@]}"` 执行。不要把数组压平成字符串后交给 `eval`；这种做法会要求 Shell 把数据重新解析成源代码。
+
+数组也能明确表达可选参数。只在条件成立时添加标志，诊断时再通过 `printf '%q '` 打印数组。`%q` 会生成可由 Bash 再次使用的表示形式，适合日志，但显示出的转义不是原始输入，也不能与程序输出混为一谈。
+
+### 展开顺序
+
+Bash 按规定顺序执行多种展开。首先是花括号展开，然后是波浪号展开、参数与变量展开、算术展开和命令替换；适用时再进行单词拆分与路径名展开，最后删除引号。上下文可以抑制某些阶段，因此只背一句口诀并不足够。
+
+双引号内的参数展开不会经历单词拆分或路径名展开。普通变量赋值的右侧也采用特殊展开规则，结果会保持为一个赋值。可是，当展开后的值随后作为未引用的命令参数使用时，危险阶段又会生效。
+
+命令替换写作 `$(command)`，它捕获标准输出并删除末尾的换行符。它不会自动保留由输出行或文件名组成的数组。不要用 `for file in $(find ...)` 解析任意文件名；当文件名本身是数据时，应使用 NUL 分隔接口，或者使用工具直接提供的 `-exec` 功能。
+
+路径名展开会使用 `*`、`?` 和方括号表达式等通配模式匹配目录项。在 Bash 默认设置下，没有匹配的模式会保持为字面量；`nullglob` 或 `failglob` 等选项会改变这个行为。如果脚本依赖某种策略，应在局部明确设置，并同时测试有匹配与无匹配的情况。
+
+### 命令、内建功能与进程
+
+Bash 可以执行保留语法、交互环境中的别名、函数、内建命令和外部程序。`type -a name` 会显示名称如何解析，`command name` 在常见情况下可以绕过同名函数。脚本不应假设交互式别名一定存在。
+
+外部命令通常在子进程中运行，并从 Shell 继承参数向量、当前目录、已打开的文件描述符与环境。Shell 内建命令在 Shell 进程中运行，因为 `cd`、`export` 与 `read` 等操作需要修改 Shell 状态。函数也在当前 Shell 中运行，除非它位于子 Shell 或会创建其他进程环境的管道上下文中。
+
+当命令名称不包含斜杠时，Shell 会在 `PATH` 中查找。对于特权或安全敏感的自动化，受控的 `PATH` 和明确的程序选择可以减少歧义。`command -v program` 能给出更清楚的启动错误，但无法阻止文件系统中的程序随后被替换。
+
+如果目录或选项变更不应逃出一个代码块，可以使用子 Shell `( commands )`。花括号 `{ commands; }` 则在当前 Shell 中组合命令，因此赋值和 `cd` 会继续保留。`}` 前的最后一个分号属于语法，并非装饰。
+
+### 退出状态与控制流
+
+按照约定，状态 `0` 表示成功，非零状态表示某种失败或假结果。具体非零值的含义由命令文档定义。Bash 通常在命令已找到却无法执行时使用 `126`，找不到命令时使用 `127`；信号终止一般表示为 `128 + 信号编号`。
+
+如果两个分支都需要处理，可以写成 `if command; then ... else status=$?; ... fi`。检查与命令彼此相邻，进入 `else` 后也能立即保留失败状态。`command && next` 适合仅在成功后运行 `next`，`command || recover` 则适合明确的恢复路径。
+
+不要仅仅为了压掉错误而写 `command || true`。这样会把可见结果替换为成功，并可能让后续破坏性操作继续执行。如果某种失败确实可以接受，应列出预期状态，记录相关上下文，并拒绝其他所有结果。
+
+管道默认报告最后一条命令的状态。启用 Bash 的 `set -o pipefail` 后，只要有命令失败，就报告最靠右的非零状态；全部成功时才报告零。这种策略通常更适合数据管道，但如果使用方提前退出，`SIGPIPE` 也可能让生产方按预期失败，因此仍需为每个脚本明确决定管道语义。
+
+### Shell 选项与清理
+
+`set -u` 会报告多种未设置变量展开，`set -o pipefail` 会暴露被最后一条管道命令掩盖的失败。`set -e` 会要求 Bash 在某些未处理失败后退出，但它的例外取决于测试、列表和管道等语法上下文。常见的 `set -euo pipefail` 头部只有在脚本按这些确切语义设计并测试后，才称得上有效策略。
+
+预期失败仍然需要显式控制流。用 `if` 捕获状态；如果命令文档区分未找到与权限不足，就分别处理；诊断上下文应写到标准错误。严格选项无法推断哪些失败在业务上可以接受。
+
+`trap` 为信号或 `EXIT` 等伪事件注册 Shell 代码。一种常见的安全模式是用 `mktemp -d` 创建临时目录，保存其确切路径，再通过 `EXIT` trap 删除该路径并正确引用。trap 应保持简短，尽可能具有幂等性，并避免覆盖本来需要保留的状态。
+
+临时路径与清理逻辑也是安全边界。不要在共享目录中自造可预测路径，也不要针对空变量、未解析变量或过宽变量执行递归删除。修改前先用只读检查确定准确目标，并把删除限制在脚本自身创建或明确获准管理的资源内。
+
+## 示例
+
+下面四个示例只使用临时目录与本地 Shell 状态。它们已经通过 `bash -n` 语法检查，并用 GNU Bash 5.2.21 实际执行；每段输出都来自紧邻它的文件。
+
+### 浏览目录，同时保留文件名边界
+
+第一个脚本创建一个小项目，其中包含目录、形似选项的名称和带空格的名称。每次路径展开都经过引用，命令支持时还用 `--` 分隔选项与操作数。
+
+<Depth level="quick">
+
+```bash title="workspace_report.sh"
+#!/usr/bin/env bash
+set -u
+
+LC_ALL=C
+workspace=$(mktemp -d)
+trap 'rm -rf -- "$workspace"' EXIT
+
+mkdir -p -- "$workspace/project/docs"
+printf 'draft\n' > "$workspace/project/--draft.txt"
+printf 'notes\n' > "$workspace/project/team notes.txt"
+
+cd -- "$workspace/project"
+printf 'directory=%s\n' "${PWD##*/}"
+printf 'entries:\n'
+for path in ./*; do
+  printf '  %s\n' "${path#./}"
+done
+
+cd -- docs
+printf 'parent=%s current=%s\n' "$(basename -- "$OLDPWD")" "${PWD##*/}"
+```
+
+```text
+directory=project
+entries:
+  --draft.txt
+  docs
+  team notes.txt
+parent=project current=docs
+```
+
+<TryToBreak items={['包含空格的项目路径', '以连字符开头的目录项', '没有任何通配符匹配项的空目录']} />
+
+</Depth>
+
+`./*` 会为每个匹配目录项产生一个单词，引用 `"$path"` 则让每个匹配项在后续保持为一个参数。显示时只删除已知的 `./` 前缀。对于空目录，Bash 默认会留下未匹配的字面量 `./*`，因此允许目录为空的生产代码应选择 `nullglob`、`failglob` 或显式存在性检查。
+
+最后一行使用 `OLDPWD`，Bash 会在 `cd` 成功后更新它。即使父路径包含空格，其展开仍作为一个参数传给 `basename`。脚本没有打印随机生成的临时目录前缀，因此可观察输出保持稳定。
+
+### 对比引用与未引用的展开
+
+这个脚本展示单词拆分与路径名展开，但不会操作外部文件。同样的两个变量值会根据是否引用，产生两个或四个参数。
+
+```bash title="quote_arguments.sh"
+#!/usr/bin/env bash
+set -u
+
+LC_ALL=C
+workspace=$(mktemp -d)
+trap 'rm -rf -- "$workspace"' EXIT
+cd -- "$workspace"
+touch north.csv south.csv
+
+show_args() {
+  printf 'count=%d\n' "$#"
+  printf '  <%s>\n' "$@"
+}
+
+label='Q1 report'
+pattern='*.csv'
+
+printf 'quoted:\n'
+show_args "$label" "$pattern"
+printf 'unquoted:\n'
+show_args $label $pattern
+
+command=(printf 'selected=<%s>\n')
+command+=("$label")
+"${command[@]}"
+```
+
+```text
+quoted:
+count=2
+  <Q1 report>
+  <*.csv>
+unquoted:
+count=4
+  <Q1>
+  <report>
+  <north.csv>
+  <south.csv>
+selected=<Q1 report>
+```
+
+在未引用的调用中，`$label` 在空格处拆分，`$pattern` 则根据当前目录展开。这两个转换都不是 `show_args` 完成的；函数中的 `$#` 与 `"$@"` 只是显示 Bash 在函数开始前构造的参数。
+
+数组把命令和数据保存成不同元素。执行 `"${command[@]}"` 会保留这个结构，不会再次解析。这是拼接命令字符串的常规替代方案。
+
+### 在状态改变前捕获它
+
+服务检查返回三个有文档约定的状态。循环在 `else` 中捕获失败，随后脚本对比默认管道状态与 Bash 的 `pipefail` 策略。
+
+```bash title="inspect_status.sh"
+#!/usr/bin/env bash
+set -u
+
+check_service() {
+  case $1 in
+    api) return 0 ;;
+    worker) return 3 ;;
+    *) return 64 ;;
+  esac
+}
+
+for service in api worker unknown; do
+  if check_service "$service"; then
+    status=0
+  else
+    status=$?
+  fi
+  printf '%s status=%d\n' "$service" "$status"
+done
+
+set +o pipefail
+false | true
+printf 'pipeline default=%d\n' "$?"
+
+set -o pipefail
+false | true
+status=$?
+printf 'pipeline pipefail=%d\n' "$status"
+```
+
+```text
+api status=0
+worker status=3
+unknown status=64
+pipeline default=0
+pipeline pipefail=1
+```
+
+每次检查后的第一个 `printf` 都会覆盖 `$?`，所以失败分支要先保存它。真实服务函数应说明 `3` 和 `64` 的含义，不能把所有非零结果视为同一种情况。
+
+`false | true` 展示了管道策略为何重要。Bash 默认报告最后的 `true`，`pipefail` 则暴露前面的 `false`。脚本在打印前保存这个结果，因为打印命令会产生新的状态。
+
+### 删除前校验名称
+
+清理函数只接受一个缓存项名称，拒绝路径分隔符与意外字符，检查目标是普通文件，并在操作数前传入 `--`。它的权限范围限于自己创建的临时目录。
+
+```bash title="safe_remove.sh"
+#!/usr/bin/env bash
+set -u
+
+workspace=$(mktemp -d)
+trap 'rm -rf -- "$workspace"' EXIT
+printf 'old\n' > "$workspace/-stale.tmp"
+
+remove_cache_entry() {
+  local name=$1
+  case $name in
+    ''|*[!A-Za-z0-9._-]*) return 64 ;;
+  esac
+
+  local target=$workspace/$name
+  [[ -f $target ]] || return 66
+  rm -- "$target"
+}
+
+for name in -stale.tmp ../outside missing.tmp; do
+  if remove_cache_entry "$name"; then
+    printf '%s: removed\n' "$name"
+  else
+    status=$?
+    printf '%s: refused status=%d\n' "$name" "$status"
+  fi
+done
+```
+
+```text
+-stale.tmp: removed
+../outside: refused status=64
+missing.tmp: refused status=66
+```
+
+校验针对任务真正需要的小型输入语言：单个目录项名称，而不是任意路径。这样，遍历尝试会在拼接前就被判为无效。生产环境中的目录树操作还要考虑符号链接、竞争条件、挂载边界、授权与恢复，需要更强的设计。
+
+前导连字符被当作合法文件名数据。经过引用的完整路径本来就包含目录前缀，但 `--` 明确表达了选项边界，之后重构成相对操作数时仍然可靠。不同状态让调用方可以区分无效输入与不存在的目录项。
+
+## 陷阱
+
+### 不加引用就展开数据
+
+> [!PITFALL]
+> `for item in $items` 与 `command $path` 无法把值原样保留为参数。空白、空字符串、`IFS` 与通配符字符可能根据输入和目录内容改变参数数量。
+
+**修复方法：** 用 Bash 数组保存列表，并通过 `"$value"`、`"${items[@]}"` 或 `"$@"` 展开值。测试空格、制表符、空值、字面量 `*` 和前导连字符；不要试图通过全局修改 `IFS` 来修补症状。
+
+### 重新解析命令字符串
+
+> [!PITFALL]
+> 先构造 `command="tool --name $name"`，再用 `eval "$command"` 执行，会把数据当作 Shell 源代码。第二次解析时，不可信数据中的引号或替换会获得语法意义，造成命令注入与边界错误。
+
+**修复方法：** 使用参数数组并执行 `"${command[@]}"`。如果需求确实要接收一段 Shell 程序，应明确这道信任边界，以受限权限运行，并且不要再把这个接口描述成接收普通文件名或标签。
+
+### 太晚读取 `$?`
+
+> [!PITFALL]
+> 保存 `$?` 前先记录日志、通过命令赋值或运行 `[`，都会替换本来要检查的状态。如果前面的命令失败而最后一条命令成功，管道也可能看起来成功。
+
+**修复方法：** 直接把命令放进 `if`，或让 `status=$?` 成为紧随其后的简单命令。判断 `pipefail` 是否符合管道契约，保留标准错误，并测试每个阶段的失败，不能只测正常路径。
+
+### 把 `set -e` 当成异常处理
+
+> [!PITFALL]
+> `set -e` 不表示「任何非零状态后都退出」。Bash 会在多种测试与列表上下文中抑制或改变其效果，之后的重构还可能把同一条命令移过这些边界。
+
+**修复方法：** 把严格选项作为明确的脚本策略，同时围绕预期失败与清理编写显式 `if` 分支。使用生产环境中的确切 Bash 版本，测试函数、命令替换、管道、`&&` 或 `||` 列表与 trap。
+
+### 只引用路径，却不校验范围
+
+> [!PITFALL]
+> 引用只能让路径保持为一个参数，不能证明目标已经授权、非空、位于预期根目录下，或者跨符号链接时仍然安全。如果 `target` 解析得过宽，`rm -rf -- "$target"` 仍然危险。
+
+**修复方法：** 只接受最窄的输入形式，修改前解析并检查准确目标，拒绝根目录与范围外路径，并准备恢复方案。对于破坏性自动化，应在修改数据前显示匹配集合或提供试运行。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常把用户值插入一整段命令字符串，引用失败后又添加 `eval`，或者写出 `for file in $(find ...)`，导致空格与元字符变成语法。它还会把 `set -euo pipefail` 当成固定仪式，却不测试其依赖上下文的行为；在日志命令之后才读取 `$?`；或者生成 `rm -rf "$dir"/*`，却不证明 `dir` 的取值。另一种常见错误是用 `source` 加载原本只应包含数据的配置文件，从而把文件作为 Shell 代码执行。
+
+**让 AI 检查**
+
+- 对每条外部命令，追踪源文本经过参数展开、单词拆分、路径名展开与引号删除后形成最终参数向量的过程。
+- 列出所有能影响路径、选项、命令名称、环境值或加载文件的输入，并说明其校验规则与权限边界。
+- 枚举简单命令与管道的非零状态，说明每个状态在哪里被捕获、忽略、转换或返回。
+
+**审查清单**
+
+- 使用空格、空字符串、通配符、换行与前导连字符名称测试参数边界。
+- 用数组替换生成的命令字符串，拒绝任何没有解释的 `eval`、`bash -c` 或 `source` 边界。
+- 强制每条命令与每个管道阶段失败，再验证状态传播、诊断信息、清理逻辑与修改范围。
+
+**提示词词汇**
+
+使用准确术语：`argument vector`（参数向量）、`parameter expansion`（参数展开）、`double-quoted expansion`（双引号内展开）、`word splitting`（单词拆分）、`pathname expansion`（路径名展开）、`command substitution`（命令替换）、`option terminator`（选项终止符）、`exit status`（退出状态）、`pipeline status`（管道状态）、`pipefail`、`subshell`（子 Shell）与 `environment inheritance`（环境继承）。要求模型输出展开追踪与失败状态表；「让这条 Shell 命令更安全」没有指出解析边界或权限边界。
+
+<Depth level="deep">
+
+## 解析边界与进程边界
+
+### 源字符不是参数
+
+Shell 程序有两个不同接口：源文本进入 Shell 解析器，随后参数向量进入每个被执行的程序。代码把两个接口混为一谈时，就会出现安全与正确性错误。源代码中的引号可以保护数据，但变量内部保存的引号字符通常只是数据，因为识别引号的阶段早已结束。
+
+假设 `name` 依次包含 `a`、空格、`b`、`*` 与 `c` 这五个字符。在 `tool "$name"` 中，双引号抑制拆分与通配符展开，因此 `tool` 只收到一个数据参数。在 `tool $name` 中，拆分可能先生成 `a` 与 `b*c`，第二个单词随后会根据 Shell 选项与目录文件，展开成零个、一个或多个匹配项。
+
+因此，「给变量值加引号」是一条含糊建议。引号必须位于 Shell 源代码中，并包围展开：`"$name"`。把字面量引号保存到 `name` 内部，无法追溯性地组合单词；把字符串传给 `eval` 只会制造第二次解析，并引入注入风险。
+
+### 赋值与展开上下文
+
+Shell 根据语法与命令位置识别赋值单词。`name=value` 设置 Shell 变量，`name = value` 则会尝试执行名为 `name` 的命令，并把 `=` 与 `value` 作为参数。`MODE=check tool` 写在外部命令前，只会在该命令的环境中提供 `MODE`，不会把这个赋值永久导出到周围的 Shell。
+
+展开行为取决于上下文。Bash 中的普通赋值值不会经历单词拆分与路径名展开，所以 `name=$input` 会保存一个值。之后写出 `tool $name` 时，代码离开赋值上下文并启用这些阶段；正确性应在值被使用的位置检查，不能只看它进入脚本的位置。
+
+默认值与必填值运算符可以在展开附近表达输入策略。`${cache_dir:-/tmp/cache}` 会在值未设置或为空时使用后备值，`${cache_dir:?cache_dir is required}` 会在同样情况下停止。冒号会改变空值的处理方式；当空值分别表示「当前目录」「禁用功能」或「无效」时，这项区别很重要。
+
+### 命令替换只捕获文本
+
+`$(command)` 等待命令结束，删除标准输出末尾的换行符，再替换到当前位置。中间的换行仍然保留，但未引用的命令替换会让它们继续参与单词拆分。这个构造不会返回命令的参数数组、记录边界、标准错误或类型化结果。
+
+如果命令只生成一个较小的文本值，应引用替换结果，例如 `revision=$(git rev-parse --verify HEAD)`，随后用 `"$revision"`。通过周围的赋值或 `if` 捕获状态；检查失败前不要运行其他命令。对于文件名或任意记录，应使用 NUL 分隔流、明确给定分隔符的 `mapfile`，或工具之间的直接接口。
+
+嵌套命令替换还会隐藏执行成本与失败。一行中有三处替换，就会在外层命令开始前启动三段工作，而默认管道或 `errexit` 规则未必按读者预期传播失败。当每个结果都需要独立状态与诊断上下文时，应拆成具名步骤。
+
+### `IFS`、拆分与通配策略
+
+对于符合条件的未引用展开，Bash 使用 `IFS` 中的字符把文本分成字段。默认值包含空格、制表符与换行，并对空白分隔符和非空白分隔符采用不同的详细规则。全局修改 `IFS` 会影响无关的读取与展开，因此分隔符变更应局部化，并在之后恢复，或者只作用于一条命令。
+
+单词拆分不是记录解析器。连续空白、空字段、嵌入换行和反斜杠约定都可能丢失信息。结构化数据应交给相应格式的解析器；任意路径应使用 NUL 分隔符，因为 Unix 文件名的单个路径段可以包含除 NUL 与 `/` 之外的任何字节。
+
+拆分之后，路径名展开会根据文件系统状态解释通配符。选项会改变无匹配情况：Bash 默认保留模式，`nullglob` 删除模式，`failglob` 报告错误。`dotglob` 还会改变前导 `*` 是否包含隐藏名称，因此清理代码绝不能假设 `*` 表示「每个目录项」。
+
+如果确实要执行通配符展开，可以在局部用数组捕获。先在子 Shell 中设置所需选项，再执行 `matches=(./*.log)`，检查数量与目标，然后传递 `"${matches[@]}"`。这样，「展开一个模式」就是显式操作，而不是未引用变量带来的偶然副作用。
+
+### 状态属于执行单元
+
+每条简单命令都会产生状态，包括赋值、函数、内建命令与外部命令。列表和复合命令会根据 Shell 语法，从内部命令推导状态。`if` 条件期待的是命令而不是独立布尔类型，因此成功状态会直接控制分支。
+
+`! command` 的状态会逻辑取反。`left && right` 在 `left` 失败时返回 `left` 的状态，否则状态来自 `right`；`left || right` 在 `left` 成功时返回 `left` 的状态，否则状态来自 `right`。这些规则适合控制流，但密集链条把工作与恢复混在一起时，可能掩盖最初失败的操作。
+
+对于 Bash 管道，`PIPESTATUS` 数组保存最近一个前台管道各阶段的状态。它与 `$?` 一样容易变化；即使一条诊断命令也会改变当前状态上下文。需要精确归因到各阶段时，应立即复制这些值。
+
+后台命令又增加了一道生命周期边界。启动 `command &` 时报告的是任务能否开始，不是最终工作是否成功。保存 `$!`，调用 `wait "$pid"`，再处理等待状态；否则脚本可能成功退出，而被遗留的后台工作稍后失败。
+
+### `errexit` 依赖语法
+
+Bash 的 `errexit` 选项存在有文档说明的例外，例如用作测试的命令、未启用 `pipefail` 时管道中非末尾的元素、`&&` 与 `||` 列表中的部分命令，以及其他语法上下文。函数与命令替换会带来更多意外，因为调用方上下文和选项继承都会影响行为。它是一项控制流功能，不能代替结果模型。
+
+可靠的严格模式脚本会把预期非零结果放进显式条件。它在函数、管道或替换的使用边界测试失败路径，不会假设孤立单元测试可以预测每个调用上下文。如果可复用函数要求特定 Shell 选项，应记录并断言该契约，或者把函数限制在拥有这些选项的脚本内。
+
+清理必须保留触发退出的状态。`EXIT` trap 可以先执行 `status=$?`，完成有界清理，并在需要保留结果时以 `exit "$status"` 结束。清理命令自身也可能失败，因此应决定是否只报告清理失败而不掩盖主要失败，或者让清理失败成为最终状态。
+
+### 环境与权限
+
+环境可以跨越进程边界，却不携带来源信息。脚本可能从终端、CI 运行器或服务管理器继承 `PATH`、区域设置、代理变量、凭据辅助程序与工具专用配置。可重复的自动化会设置或清除影响其契约的值，并记录剩余假设。
+
+区域设置可以改变排序、字符类、小数格式与诊断语言。示例只在需要确定通配符顺序时使用 `LC_ALL=C`。生产脚本不应全局覆盖面向用户的区域设置，除非按字节处理确实属于接口契约。
+
+命令查找也是权限决策。攻击者可控制的工作目录或 `PATH` 可能选择错误的可执行文件，继承的函数与启动文件也可能改变交互行为。自动化应在已知 Shell 模式与受控环境中运行，并采用最小权限，不能试图只靠引用来解决授权问题。
+
+加载文件等同于在当前 Shell 中执行它。文件可以运行命令，修改 trap 与选项，替换函数，切换目录，甚至退出调用方。如果配置格式本来只应保存数据，就应使用带有窄化 schema 的数据格式解析器，而不是加载任意赋值。
+
+### 更安全的修改边界
+
+执行修改命令前，应在不修改数据的情况下确定准确操作数列表。把业务标识转成路径前先校验，拒绝空目标与过宽目标，决定符号链接和挂载点的处理方式，并记录谁授权了操作。引用是这个过程的起点，却不是终点。
+
+只要命令支持，就应在操作数前使用 `--`，即使当前校验会拒绝前导连字符。这样，即使输入策略改变，参数契约仍然稳固。并非每条命令都支持 `--`；应确认具体接口，必要时使用 `./-name` 等无歧义路径形式。
+
+对于重复执行或影响较大的修改，应优先暂存并原子替换，而不是原地更改。试运行应使用与真实运行相同的选择逻辑，但其输出只能作为证据，不能保证没有竞争条件。备份、版本化目录与回滚指针解决的是恢复问题，Shell 引用无法替代它们。
+
+最终审查产物应展示三项内容：概念上交给每条命令的准确参数向量，每种失败的状态策略，以及每次修改的权限边界。只要其中任何一项仍然隐含，看似合理的 Shell 代码就还不能无人值守地运行。
+
+</Depth>
+
+<Checkpoint id="foundations/shell-basics" />
+
+## 延伸阅读
+
+- [Bash 参考手册：Shell 运行过程](https://www.gnu.org/software/bash/manual/html_node/Shell-Operation.html)
+- [Bash 参考手册：引用](https://www.gnu.org/software/bash/manual/html_node/Quoting.html)
+- [Bash 参考手册：Shell 参数展开](https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html)
+- [Bash 参考手册：退出状态](https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html)
+- [POSIX Shell 命令语言](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/V3_chap02.html)
