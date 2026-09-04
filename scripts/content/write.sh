@@ -151,6 +151,9 @@ write_one() {
   wait "$codex_pid" || status=$?
   rm -f "$INFLIGHT_DIR/$flat.pid"
   last="$(grep -v '^[[:space:]]*$' "$dir/codex.log" 2>/dev/null | tail -n 1 || true)"
+  # Codex sometimes wraps the protocol line in backticks; compare the bare text.
+  last=${last//\`/}
+  last=${last%"${last##*[![:space:]]}"}
   if ((status == 124)); then
     reason="codex timed out after ${CODEX_TIMEOUT}s"
   elif ((status != 0)); then
