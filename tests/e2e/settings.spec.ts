@@ -75,7 +75,7 @@ test('reset practice data keeps reading progress and preferences', async ({ page
       paths: {},
       feedback: { 'python/closures': 'yes' },
     },
-    flashcards: null,
+    flashcards: '{"cards":[]}',
   });
 
   await expect(page.locator('[data-action="clear"]')).toBeVisible();

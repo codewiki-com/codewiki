@@ -21,6 +21,7 @@ async function start(page: Page): Promise<EmbeddedItem[]> {
   await expect(checkpoint.locator('[data-checkpoint-controller]')).toHaveAttribute('data-ready', 'true');
   const items = await itemsOn(page);
   await checkpoint.locator('[data-checkpoint-start]').click();
+  await expect(checkpoint.locator('[data-checkpoint-question]')).toBeFocused();
   return items;
 }
 
@@ -34,21 +35,26 @@ async function answer(page: Page, item: EmbeddedItem, correct: boolean): Promise
     const choice = correct ? right : 0;
     await shell.locator(`.opt[data-option="${choice}"]`).click();
     await page.keyboard.press('Enter');
-    return;
-  }
-
-  if (item.type === 'fill') {
+  } else if (item.type === 'fill') {
     await shell.locator('[data-fill]').fill(correct ? (item.answer?.split('|')[0]?.trim() ?? '') : 'wrong');
     await shell.locator('[data-fill-form]').press('Enter');
-    return;
+  } else {
+    if (correct) {
+      for (const line of new Set(item.issues?.map((issue) => issue.line) ?? [])) {
+        await shell.locator(`.ln[data-line="${line}"] .mk`).click();
+      }
+    }
+    await shell.locator('[data-reveal]').click();
   }
 
-  if (correct) {
-    for (const line of new Set(item.issues?.map((issue) => issue.line) ?? [])) {
-      await shell.locator(`.ln[data-line="${line}"] .mk`).click();
-    }
-  }
-  await shell.locator('[data-reveal]').click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const checkpoint = document.querySelector('#checkpoint');
+        return Boolean(checkpoint?.contains(document.activeElement));
+      }),
+    )
+    .toBe(true);
 }
 
 test('the topic checkpoint summarizes its bank and stays in the TOC at every depth', async ({ page }) => {
@@ -66,17 +72,28 @@ test('the topic checkpoint summarizes its bank and stays in the TOC at every dep
   }
 });
 
-test('finishing every checkpoint item shows the result, miss explanations, and actions', async ({ page }) => {
+test('checkpoint completion and Add misses recover from corrupt learning stores', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
   const items = await start(page);
-  for (const item of items) await answer(page, item, false);
+  for (const [index, item] of items.entries()) {
+    if (index === items.length - 1) {
+      await page.evaluate(() =>
+        localStorage.setItem('cw:v1:progress', JSON.stringify({ quizzes: null, topics: null, paths: null })),
+      );
+    }
+    await answer(page, item, false);
+  }
 
   const result = page.locator('[data-checkpoint-result]');
   await expect(result).toBeVisible();
+  await expect(result.locator('[data-checkpoint-result-heading]')).toBeFocused();
   await expect(result).toContainText('You scored 1 of 3');
   await expect(result.locator('.checkpoint-misses')).toBeVisible();
   await expect(result.locator('[data-add-misses]')).toBeEnabled();
   await expect(result.getByRole('link', { name: 'Back to the track' })).toHaveAttribute('href', '/python/');
 
+  await page.evaluate(() => localStorage.setItem('cw:v1:flashcards', JSON.stringify({ cards: null })));
   await result.locator('[data-add-misses]').click();
   // Reaching the checkpoint also enrolls the topic's term cards; this action itself adds two
   // missed-quiz cards, so assert that source rather than the whole mixed deck.
@@ -88,6 +105,7 @@ test('finishing every checkpoint item shows the result, miss explanations, and a
       }),
     )
     .toBe(2);
+  expect(errors).toEqual([]);
 });
 
 test('an all-correct checkpoint records the bank and completes the topic', async ({ page }) => {

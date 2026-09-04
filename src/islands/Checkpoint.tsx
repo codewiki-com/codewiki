@@ -93,7 +93,9 @@ function ItemShell({
 
   return (
     <section class="kata-shell checkpoint-item" data-quiz={`${bankId}#${item.id}`} data-state="idle">
-      <h3 class="q-prompt">{item.prompt[locale]}</h3>
+      <h3 class="q-prompt" data-checkpoint-question tabIndex={-1}>
+        {item.prompt[locale]}
+      </h3>
       {hasCode && <Code item={item} />}
 
       {hasOptions && (
@@ -216,6 +218,11 @@ export default function Checkpoint({
     return () => start.removeEventListener('click', begin);
   }, []);
 
+  useEffect(() => {
+    const selector = finished ? '[data-checkpoint-result-heading]' : '[data-checkpoint-question]';
+    if (finished || started) mount.current?.querySelector<HTMLElement>(selector)?.focus();
+  }, [finished, index, started]);
+
   const onDone = useCallback(
     (itemScore: number, itemTotal: number) => {
       const item = items[index];
@@ -296,7 +303,9 @@ export default function Checkpoint({
       {finished && (
         <section class="checkpoint-result" data-checkpoint-result aria-live="polite">
           <span class={`tag ${didPass ? 'ok' : 'warn'}`}>{didPass ? labels.passed : labels.failed}</span>
-          <h3>{fillSlots(labels.result, { score, total })}</h3>
+          <h3 data-checkpoint-result-heading tabIndex={-1}>
+            {fillSlots(labels.result, { score, total })}
+          </h3>
           {misses.length > 0 && (
             <ul class="checkpoint-misses">
               {misses.map((item) => (

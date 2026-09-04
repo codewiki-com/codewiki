@@ -142,6 +142,86 @@ function oneOf<T extends string>(value: unknown, choices: readonly T[], fallback
   return typeof value === 'string' && choices.includes(value as T) ? (value as T) : fallback;
 }
 
+function isDate(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+}
+
+function validEntries(value: unknown, valid: (entry: unknown) => boolean): boolean {
+  return isRecord(value) && Object.values(value).every(valid);
+}
+
+function isTopicProgress(value: unknown): value is TopicProgress {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.readPct === 'number' &&
+    Number.isFinite(value.readPct) &&
+    value.readPct >= 0 &&
+    value.readPct <= 100 &&
+    isDate(value.lastAt) &&
+    (value.completedAt === undefined || isDate(value.completedAt)) &&
+    (value.termsAdded === undefined || typeof value.termsAdded === 'boolean')
+  );
+}
+
+function isQuizProgress(value: unknown): value is QuizProgress {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.score === 'number' &&
+    Number.isFinite(value.score) &&
+    value.score >= 0 &&
+    typeof value.total === 'number' &&
+    Number.isFinite(value.total) &&
+    value.total > 0 &&
+    value.score <= value.total &&
+    isDate(value.at)
+  );
+}
+
+function isPathProgress(value: unknown): value is PathProgress {
+  return isRecord(value) && isDate(value.startedAt);
+}
+
+function isProgress(value: Record<string, unknown>): boolean {
+  return (
+    validEntries(value.topics, isTopicProgress) &&
+    validEntries(value.quizzes, isQuizProgress) &&
+    validEntries(value.paths, isPathProgress) &&
+    (value.feedback === undefined ||
+      validEntries(value.feedback, (entry) => entry === 'yes' || entry === 'not-quite'))
+  );
+}
+
+function isFlashcard(value: unknown): value is Flashcard {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    (value.kind === 'term' || value.kind === 'quiz') &&
+    typeof value.ref === 'string' &&
+    value.ref.length > 0 &&
+    isDate(value.due) &&
+    typeof value.interval === 'number' &&
+    Number.isFinite(value.interval) &&
+    value.interval >= 0 &&
+    typeof value.ease === 'number' &&
+    Number.isFinite(value.ease) &&
+    value.ease > 0 &&
+    typeof value.reps === 'number' &&
+    Number.isInteger(value.reps) &&
+    value.reps >= 0 &&
+    (value.suspended === undefined || typeof value.suspended === 'boolean') &&
+    (value.source === undefined || ['terms', 'quiz', 'manual'].includes(String(value.source)))
+  );
+}
+
+function isFlashcards(value: Record<string, unknown>): boolean {
+  return Array.isArray(value.cards) && value.cards.every(isFlashcard);
+}
+
+function isRecents(value: Record<string, unknown>): boolean {
+  return Array.isArray(value.pages) && value.pages.every((page) => typeof page === 'string');
+}
+
 /** Validates each preference independently, so one corrupt field cannot poison the others. */
 export function sanitizePrefs(value: Record<string, unknown>): Prefs {
   const lang = oneOf(value.lang, ['en', 'zh'] as const, '' as Locale | '');
@@ -181,7 +261,11 @@ export function readStore<T>(key: StoreKey, fallback: T): T {
     if (raw === null) return fallback;
     const value: unknown = JSON.parse(raw);
     if (!isRecord(value)) return fallback;
-    return (key === KEYS.prefs ? sanitizePrefs(value) : value) as T;
+    if (key === KEYS.prefs) return sanitizePrefs(value) as T;
+    if (key === KEYS.progress) return (isProgress(value) ? value : fallback) as T;
+    if (key === KEYS.flashcards) return (isFlashcards(value) ? value : fallback) as T;
+    if (key === KEYS.recents) return (isRecents(value) ? value : fallback) as T;
+    return fallback;
   } catch {
     return fallback;
   }
@@ -246,6 +330,6 @@ export function dueFlashcards(cards: Flashcard[], now: Date): number {
   const at = now.getTime();
   return cards.filter((card) => {
     const due = Date.parse(card.due);
-    return !Number.isNaN(due) && due <= at;
+    return !card.suspended && !Number.isNaN(due) && due <= at;
   }).length;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 import { formatCount, plural } from '@/i18n';
+import { passed } from '@/lib/score';
 import {
   dueFlashcards,
   EMPTY_FLASHCARDS,
@@ -84,7 +85,7 @@ function passing(entry: QuizProgress | undefined): boolean {
     Number.isFinite(entry.score) &&
     Number.isFinite(entry.total) &&
     entry.total > 0 &&
-    entry.score / entry.total >= 0.7,
+    passed(Number(entry.score), Number(entry.total)),
   );
 }
 

@@ -6,6 +6,7 @@ import { clearAll, exportAll, importAll, type ImportMode } from '@/lib/export';
 import {
   cardSources,
   DEFAULT_PREFS,
+  EMPTY_FLASHCARDS,
   EMPTY_PROGRESS,
   KEYS,
   readStore,
@@ -271,7 +272,7 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     if (!local || !confirm(labels.confirmResetPractice)) return;
     const progress = readStore<Progress>(KEYS.progress, EMPTY_PROGRESS);
     writeStore<Progress>(KEYS.progress, { ...progress, quizzes: {}, paths: {} });
-    local.removeItem(KEYS.flashcards);
+    writeStore(KEYS.flashcards, EMPTY_FLASHCARDS);
   }, [labels.confirmResetPractice]);
 
   return (
