@@ -10,8 +10,8 @@
  * Everything in this module is pure and DOM-free so it can be unit-tested in Node.
  */
 
-/** The languages P1 can execute. Everything else keeps its Run button hidden. */
-export const RUN_LANGS = ['js', 'ts', 'python'] as const;
+/** The languages the browser runtimes can execute. Everything else keeps its Run button hidden. */
+export const RUN_LANGS = ['js', 'ts', 'python', 'sql', 'html'] as const;
 
 export type RunLang = (typeof RUN_LANGS)[number];
 
@@ -20,6 +20,10 @@ export interface RunRequest {
   id: string;
   lang: RunLang;
   code: string;
+  /** SQL setup statements to run before `code`, without including them in the visible result. */
+  seed?: string;
+  /** The original fence id when an alias changes how a runner prepares the source. */
+  sourceLang?: string;
 }
 
 export type RunEventKind = 'stdout' | 'stderr' | 'done' | 'error';
@@ -38,12 +42,14 @@ export interface RunEvent {
 export type RunEventHandler = (event: RunEvent) => void;
 
 /** What a runner is busy with, so the Run button can say "Loading Python…" rather than lie. */
-export type RunStatus = 'loading-python' | 'compiling' | 'running';
+export type RunStatus = 'loading-python' | 'loading-sql' | 'compiling' | 'running';
 
 export interface RunOptions {
   /** Wall-clock budget for the run itself; loading Pyodide is not charged against it. */
   timeoutMs?: number;
   onStatus?: (status: RunStatus) => void;
+  /** Where a visual runner, currently HTML, should mount its result. */
+  previewTarget?: HTMLElement;
 }
 
 /**
@@ -60,6 +66,11 @@ const ALIASES: Record<string, RunLang> = {
   py: 'python',
   python: 'python',
   python3: 'python',
+  sql: 'sql',
+  sqlite: 'sql',
+  html: 'html',
+  htm: 'html',
+  css: 'html',
 };
 
 /** The runner a fence id belongs to, or `null` when P1 cannot run that language. */

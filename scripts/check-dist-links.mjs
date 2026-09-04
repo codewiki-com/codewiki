@@ -21,7 +21,7 @@ const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 
 // Task 13 removes this final exception when the Playground route lands.
-const KNOWN_LATER = ['/playground/'];
+const KNOWN_LATER = [];
 
 /** The canonical origin, read from src/data/site.ts so the two never drift. */
 async function siteOrigin() {

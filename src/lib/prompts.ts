@@ -42,6 +42,8 @@ export interface PromptContext {
   userCode?: string;
   /** What the reader is assumed to know already; `explain` builds on it. */
   prerequisite?: string;
+  /** A surface-specific instruction that keeps the preset identity but narrows its action. */
+  presetInstruction?: string;
 }
 
 /** The language the answer must come back in, named in that language. */
@@ -97,10 +99,11 @@ export function buildPrompt(context: PromptContext): string {
     targetLanguage,
     userCode,
     prerequisite,
+    presetInstruction,
   } = context;
 
   const scope = section.trim() ? `, section "${section.trim()}"` : '';
-  const instruction = INSTRUCTIONS[preset]
+  const instruction = (presetInstruction ?? INSTRUCTIONS[preset])
     .replace('{prerequisite}', prerequisite?.trim() || DEFAULT_PREREQUISITE)
     .replace('{language}', language)
     .replace('{targetLanguage}', targetLanguage?.trim() || language)
