@@ -2,10 +2,11 @@
 // reusable from build scripts. `<Seo>` turns the returned model into tags verbatim.
 
 import { SITE } from '@/data/site';
+import { t } from '@/i18n';
 import { alternates, localizePath, stripLocale, type Locale } from '@/lib/urls';
 
 /** Page archetypes. They pick the title shape, `og:type` and the automatic JSON-LD. */
-export type PageKind = 'home' | 'track' | 'topic' | 'glossary' | 'page';
+export type PageKind = 'home' | 'track' | 'topic' | 'glossary' | 'practice' | 'page';
 
 export interface HeadInput {
   locale: Locale;
@@ -52,6 +53,7 @@ function absolute(pathOrUrl: string): string {
 export function formatTitle(input: Pick<HeadInput, 'locale' | 'kind' | 'title' | 'trackName'>): string {
   const { locale, kind, title, trackName } = input;
   if (kind === 'home') return `${SITE.name} · ${SITE.tagline[locale]}`;
+  if (kind === 'practice') return [title, t(locale, 'practice.title'), SITE.name].join(' · ');
   return [title, trackName, SITE.name].filter(Boolean).join(TITLE_SEPARATOR[locale]);
 }
 

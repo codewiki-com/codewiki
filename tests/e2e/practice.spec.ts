@@ -1,0 +1,81 @@
+import { test, expect } from '@playwright/test';
+
+const PREDICT = '/practice/predict/python/closures/predict-loop-binding/';
+const REVIEW = '/practice/review/python/closures/review-config-loader/';
+
+test('a wrong prediction reveals its answer and records progress plus a flashcard', async ({ page }) => {
+  await page.goto(PREDICT);
+
+  const shell = page.locator('[data-quiz="python/closures#predict-loop-binding"]');
+  await expect(page.locator('h1')).toHaveText('What does this program print?');
+  await expect(shell.locator('.opt')).toHaveCount(4);
+
+  const explanation =
+    'All three lambdas share the same value cell. They run after the loop, when that cell contains 2.';
+  const answerTemplate = shell.locator('template[data-answer]');
+  await expect(answerTemplate).toBeAttached();
+  expect(await answerTemplate.evaluate((node: HTMLTemplateElement) => node.content.textContent)).toContain(
+    explanation,
+  );
+  expect(await page.evaluate(() => document.body.innerText)).not.toContain(explanation);
+
+  await expect(shell.locator('[data-quiz-controller="quiz"]')).toHaveAttribute('data-ready', 'true');
+  await shell.locator('.opt').first().click();
+  await shell.locator('[data-submit]').click();
+
+  await expect(shell.locator('.opt').first()).toHaveClass(/\bbad\b/);
+  await expect(shell.locator('[data-result]')).toContainText(explanation);
+  await expect(shell).toHaveAttribute('data-state', 'answered');
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const progress = JSON.parse(localStorage.getItem('cw:v1:progress') ?? '{}');
+        return progress.quizzes?.['python/closures#predict-loop-binding']?.score;
+      }),
+    )
+    .toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => JSON.parse(localStorage.getItem('cw:v1:flashcards') ?? '{}').cards?.length),
+    )
+    .toBe(1);
+
+  const types = await page.locator('script[type="application/ld+json"]').allTextContents();
+  expect(types.map((block) => JSON.parse(block)['@type'])).not.toContain('Quiz');
+});
+
+test('number keys select a prediction and Enter answers it', async ({ page }) => {
+  await page.goto(PREDICT);
+  const shell = page.locator('[data-quiz="python/closures#predict-loop-binding"]');
+  await expect(shell.locator('[data-quiz-controller="quiz"]')).toHaveAttribute('data-ready', 'true');
+
+  await page.keyboard.press('2');
+  await expect(shell.locator('.opt').nth(1)).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Enter');
+
+  await expect(shell).toHaveAttribute('data-state', 'answered');
+  await expect(shell.locator('[data-result]')).toHaveAttribute('data-score', '1');
+});
+
+test('a review kata walks through four steps and compares with a score ring', async ({ page }) => {
+  await page.goto(REVIEW);
+  const shell = page.locator('[data-quiz="python/closures#review-config-loader"]');
+  await expect(shell.locator('[data-quiz-controller="review"]')).toHaveAttribute('data-ready', 'true');
+  await expect(shell.locator('[data-review-steps] .step')).toHaveCount(4);
+
+  const next = shell.locator('[data-review-next]');
+  await next.click();
+  await next.click();
+  await next.click();
+
+  await expect(shell).toHaveAttribute('data-state', 'answered');
+  await expect(shell.locator('[data-review-compare]')).toHaveAttribute('data-score', '0');
+  await expect(page.locator('[data-result-mirror] .ring')).toBeVisible();
+});
+
+test('the Chinese kata page renders the Chinese prompt', async ({ page }) => {
+  await page.goto(`/zh${PREDICT}`);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');
+  await expect(page.locator('h1')).toHaveText('这段程序会输出什么？');
+});

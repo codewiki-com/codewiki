@@ -31,11 +31,17 @@ export interface AskAIContext {
   language: string;
   /** What this topic assumes the reader knows; the "explain simpler" preset builds on it. */
   prerequisite?: string;
+  /** Fixed scope text for non-article surfaces such as a kata's code sample. */
+  sectionText?: string;
+  /** Optional heading for fixed scope text. */
+  section?: string;
 }
 
 export interface AskAIProps {
   labels: AskAILabels;
   context: AskAIContext;
+  /** Limits a focused surface to one preset; topic pages continue to show all six. */
+  preset?: Preset;
 }
 
 /** What the reader is asking about: a section heading (empty for the whole page) and its text. */
@@ -148,7 +154,7 @@ function pageScope(): Scope {
  * `.sec-ask` buttons the markdown pipeline writes after every `h2`, which scope it to a section.
  * Those live inside the article, so they are reached by delegation.
  */
-export default function AskAI({ labels, context }: AskAIProps) {
+export default function AskAI({ labels, context, preset }: AskAIProps) {
   const [scope, setScope] = useState<Scope | null>(null);
   const [copied, setCopied] = useState<{ preset: Preset; ok: boolean } | null>(null);
   const [ready, setReady] = useState(false);
@@ -214,11 +220,12 @@ export default function AskAI({ labels, context }: AskAIProps) {
     };
   }, [scope, close]);
 
-  /** One prompt per preset, built from the scope the panel was opened with. */
+  /** One prompt per available preset, built from the scope the panel was opened with. */
   const rows = useMemo(() => {
-    return PRESETS.map((preset) => {
+    const available = preset ? [preset] : PRESETS;
+    return available.map((rowPreset) => {
       const prompt = buildPrompt({
-        preset,
+        preset: rowPreset,
         locale: context.locale,
         title: context.title,
         url: context.url,
@@ -227,9 +234,14 @@ export default function AskAI({ labels, context }: AskAIProps) {
         language: context.language,
         prerequisite: context.prerequisite,
       });
-      return { preset, prompt, links: deepLinks(prompt) };
+      return { preset: rowPreset, prompt, links: deepLinks(prompt) };
     });
-  }, [scope, context]);
+  }, [scope, context, preset]);
+
+  const openScope = (): Scope =>
+    context.sectionText === undefined
+      ? pageScope()
+      : { section: context.section ?? '', text: context.sectionText };
 
   const copy = (prompt: string, preset: Preset) => {
     // An insecure origin has no clipboard at all, and a denied permission rejects the write.
@@ -264,7 +276,7 @@ export default function AskAI({ labels, context }: AskAIProps) {
         data-ready={String(ready)}
         aria-expanded={scope !== null}
         aria-haspopup="dialog"
-        onClick={() => (scope ? close() : openWith(pageScope(), trigger.current))}
+        onClick={() => (scope ? close() : openWith(openScope(), trigger.current))}
       >
         {labels.open}
       </button>

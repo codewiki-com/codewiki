@@ -68,6 +68,27 @@ describe('buildHead', () => {
     );
   });
 
+  it('formats practice titles with the localized practice label', () => {
+    expect(
+      buildHead({
+        locale: 'en',
+        path: '/practice/predict/python/closures/loop/',
+        title: 'What does this print?',
+        description: 'd',
+        kind: 'practice',
+      }).title,
+    ).toBe('What does this print? · Practice · codewiki');
+    expect(
+      buildHead({
+        locale: 'zh',
+        path: '/zh/practice/predict/python/closures/loop/',
+        title: '会输出什么？',
+        description: 'd',
+        kind: 'practice',
+      }).title,
+    ).toBe('会输出什么？ · Practice · codewiki');
+  });
+
   it('omits the middle segment when no track name is given', () => {
     expect(
       buildHead({ locale: 'en', path: '/about/', title: 'About', description: 'd', kind: 'page' }).title,
