@@ -1,0 +1,854 @@
+---
+/**
+ * The track hub, shared by `/{track}/` and `/zh/{track}/`. Section for section it is
+ * docs/design/mockups/TrackHub.dc.html: the header band with the breadcrumb, glyph, chips and
+ * quick links, the recommended-path card, the filter row, the sections as card grids, and the
+ * right rail with progress, recent reviews, an Ask-AI prompt and the track's other pages.
+ *
+ * Everything visible is either a `t()` string or real content. Reading progress is a fact about
+ * the visitor's browser, so the server renders every card unread and the `TrackProgress` island
+ * patches the DOM afterwards; the page is complete without it.
+ */
+import { getCollection, type CollectionEntry } from 'astro:content';
+
+import Base from '@/layouts/Base.astro';
+import Breadcrumb from '@/components/Breadcrumb.astro';
+import Button from '@/components/Button.astro';
+import Icon from '@/components/Icon.astro';
+import ProgressRing from '@/components/ProgressRing.astro';
+import Seg from '@/components/Seg.astro';
+import Tag from '@/components/Tag.astro';
+import TopicCard from '@/components/TopicCard.astro';
+import TrackProgress from '@/islands/TrackProgress';
+import { t } from '@/i18n';
+import type { Track } from '@/data/tracks';
+import { P2_NAV, SITE } from '@/data/site';
+import { getPair, isPublic, listTopics, topicMeta, type Topic } from '@/lib/content';
+import { mostFrequent } from '@/lib/arrays';
+import { breadcrumbLd, buildHead, courseLd } from '@/lib/seo';
+import { localizePath, topicUrl, trackUrl, type Locale } from '@/lib/urls';
+
+interface Props {
+  locale: Locale;
+  track: Track;
+}
+
+const { locale, track } = Astro.props;
+const other: Locale = locale === 'en' ? 'zh' : 'en';
+const trackName = track.name[locale];
+const currentPath = trackUrl(track.slug, locale);
+
+/**
+ * Cheatsheets, the interview bank, Compare and the Playground are P2 pages. Until they exist
+ * their rows render as inert text labelled "soon"; `P2_NAV` (site.ts) turns every one of them
+ * into a real link. The glossary is not one of them — it exists, and always links.
+ */
+const SOON = !P2_NAV;
+
+/* ---- topics ---------------------------------------------------------------------------- */
+
+const topics = await listTopics(locale, { track: track.slug });
+
+/** `1 topic` reads badly in English and identically in Chinese; the dictionary carries both. */
+const topicCount = (count: number) => t(locale, count === 1 ? 'track.topicsOne' : 'track.topics', { count });
+const topicId = (topic: Topic) => {
+  const { track: trackSlug, slug } = topicMeta(topic);
+  return `${trackSlug}/${slug}`;
+};
+
+/** Sections in registry order, numbered `01`, `02`, … whether or not they have topics yet. */
+const sections = await Promise.all(
+  track.sections.map(async (section, index) => ({
+    slug: section.slug,
+    name: section.name[locale],
+    index: String(index + 1).padStart(2, '0'),
+    topics: await listTopics(locale, { track: track.slug, section: section.slug }),
+  })),
+);
+
+const written = sections.filter((section) => section.topics.length > 0);
+const empty = sections.filter((section) => section.topics.length === 0);
+
+/* ---- chips ----------------------------------------------------------------------------- */
+
+/** The version most of the track's topics were checked against; no topics, no chip. */
+const version = mostFrequent(topics.map((topic) => topic.data.verified.version));
+
+const DIFFICULTY_ORDER = ['beginner', 'intermediate', 'advanced'] as const;
+const present = DIFFICULTY_ORDER.filter((level) => topics.some((topic) => topic.data.difficulty === level));
+const range =
+  present.length === 0
+    ? undefined
+    : present.length === 1
+      ? t(locale, `difficulty.${present[0]!}`)
+      : t(locale, 'track.range', {
+          from: t(locale, `difficulty.${present[0]!}`),
+          to: t(locale, `difficulty.${present[present.length - 1]!}`),
+        });
+
+/** True when every topic written in this locale also exists, published, in the other one. */
+const pairs = await Promise.all(
+  topics.map(async (topic) => {
+    const { track: trackSlug, slug } = topicMeta(topic);
+    const pair = await getPair(trackSlug, slug);
+    const twin = pair[other];
+    return Boolean(twin && isPublic(twin));
+  }),
+);
+const otherComplete = topics.length > 0 && pairs.every(Boolean);
+
+/* ---- quick links ----------------------------------------------------------------------- */
+
+/** Icon names are the subset of `Icon.astro`'s set that the mockup uses on these rows. */
+interface Shortcut {
+  label: string;
+  href: string;
+  icon: 'doc' | 'info' | 'menu' | 'play';
+}
+
+const shortcuts: Shortcut[] = [
+  {
+    label: t(locale, 'track.cheatsheet'),
+    href: localizePath(`/cheatsheets/${track.slug}/`, locale),
+    icon: 'doc',
+  },
+  {
+    label: t(locale, 'track.interview'),
+    href: localizePath(`/practice/interview/${track.slug}/`, locale),
+    icon: 'info',
+  },
+  { label: t(locale, 'track.compare'), href: localizePath('/compare/', locale), icon: 'menu' },
+  {
+    label: t(locale, 'track.playground'),
+    href: `${localizePath('/playground/', locale)}?lang=${track.slug}`,
+    icon: 'play',
+  },
+];
+
+/** The right rail's "also in this track" list; `soon` rows are text, not links. */
+const alsoLinks = [
+  { label: t(locale, 'track.alsoCheatsheet', { track: trackName }), href: shortcuts[0]!.href, soon: SOON },
+  { label: t(locale, 'track.alsoCompare', { track: trackName }), href: shortcuts[2]!.href, soon: SOON },
+  { label: t(locale, 'track.alsoInterview', { track: trackName }), href: shortcuts[1]!.href, soon: SOON },
+  {
+    label: t(locale, 'track.alsoGlossary', { track: trackName }),
+    href: localizePath('/glossary/', locale),
+    soon: false,
+  },
+];
+
+/* ---- recommended path ------------------------------------------------------------------ */
+
+const paths: CollectionEntry<'paths'>[] = await getCollection('paths');
+const path = paths.find((entry) => entry.data.tracks.includes(track.slug));
+const milestones: string[][] =
+  path?.data.milestones.map((milestone: { topics: string[] }) => milestone.topics) ?? [];
+const pathTopics = milestones.flat();
+
+/** Where "Continue" goes: the first topic of the path that is actually written in this locale. */
+const byId = new Map(topics.map((topic) => [topicId(topic), topic]));
+const continueTopic = pathTopics.map((id: string) => byId.get(id)).find(Boolean) ?? topics[0];
+const continueMeta = continueTopic ? topicMeta(continueTopic) : undefined;
+
+/* ---- right rail ------------------------------------------------------------------------ */
+
+const month = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-Hans-CN' : 'en-US', {
+  year: 'numeric',
+  month: 'short',
+});
+
+const recent = topics
+  .filter((topic) => topic.data.reviewed)
+  .sort((a, b) => Number(b.data.reviewed) - Number(a.data.reviewed))
+  .slice(0, 3)
+  .map((topic) => {
+    const { track: trackSlug, slug } = topicMeta(topic);
+    return {
+      title: topic.data.title,
+      url: topicUrl(trackSlug, slug, locale),
+      meta: `${month.format(topic.data.reviewed!)} · ${topic.data.verified.version}`,
+    };
+  });
+
+/* ---- filters --------------------------------------------------------------------------- */
+
+const difficultyFilters = [
+  { label: t(locale, 'track.filterAll'), value: 'all', on: true },
+  ...DIFFICULTY_ORDER.map((level) => ({ label: t(locale, `difficulty.${level}`), value: level })),
+];
+
+const readFilters = [
+  { label: t(locale, 'track.filterAll'), value: 'all', on: true },
+  { label: t(locale, 'track.filterUnread'), value: 'unread' },
+  { label: t(locale, 'track.filterRead'), value: 'read' },
+];
+
+/* ---- head ------------------------------------------------------------------------------ */
+
+const head = buildHead({
+  locale,
+  path: currentPath,
+  title: trackName,
+  description: track.description[locale],
+  kind: 'track',
+  jsonLd: [
+    breadcrumbLd([
+      { name: t(locale, 'nav.tracks'), url: `${SITE.url}${localizePath('/tracks/', locale)}` },
+      { name: trackName, url: `${SITE.url}${currentPath}` },
+    ]),
+    // A hub is a set of lessons on one subject, which is what `Course` describes; the topics
+    // themselves stay `TechArticle`. One per locale, since the two hubs are separate pages.
+    courseLd({
+      name: trackName,
+      description: track.description[locale],
+      url: `${SITE.url}${currentPath}`,
+      inLanguage: locale === 'zh' ? 'zh-Hans' : 'en',
+    }),
+  ],
+});
+---
+
+<Base locale={locale} head={head} currentPath={currentPath} pagefind="ignore">
+  <!-- HEADER BAND -->
+  <div class="band">
+    <div class="wrap header">
+      <div class="intro">
+        <Breadcrumb
+          label={t(locale, 'nav.tracks')}
+          items={[
+            { label: t(locale, 'nav.tracks'), href: localizePath('/tracks/', locale) },
+            { label: track.slug, current: true },
+          ]}
+        />
+
+        <div class="title">
+          <span class="mono glyph">{track.glyph}</span>
+          <h1>{trackName}</h1>
+        </div>
+
+        <p class="desc">{track.description[locale]}</p>
+
+        <div class="chips">
+          <Tag>{topicCount(topics.length)}</Tag>
+          <Tag>{t(locale, 'track.sections', { count: track.sections.length })}</Tag>
+          {version && <Tag>{t(locale, 'track.verified', { version })}</Tag>}
+          {range && <Tag>{range}</Tag>}
+          {
+            otherComplete && (
+              <Tag>
+                <span lang={other === 'zh' ? 'zh-Hans' : 'en'}>{t(locale, 'track.otherComplete')}</span>
+              </Tag>
+            )
+          }
+        </div>
+
+        <div class="shortcuts">
+          {
+            /* A page that does not exist yet is rendered as a span, not as an <a> without an
+               href: a hrefless anchor is not a link to anything — it is unfocusable, it is not
+               announced as a link, and crawlers report it as a broken one. */
+            shortcuts.map((shortcut) =>
+              SOON ? (
+                <span class="quick" aria-disabled="true">
+                  <Icon name={shortcut.icon} size={15} />
+                  <span class="quick-label">{shortcut.label}</span>
+                  <Tag>{t(locale, 'track.soon')}</Tag>
+                </span>
+              ) : (
+                <a class="quick" href={shortcut.href}>
+                  <Icon name={shortcut.icon} size={15} />
+                  <span class="quick-label">{shortcut.label}</span>
+                </a>
+              ),
+            )
+          }
+        </div>
+      </div>
+
+      {
+        path && (
+          <div class="panel path">
+            <span class="lbl label-acc">{t(locale, 'track.path')}</span>
+            <span class="path-title">{path.data.title[locale]}</span>
+            <span class="path-meta">
+              {t(locale, 'track.pathMeta', {
+                topics: pathTopics.length,
+                checkpoints: milestones.length,
+                hours: path.data.hours,
+              })}
+            </span>
+            <div
+              class="bar"
+              data-path-bar
+              role="progressbar"
+              aria-label={t(locale, 'track.path')}
+              aria-valuenow={0}
+              aria-valuemin={0}
+              aria-valuemax={pathTopics.length}
+            >
+              <div />
+            </div>
+            <div class="path-counts">
+              <span class="lbl" data-path-milestone>
+                {t(locale, 'track.milestone', { done: 1, total: milestones.length })}
+              </span>
+              <span class="lbl" data-path-done>
+                {t(locale, 'track.done', { done: 0, total: pathTopics.length })}
+              </span>
+            </div>
+            {continueMeta && continueTopic && (
+              <Button href={topicUrl(continueMeta.track, continueMeta.slug, locale)}>
+                {t(locale, 'track.continueTopic', { title: continueTopic.data.title })} →
+              </Button>
+            )}
+            {/* The path page itself is P2; the card's Continue button is what works today. */}
+            {P2_NAV && (
+              <a class="path-map" href={localizePath(`/paths/${path.id}/`, locale)}>
+                {t(locale, 'track.map')}
+              </a>
+            )}
+          </div>
+        )
+      }
+    </div>
+  </div>
+
+  <!-- BODY -->
+  <div class="wrap body">
+    <div class="col">
+      <!-- FILTER ROW: only where there is something to filter -->
+      {
+        written.length > 0 && (
+          <div class="filters" data-filters>
+            <Seg items={difficultyFilters} label={t(locale, 'topic.level')} data-filter-group="difficulty" />
+            <div class="filter-right">
+              <span class="lbl">{t(locale, 'track.show')}</span>
+              <Seg items={readFilters} label={t(locale, 'track.show')} data-filter-group="read" />
+            </div>
+          </div>
+        )
+      }
+
+      <!-- SECTIONS -->
+      {
+        written.map((section) => (
+          <section class="group" id={section.slug} data-section={section.slug}>
+            <div class="sec">
+              <h2>
+                {section.index} · {section.name}
+              </h2>
+              <span class="lbl" data-section-done={section.slug}>
+                {topicCount(section.topics.length)}
+              </span>
+            </div>
+            <div class="cards">
+              {section.topics.map((topic) => (
+                <TopicCard topic={topic} locale={locale} />
+              ))}
+            </div>
+          </section>
+        ))
+      }
+
+      <!-- SECTIONS WITH NOTHING WRITTEN YET -->
+      {
+        empty.length > 0 && (
+          <div class="collapsed">
+            {empty.map((section) => (
+              <div class="quick">
+                <span class="lbl idx">{section.index}</span>
+                <span class="collapsed-name">{section.name}</span>
+                <span class="lbl">{t(locale, 'track.comingSoon')}</span>
+              </div>
+            ))}
+          </div>
+        )
+      }
+    </div>
+
+    <!-- RIGHT RAIL -->
+    <aside class="rail">
+      <div class="panel rail-panel">
+        <span class="lbl">{t(locale, 'track.progress')}</span>
+        <div class="ring-row">
+          <ProgressRing total={topics.length} label={t(locale, 'track.progress')} />
+          <div class="ring-text">
+            <span class="ring-count" data-progress-count>0 / {topics.length}</span>
+            <span class="lbl">{t(locale, 'track.topicsRead')}</span>
+          </div>
+        </div>
+        <div class="rail-actions">
+          <Button variant="ghost" href={localizePath('/settings/', locale)}>
+            {t(locale, 'track.export')}
+          </Button>
+          <Button variant="ghost" href={localizePath('/settings/', locale)}>
+            {t(locale, 'track.import')}
+          </Button>
+        </div>
+      </div>
+
+      {
+        recent.length > 0 && (
+          <div class="panel rail-panel">
+            <span class="lbl">{t(locale, 'track.recent')}</span>
+            {recent.map((item) => (
+              <a class="recent" href={item.url}>
+                {item.title} <span class="lbl">{item.meta}</span>
+              </a>
+            ))}
+          </div>
+        )
+      }
+
+      <div class="panel rail-panel ai">
+        <span class="lbl label-acc2">{t(locale, 'track.askAi')}</span>
+        <span class="ai-prompt">“{t(locale, 'track.aiPrompt', { track: trackName })}”</span>
+        <span class="lbl">{t(locale, 'home.promptMeta')}</span>
+      </div>
+
+      <div class="also">
+        <span class="lbl">{t(locale, 'track.also')}</span>
+        {
+          alsoLinks.map((link) =>
+            link.soon ? (
+              <span class="also-soon">
+                {link.label}
+                <Tag>{t(locale, 'track.soon')}</Tag>
+              </span>
+            ) : (
+              <a href={link.href}>{link.label}</a>
+            ),
+          )
+        }
+      </div>
+    </aside>
+  </div>
+
+  <!-- Reading progress: local data only, so it renders nothing on the server. -->
+  <TrackProgress
+    client:idle
+    sections={written.map((section) => ({
+      slug: section.slug,
+      topics: section.topics.map(topicId),
+    }))}
+    milestones={milestones}
+    labels={{
+      readPct: t(locale, 'track.readPct', { pct: '{pct}' }),
+      done: t(locale, 'track.done', { done: '{done}', total: '{total}' }),
+      milestone: t(locale, 'track.milestone', { done: '{done}', total: '{total}' }),
+    }}
+  />
+</Base>
+
+<script>
+  /* The filter row. Without JavaScript the segments are inert labels and every card is visible,
+     which is the correct static page; with it they behave as two radio groups over the cards'
+     `data-difficulty` and `data-read` attributes. `data-read` is refreshed by the TrackProgress
+     island, which announces itself with `cw:progress`. */
+  const root = document.querySelector<HTMLElement>('[data-filters]');
+
+  if (root) {
+    const state: Record<string, string> = { difficulty: 'all', read: 'all' };
+
+    const apply = () => {
+      for (const card of document.querySelectorAll<HTMLElement>('.topic[data-topic-id]')) {
+        const read = card.dataset.read ?? 'unread';
+        const matchesLevel = state.difficulty === 'all' || card.dataset.difficulty === state.difficulty;
+        // "Read" means started, not finished: a partially read card counts as read.
+        const matchesRead =
+          state.read === 'all' || (state.read === 'unread' ? read === 'unread' : read !== 'unread');
+        card.hidden = !(matchesLevel && matchesRead);
+      }
+
+      // A section whose cards are all filtered out goes with them, so no empty grid is left.
+      for (const section of document.querySelectorAll<HTMLElement>('[data-section]')) {
+        const cards = [...section.querySelectorAll<HTMLElement>('.topic[data-topic-id]')];
+        section.hidden = cards.length > 0 && cards.every((card) => card.hidden);
+      }
+    };
+
+    for (const group of root.querySelectorAll<HTMLElement>('[data-filter-group]')) {
+      const name = group.dataset.filterGroup;
+      if (!name) continue;
+      group.setAttribute('role', 'radiogroup');
+      const items = [...group.querySelectorAll<HTMLElement>('[data-value]')];
+
+      /* The WAI-ARIA radio-group pattern: exactly one segment is tabbable, and the arrow keys
+         move focus to the next segment and check it as they go. Home and End jump to the ends,
+         and the list wraps, so every segment is reachable from the keyboard. */
+      const select = (index: number, moveFocus: boolean) => {
+        const target = items[((index % items.length) + items.length) % items.length];
+        if (!target) return;
+        for (const item of items) {
+          const on = item === target;
+          item.classList.toggle('on', on);
+          item.setAttribute('aria-checked', String(on));
+          item.setAttribute('tabindex', on ? '0' : '-1');
+        }
+        if (moveFocus) target.focus();
+        state[name] = target.dataset.value ?? 'all';
+        apply();
+      };
+
+      items.forEach((item, index) => {
+        item.removeAttribute('aria-current');
+        item.setAttribute('role', 'radio');
+        item.setAttribute('aria-checked', String(item.classList.contains('on')));
+        item.setAttribute('tabindex', item.classList.contains('on') ? '0' : '-1');
+        item.addEventListener('click', () => select(index, false));
+        item.addEventListener('keydown', (event) => {
+          switch (event.key) {
+            case 'Enter':
+            case ' ':
+              select(index, true);
+              break;
+            case 'ArrowRight':
+            case 'ArrowDown':
+              select(index + 1, true);
+              break;
+            case 'ArrowLeft':
+            case 'ArrowUp':
+              select(index - 1, true);
+              break;
+            case 'Home':
+              select(0, true);
+              break;
+            case 'End':
+              select(items.length - 1, true);
+              break;
+            default:
+              return;
+          }
+          event.preventDefault();
+        });
+      });
+    }
+
+    document.addEventListener('cw:progress', apply);
+    apply();
+  }
+</script>
+
+<style>
+  /* ---- header band ---- */
+
+  .band {
+    background: var(--sur);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 48px;
+    padding-top: 44px;
+    padding-bottom: 40px;
+    align-items: start;
+  }
+
+  .intro {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .title {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .glyph {
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--acc);
+    background: var(--acc-soft);
+    border-radius: var(--r-8);
+    padding: 8px 12px;
+  }
+
+  h1 {
+    font-size: 44px;
+    line-height: 1.1;
+  }
+
+  .desc {
+    margin: 0;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--ink2);
+    max-width: 680px;
+  }
+
+  .chips {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* Four tool cards where they fit, fewer where they do not. `auto-fit` rather than a fixed
+     four-up grid: the labels do not wrap, so a column narrower than its label is what would
+     break the row of cards, not the text. The floor is measured, not guessed — the longest
+     row ("Interview bank" plus the `soon` tag) needs 188px. */
+  .shortcuts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  /* One line each, so every card in the row is the same height. The row is a little tighter
+     than the mockup's `.quick` because these four carry a `soon` tag as well as a label: at the
+     mockup's spacing the longest of them ("Interview bank") needs 204px, and tightening brings
+     it to 188px, which is what sets the grid's 190px floor above. */
+  .shortcuts .quick {
+    min-width: 0;
+    gap: 8px;
+    padding-inline: 10px;
+  }
+
+  /* The label never wraps; if a column is ever narrower than the longest one, it ends in an
+     ellipsis rather than pushing the tag out of the card. */
+  .quick-label {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ---- recommended path ---- */
+
+  .path {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px 20px;
+    box-shadow: var(--glow);
+  }
+
+  .label-acc {
+    color: var(--acc);
+  }
+
+  .path-title {
+    font-size: 19px;
+    font-weight: 600;
+  }
+
+  .path-meta {
+    font-size: 13.5px;
+    color: var(--ink2);
+    line-height: 1.5;
+  }
+
+  .bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--acc-soft);
+    overflow: hidden;
+  }
+
+  .bar div {
+    width: 0;
+    height: 100%;
+    background: var(--acc);
+  }
+
+  .path-counts {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .path-map {
+    font-size: 13px;
+    text-align: center;
+  }
+
+  /* ---- body ---- */
+
+  .body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 48px;
+    padding-top: 40px;
+    padding-bottom: 72px;
+  }
+
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+    min-width: 0;
+  }
+
+  .filters {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  /* The mockup capitalises the filter labels; the dictionary keeps them lower case because the
+     same strings are the cards' difficulty tags. */
+  .filters :global(.seg span) {
+    text-transform: capitalize;
+  }
+
+  .filter-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .group {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .collapsed {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .collapsed-name {
+    font-weight: 600;
+  }
+
+  /* ---- right rail ---- */
+
+  .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
+  }
+
+  .rail-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 18px;
+  }
+
+  .ring-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .ring-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .ring-count {
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .rail-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .rail-actions :global(.btn) {
+    height: 34px;
+    font-size: 13px;
+    flex: 1;
+  }
+
+  .recent {
+    font-size: 14px;
+    color: var(--ink);
+  }
+
+  .recent:hover {
+    color: var(--acc);
+  }
+
+  .ai {
+    border-color: var(--acc2);
+    gap: 8px;
+  }
+
+  .label-acc2 {
+    color: var(--acc2);
+  }
+
+  .ai-prompt {
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .also {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .also a,
+  /* A row whose page is not written yet: the same line, stated rather than linked. */
+  .also-soon {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--ink3);
+  }
+
+  /* ---- narrow ---- */
+
+  @media (max-width: 1023px) {
+    .header,
+    .body {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 28px;
+    }
+
+    .cards {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 767px) {
+    .header {
+      padding-top: 28px;
+      padding-bottom: 28px;
+    }
+
+    h1 {
+      font-size: 32px;
+    }
+
+    .desc {
+      font-size: 15px;
+    }
+
+    .body {
+      padding-top: 28px;
+      padding-bottom: 40px;
+    }
+
+    .col {
+      gap: 28px;
+    }
+
+    .cards {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

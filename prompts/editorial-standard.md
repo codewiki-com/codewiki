@@ -25,13 +25,14 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 
 - 400–900 lines including code, frontmatter and sidecar references. A topic that needs more should be split into two topics with a `related` link.
 - Every paragraph earns its place. If a sentence can be deleted without losing information, delete it.
+- Paragraphs are two to five sentences that develop one idea. Never put every sentence in its own paragraph; a run of one-sentence paragraphs reads like a slide deck. Use a single-sentence paragraph only for a deliberate emphasis or a transition.
 - No introductions ("In this article we will…"), no outros ("By mastering…"), no rule-of-three padding, no "comprehensive", "deep dive into", "it is worth noting", "in today's fast-paced world".
 - Headings are noun phrases or short claims, not questions.
 
 ## 4. Voice
 
 - English: native, direct, present tense, second person where natural. Contractions are fine. Prefer short sentences. Technical terms are used precisely and consistently with the glossary.
-- Chinese: 地道的中文技术写作，不是翻译腔。用短句，主谓宾清楚。术语以术语表为准；首次出现的术语给出英文原文，例如「闭包（closure）」。中西文之间加一个空格（「Python 3.14 的 `asyncio`」），全角标点（，。；：？！「」），代码、数字、英文单词之间不用全角标点。不用「本文将」「让我们」「值得注意的是」。
+- Chinese: 地道的中文技术写作，不是翻译腔。段落同样以两到五句为一段，围绕一个意思展开；不要一句一段。用短句，主谓宾清楚。术语以术语表为准；首次出现的术语给出英文原文，例如「闭包（closure）」。中西文之间加一个空格（「Python 3.14 的 `asyncio`」），全角标点（，。；：？！「」），代码、数字、英文单词之间不用全角标点。不用「本文将」「让我们」「值得注意的是」。
 - Both: no emoji, no exclamation marks, no marketing adjectives.
 
 ## 5. Currency
