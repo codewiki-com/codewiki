@@ -236,4 +236,18 @@ export default {
   'ai.openClaude': 'Open in Claude',
   'ai.openChatGPT': 'Open in ChatGPT',
   'ai.copy': 'Copy prompt',
+
+  // Task 17
+  'settings.title': 'Settings',
+  'settings.sub':
+    'Everything here is stored in this browser only. Nothing is sent anywhere, so a backup file is the only way to move it to another machine.',
+  'settings.dataHint': 'Progress, flashcards and these settings, as one JSON file.',
+  'settings.fontS': 'Small',
+  'settings.fontM': 'Medium',
+  'settings.fontL': 'Large',
+  'settings.importMode': 'On import',
+  'settings.merge': 'Merge',
+  'settings.replace': 'Replace',
+  'settings.chooseFile': 'Choose a backup file',
+  'settings.importFailed': 'That file is not a codewiki backup.',
 } as const;
