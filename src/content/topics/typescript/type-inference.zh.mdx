@@ -1,0 +1,401 @@
+---
+title: 类型推断
+description: 理解 TypeScript 如何从初始化值、上下文和泛型实参推导类型，并在字面量拓宽、空集合与公开 API 边界上保持正确契约。
+track: typescript
+section: type-system
+difficulty: intermediate
+tags: [type-inference, contextual-typing, literal-widening, generics]
+prerequisites: [typescript/basics, typescript/strict-mode]
+related: [typescript/literal-types, typescript/generics, typescript/satisfies, typescript/type-narrowing]
+terms: [type-inference, contextual-typing, literal-widening, implicit-any, declaration-emit]
+verified: { version: 'TypeScript 6', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: typescript/type-inference
+sources:
+  - { title: 'TypeScript Handbook - Type Inference', url: 'https://www.typescriptlang.org/docs/handbook/type-inference.html' }
+  - { title: 'TypeScript Handbook - Everyday Types', url: 'https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-annotations-on-variables' }
+  - { title: 'TypeScript Handbook - More on Functions', url: 'https://www.typescriptlang.org/docs/handbook/2/functions.html' }
+  - { title: 'TypeScript 3.4 release notes - const assertions', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions' }
+  - { title: 'TypeScript 4.9 release notes - satisfies operator', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator' }
+  - { title: 'TypeScript Handbook - Creating .d.ts files from .js files', url: 'https://www.typescriptlang.org/docs/handbook/declaration-files/dts-from-js.html' }
+origin: old/src/content/docs/typescript/type-inference.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="type-inference">类型推断（type inference）</Term>让 TypeScript 根据初始化值、上下文和调用实参计算静态类型，不必在每个局部声明上重复注解。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    推断结果未必等于最精确的字面量，也不会验证运行时数据；可变位置会拓宽，缺少上下文的位置还可能产生 `any`。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明显的局部值交给推断，在公开 API、空集合和状态转换边界写出契约；用严格类型检查和声明输出验证真实结果。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+类型推断是编译器根据已有类型信息，为表达式、变量、函数返回值或泛型类型参数计算类型的过程。它发生在类型检查阶段，生成的 JavaScript 不携带这次计算。推断减少重复语法，但不会改变运行时的值。
+
+最直接的信息来自初始化表达式。`const port = 8080` 已经说明值是数字，再写 `: number` 通常没有增加约束。函数参数不同，因为调用函数时尚无初始化值可供函数体使用，所以普通具名函数的参数通常仍需要注解或外部上下文。
+
+另一类信息来自表达式所在位置的预期类型，这叫作<Term id="contextual-typing">上下文类型推断（contextual typing）</Term>。例如，数组元素类型会给 `map()` 回调的参数提供类型；已注解的对象类型也能给对象字面量中的方法参数提供类型。信息因此不只从表达式内部向外流动，也会从使用位置进入表达式。
+
+你会在变量初始化、回调、对象字面量、函数返回值、解构以及泛型调用中遇到推断。好的推断让实现代码保持简短，同时保存输入与输出之间的关系。它不是“省略所有类型”的规则，而是决定哪些位置已有足够证据。
+
+公开边界需要单独判断。如果实现变化不应改变调用方看到的类型，就应写出参数或返回值契约，或者检查生成的 `.d.ts`。局部实现可以继续依赖推断，这两种选择并不矛盾。
+
+类型推断与类型收窄相关，但不是同一个主题。推断建立初始静态类型，控制流收窄则在运行时检查之后缩小一个已有联合。复杂守卫和可辨识联合由相关主题负责，这里只讨论推断怎样为后续检查提供起点。
+
+## 工作原理
+
+检查器会从初始化值、上下文目标、返回表达式和调用实参收集候选类型，再按照当前位置的规则求出结果。结果必须既能描述当前表达式，也要允许该位置承诺的后续操作。正因如此，“最窄”不是所有位置的统一目标。
+
+下面几类位置使用的信息不同。记住信息来源，比背诵单个示例的显示类型更可靠。
+
+| 位置 | 主要信息来源 | 常见结果 |
+| --- | --- | --- |
+| `const region = "eu"` | 初始化值与不可重新绑定的声明 | 原始值常保留字面量类型 |
+| `let region = "eu"` | 初始化值与可重新绑定的位置 | 字符串字面量通常拓宽为 `string` |
+| `[1, "two"]` | 所有数组元素候选 | 可容纳各元素的联合数组 |
+| `items.map(item => ...)` | `map()` 的回调签名 | `item` 取得数组元素类型 |
+| `identity(value)` | 泛型签名与调用实参 | 为本次调用求出类型参数 |
+| `function total() { return 1 }` | 所有可达返回表达式 | 推断函数返回类型 |
+
+### 初始化与拓宽
+
+不可重新绑定的原始 `const` 往往保留字面量类型，因为该绑定不会改成另一个值。`let` 变量通常需要接受同类的其他值，所以字符串、数字和布尔字面量会变成对应原始类型。这个过程叫作<Term id="literal-widening">字面量拓宽（literal widening）</Term>。
+
+`const` 只禁止重新绑定变量，不会让对象属性不可写。`const request = { method: "GET" }` 的 `method` 通常是 `string`，因为之后仍能执行 `request.method = "POST"`。普通数组也通常推断为可变数组，而不是固定长度的只读元组。
+
+需要保留字面量时，选择要符合生命周期。静态常量表可以使用 `as const`；仍要修改的状态应写成合适的联合注解；只想检查结构并保留表达式细节时可以使用 `satisfies`。这些工具都不执行运行时冻结或输入验证。
+
+### 上下文从使用位置进入表达式
+
+上下文类型最常见于回调。`Shipment[]` 的 `filter()` 签名已经规定谓词接收 `Shipment`，因此箭头函数参数无需重复注解。把同一个箭头函数先保存到没有注解的变量中，会失去这层调用上下文。
+
+对象字面量也能取得上下文。若变量已经声明为包含 `onSuccess(message: string): void` 的接口，对象中的 `onSuccess(message) { ... }` 会把 `message` 推断为 `string`。如果先创建无类型对象，再赋给接口，创建对象时缺少的上下文不会事后补回。
+
+上下文不是类型断言。表达式仍须能赋给目标，拼错的属性或不兼容的返回值仍会产生诊断。断言则可能要求检查器忽略真实的不兼容，两者的证据强度相反。
+
+### 多个候选与公共类型
+
+数组元素和多个返回分支会提供不止一个候选。检查器寻找能容纳这些候选的结果，必要时形成联合。例如，`[1, "two"]` 通常得到 `(string | number)[]`，而不是随意选择其中一个元素的类型。
+
+类实例数组不一定自动提升成共同基类。如果候选是 `Rhino`、`Elephant` 和 `Snake`，结果可能保留这些候选的联合，而不是主动猜测作者想要 `Animal[]`。确实需要基类契约时，应在声明位置写出 `Animal[]`。
+
+空集合没有元素候选，因此对上下文尤其敏感。在严格项目的无上下文边界，空数组可能触发隐式 `any[]` 诊断；在某些表达式位置，它也可能取得上下文元素类型。不要依赖一段孤立示例给出的万能结论，直接给空集合写元素类型。
+
+### 泛型调用推断关系
+
+泛型函数把同一个类型参数放在多个位置，检查器再从调用实参推断本次调用的替换类型。`pluck<T, K extends keyof T>` 会从记录数组推断 `T`，从键实参推断 `K`，返回值因此是对应的 `T[K][]`。这种关系是 `any` 无法表达的。
+
+约束只限制候选，并提供函数体可用的成员。`K extends keyof T` 不会在运行时检查字符串是否为对象键，泛型语法也会在输出时擦除。来自 JSON 或 JavaScript 的值仍需运行时验证。
+
+若多个实参向同一个类型参数提供冲突候选，结果可能成为联合、选择更宽类型，或者直接报错，具体取决于签名中的输入和输出位置。不要用强制断言掩盖结果；先确认一个类型参数是否承担了过多无关关系。
+
+### 返回值与上下文目标
+
+没有返回注解时，检查器会组合所有可达的 `return` 表达式。一个分支返回字符串、另一个分支不返回值，结果通常包含 `undefined`。调用方的期望不会自动把实现中真实存在的返回分支抹掉。
+
+若函数表达式被赋给已有函数类型，返回表达式还会按该目标接受上下文检查。这能让错误靠近实现出现，但目标类型仍不会转换运行时值。返回数字的位置不能因为上下文要求字符串就自动变成字符串。
+
+`async` 函数的推断结果会反映 Promise。函数体返回 `Invoice` 时，调用方看到的是 `Promise<Invoice>`；不同分支仍需在包装前求出兼容结果。公开异步边界通常值得显式写出 `Promise<...>`，以防实现错误进入契约。
+
+直接或间接递归的函数可能没有足够顺序信息推断稳定返回类型，也更容易形成循环引用诊断。给递归入口写返回注解，既打破推断循环，也记录递归各分支必须满足的共同结果。
+
+### 解构与默认值
+
+解构变量从被解构值取得类型。`const { id, total } = order` 会分别保留属性类型，而数组解构会根据数组或元组的元素信息决定每个位置。普通数组没有固定位置保证，元组才会把索引与具体元素类型关联起来。
+
+参数解构仍然需要来源。`function print({ id }) {}` 没有给对象参数任何类型，在严格模式下不能根据函数体使用方式反向发明完整对象契约。应给整个参数对象注解，而不是只给解构出的局部名称补断言。
+
+默认值会参与可用性分析。可选参数在使用默认值后，函数体内通常可以按排除 `undefined` 后的类型使用，但调用签名仍允许调用方省略该实参。函数体类型和调用方契约描述的是两个观察位置。
+
+对象剩余属性与数组剩余元素也会派生新类型，但动态键和索引签名可能降低精度。复杂解构一旦让错误信息难以定位，先给输入对象命名并注解，再执行浅层解构，通常比增加断言更清楚。
+
+## 示例
+
+下面四个示例依次展示初始化与拓宽、回调上下文、泛型调用推断，以及公开返回边界。每个文件都使用 TypeScript 6.0.3 以 `--strict` 完成类型检查，再由本地 `npx tsx` 执行。
+
+### 观察初始化与拓宽
+
+类型级断言验证三个推断结果。原始 `const` 保留字面量，而 `let` 和可变对象属性允许后续写入同类值。
+
+<Depth level="quick">
+
+```typescript run title="inference-basics.ts"
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends
+  (<T>() => T extends B ? 1 : 2) ? true : false;
+type Expect<T extends true> = T;
+
+const homeRegion = "eu-west";
+let activeRegion = "eu-west";
+const service = { state: "ready", attempts: 0 };
+
+type HomeIsLiteral = Expect<Equal<typeof homeRegion, "eu-west">>;
+type ActiveIsString = Expect<Equal<typeof activeRegion, string>>;
+type StateIsString = Expect<Equal<typeof service.state, string>>;
+
+activeRegion = "us-east";
+service.state = "busy";
+service.attempts += 1;
+
+console.log(homeRegion);
+console.log(activeRegion);
+console.log(`${service.state}: ${service.attempts}`);
+```
+
+```text
+eu-west
+us-east
+busy: 1
+```
+
+</Depth>
+
+`Expect` 不生成 JavaScript，但它会在推断与预期不同时让类型检查失败。这里没有使用断言把结果强行改成目标类型，因此测试的是检查器真实计算的类型。
+
+`service` 变量本身不能重新绑定，属性却仍可修改。要把 `state` 限制为几个合法状态，应给属性联合注解或在更高层定义状态模型，而不是误以为 `const` 已经建立该契约。
+
+### 利用回调上下文
+
+`shipments` 的元素注解同时为 `filter()` 和 `map()` 的回调参数提供上下文。第二个 `map()` 参数也根据标准数组签名得到 `number`。
+
+```typescript run title="contextual-callbacks.ts"
+type Shipment = {
+  id: string;
+  kilograms: number;
+};
+
+const shipments: Shipment[] = [
+  { id: "PK-104", kilograms: 7 },
+  { id: "PK-105", kilograms: 12 },
+  { id: "PK-106", kilograms: 18 },
+];
+
+const heavyLabels = shipments
+  .filter((shipment) => shipment.kilograms >= 10)
+  .map((shipment, index) =>
+    `${index + 1}. ${shipment.id} (${shipment.kilograms} kg)`,
+  );
+
+console.log(heavyLabels.join("\n"));
+```
+
+```text
+1. PK-105 (12 kg)
+2. PK-106 (18 kg)
+```
+
+回调返回模板字符串，因此 `heavyLabels` 推断为 `string[]`。数组声明提供一处领域契约，流水线内部无需重复 `Shipment`、`number` 和 `string`。
+
+如果把 `.filter((shipment) => ...)` 中的函数先单独写成 `const isHeavy = (shipment) => ...`，该声明没有数组方法提供上下文。在 `noImplicitAny` 下，`shipment` 会产生<Term id="implicit-any">隐式 `any`（implicit any）</Term>诊断；修复位置是独立函数的参数，而不是调用处的断言。
+
+### 从泛型实参保留属性关系
+
+`pluck()` 的两个实参共同决定返回元素类型。选择 `"total"` 得到 `number[]`，选择 `"paid"` 得到 `boolean[]`，而实现只写一次。
+
+```typescript run title="generic-pluck.ts"
+function pluck<T, K extends keyof T>(
+  rows: readonly T[],
+  key: K,
+): T[K][] {
+  return rows.map((row) => row[key]);
+}
+
+const orders = [
+  { id: "A-17", total: 42, paid: true },
+  { id: "B-04", total: 19, paid: false },
+];
+
+const totals = pluck(orders, "total");
+const paidFlags = pluck(orders, "paid");
+
+const grandTotal = totals.reduce((sum, total) => sum + total, 0);
+console.log(`total: ${grandTotal}`);
+console.log(`paid: ${paidFlags.join(", ")}`);
+```
+
+```text
+total: 61
+paid: true, false
+```
+
+`K extends keyof T` 让错误键在调用处失败，也让 `row[key]` 在实现中合法。返回类型若写成宽泛的 `unknown[]`，这层属性关系会丢失；写成 `any[]` 则还会把不安全操作传播给调用方。
+
+泛型只维护静态关系。若 `key` 来自命令行或网络，请先检查它确实属于当前对象允许的键集合，再进入这个已类型化函数。
+
+### 固定公开返回契约
+
+函数内部的局部变量和 `reduce()` 回调继续依赖推断，但公开返回类型写成 `InvoiceSummary`。实现重构若漏掉字段或返回错误类型，诊断会出现在函数内部。
+
+```typescript run title="public-boundary.ts"
+type InvoiceSummary = {
+  count: number;
+  totalCents: number;
+};
+
+export function summarizeInvoices(
+  amounts: readonly number[],
+): InvoiceSummary {
+  const totalCents = amounts.reduce(
+    (sum, amount) => sum + amount,
+    0,
+  );
+
+  return { count: amounts.length, totalCents };
+}
+
+const summary = summarizeInvoices([1299, 2500, 499]);
+console.log(`${summary.count} invoices`);
+console.log(`${summary.totalCents} cents`);
+```
+
+```text
+3 invoices
+4298 cents
+```
+
+显式边界不要求为每个局部变量补注解。`totalCents`、`sum`、`amount` 和 `summary` 都有充分信息，重复类型只会增加维护位置。
+
+如果该函数仅供一个文件内部使用，而且实现变化可以自然改变调用方，返回类型推断也可能合适。是否注解取决于这里是不是稳定契约，而不是函数行数。
+
+## 陷阱
+
+> [!PITFALL]
+> 把推断理解为总会选择最精确类型。可变绑定、对象属性和数组元素通常需要为未来写入留出空间，因此字面量可能拓宽。
+
+**修复方法：** 先判断值是否真的不可变。常量数据用 `as const`，可变状态用明确联合，结构检查用 `satisfies`；不要为了追求窄类型给每个表达式添加断言。
+
+> [!PITFALL]
+> 认为空数组永远是 `any[]` 或永远是 `never[]`。实际结果受上下文、控制流、编译器选项和声明位置影响，孤立示例无法代表所有位置。
+
+**修复方法：** 在空集合创建处写出元素契约，例如 `const jobs: Job[] = []`。这既避免隐式 `any`，也让首次写入错误立即落在来源处。
+
+> [!PITFALL]
+> 先把回调保存成无注解变量，再期待后续传给数组方法时补回参数类型。上下文类型发生在表达式被检查的位置，不会倒流并改写已经检查过的独立声明。
+
+**修复方法：** 让短回调保持内联，或者给可复用回调写参数与返回类型。不要用 `any` 消除 `noImplicitAny` 诊断，因为那会取消回调体内的检查。
+
+> [!PITFALL]
+> 删除公开函数的返回注解，因为当前实现“显然能推断”。以后加入条件分支、错误哨兵或可选字段时，导出的类型可能静默变宽，调用方才承担破坏。
+
+**修复方法：** 对稳定公开 API 明确注解返回值，并在发布库时审查<Term id="declaration-emit">声明输出（declaration emit）</Term>。实现内部仍可大量使用局部推断。
+
+> [!PITFALL]
+> 把 `JSON.parse(raw)` 后出现的具体类型当成推断成功。标准声明返回 `any`，后续属性访问看似顺畅，实际是检查已经被绕过。
+
+**修复方法：** 立即把不可信结果放进 `unknown`，执行对象、字段和领域规则验证，再构造领域值。类型推断只能传播已有静态证据，不能创造运行时证据。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把公开返回注解当作冗余语法删除，使新增的 `undefined`、错误对象或过宽字段进入生成的 `.d.ts`。它也会把内联回调抽成无注解常量，触发隐式 `any` 后再用显式 `any` 压掉诊断。配置代码中，模型可能把 `satisfies` 改成 `as Config`，把本应暴露的键名错误变成未经证明的信任声明。
+
+泛型辅助函数是另一类高发位置。模型可能让一个 `T` 同时代表主值、回退值和转换结果，候选冲突后得到过宽联合；发现调用不通过时，又添加显式类型实参或双重断言。对于 `JSON.parse` 返回的 `any`，生成代码还会把无报错错误描述成“TypeScript 已经推断并验证结构”。
+
+**让 AI 检查**
+
+- 为修改前后的导出模块生成 `.d.ts`，逐项解释公开签名变化是否属于预期契约。
+- 在 TypeScript 6 的 `--strict --noEmit` 下列出每个 `any` 的来源，区分显式 `any`、隐式 `any` 和第三方声明传播。
+- 为每个泛型调用标出各类型参数从哪些实参收集候选，并说明约束、上下文返回类型与断言如何影响结果。
+
+**审查清单**
+
+- 检查局部推断与公开注解的边界，确保实现重构不会意外改变调用方类型。
+- 检查空集合、抽取后的回调和无上下文对象字面量，确认没有隐式 `any` 或不必要拓宽。
+- 检查 `as`、非空断言与 `JSON.parse` 路径，确认具体类型来自真实静态或运行时证据。
+
+**提示词词汇**
+
+使用 `type inference`（类型推断）、`contextual typing`（上下文类型推断）、`literal widening`（字面量拓宽）、`best common type`（最佳公共类型）、`generic type argument inference`（泛型类型实参推断）、`implicit any`（隐式 `any`）、`declaration emit`（声明输出）和 `inferred public API`（推断出的公开 API）。要求模型给出检查器计算的类型与生成的 `.d.ts`；“减少类型噪声”没有说明哪些边界必须稳定。
+
+<Depth level="deep">
+
+## 推断结果是静态事实
+
+推断得到的是检查器对表达式的静态描述，不是运行时附加到值上的标签。`const count = 3` 输出后仍只是 JavaScript 数字，运行时代码无法询问它曾被推断为 `3` 还是 `number`。类型擦除也意味着推断本身没有输入验证功能。
+
+静态类型取决于检查时可见的声明。一个错误的第三方 `.d.ts` 可以让推断结果非常具体，却与运行时完全不符。精确不等于真实，证据链还必须包含声明质量与外部边界验证。
+
+`any` 会污染这条证据链。对 `any` 的属性访问、调用和赋值通常继续产生 `any`，于是代码不报错并不是推断质量高，而是检查器被要求放弃证明。诊断推断问题时，应先寻找最上游的 `any` 来源。
+
+`unknown` 的行为相反。它可以接收任意值，但不会允许依赖具体类型的操作，直到控制流检查或验证器提供证据。外部输入使用 `unknown`，能让后续具体类型代表一次可审查的升级。
+
+## 空集合与控制流演化
+
+无元素的数组字面量没有候选元素。若目标位置提供 `Job[]`，它就能按该元素类型检查；若没有上下文，严格选项可能报告隐式 `any[]`。在某些局部控制流中，检查器还会根据后续写入演化数组的观察类型。
+
+这种演化是分析规则，不是运行时数组改变了类型。不同读取点可能看到不同的控制流信息，导出边界也不能依赖所有调用方都经历同一组写入。因此，领域集合不应把首批 `push()` 当作公开契约。
+
+空对象有类似的建模问题。`const settings = {}` 的推断类型没有后来凭空出现的属性，逐步给它添加字段通常会报错。若构建过程确实分阶段进行，可以使用明确的构建器、局部可选状态或一次性完整对象，而不是宽断言。
+
+初始值 `null` 也不足以表达完整生命周期。在严格空值检查下，稍后要保存 `Connection` 的变量应写成 `Connection | null`。注解不是和推断对抗，而是在初始化值无法表达未来合法状态时补足契约。
+
+## 泛型候选的所有权
+
+一个类型参数应表达一项可命名的关系。`pluck()` 中的 `T` 代表记录类型，`K` 代表记录键，两者所有权清楚。若一个 `T` 同时控制输入、默认值、回调返回值和缓存内容，任何一处变化都可能改变其他位置的推断。
+
+输入位置通常为类型参数提供候选，上下文目标有时也会影响推断。约束会拒绝不满足能力要求的候选，却不会自动把结果变成约束本身。`T extends { id: string }` 仍应尽量保存实参的其他字段。
+
+显式类型实参适合表达检查器无法唯一决定、但调用方确实拥有的选择。它不应作为常规消错按钮。若 `load<Account>(raw)` 内部只是把 `JSON.parse` 断言为 `T`，调用方写出的类型实参没有提供任何运行时证据。
+
+推断失败时，先给中间结果命名并查看编辑器或声明输出显示的实际类型。然后检查类型参数是否过多、约束是否放错位置、实参是否提前拓宽，以及返回上下文是否真的属于契约。最后才考虑显式类型实参。
+
+## 用类型查询记录推断结果
+
+`typeof` 出现在类型位置时，可以取得某个值的静态类型。它不会执行 JavaScript 的运行时 `typeof` 检查，也不会返回字符串。配合索引访问和 `keyof`，代码可以从一份源码数据派生后续类型。
+
+这种派生避免手写结构漂移，但也会把源值的拓宽结果带下去。若配置对象的属性已经推断为 `string`，稍后使用 `typeof config.mode` 无法恢复最初的字面量。需要的精度必须在源声明处保留。
+
+类型级测试可以把推断结果变成编译门槛。常见做法是定义 `Equal` 与 `Expect` 一类仅在检查阶段存在的辅助类型，或者写预期成功和带 `@ts-expect-error` 的预期失败赋值。升级编译器时，这些测试能暴露推断规则变化。
+
+不要把大型推断类型原样当作文档。给重要领域概念命名，并在公开签名中展示调用方需要理解的部分；`typeof` 适合保持事实同步，不应把内部对象的每个偶然细节都暴露为 API。
+
+## 编译选项属于推断环境
+
+同一段源码在不同编译选项下可能得到不同诊断或可用类型。`noImplicitAny` 决定缺少信息时是否允许静默出现 `any`，`strictNullChecks` 决定 `null` 与 `undefined` 是否保持独立成员。讨论推断结果时必须说明有效配置。
+
+`strict: true` 提供强基线，但不包含所有更保守选项。`noUncheckedIndexedAccess` 会让未证明存在的索引读取包含 `undefined`，从而改变后续表达式看到的类型。它不是推断算法之外的附注，而是输入给检查器的契约环境。
+
+命令行参数、继承的 `tsconfig` 和编辑器使用的项目都可能改变有效配置。排查“编辑器与 CI 推断不同”时，先运行 `tsc --showConfig` 并确认文件属于哪个项目，再比较编译器版本。只看源码无法解释配置分歧。
+
+发布库时还要用支持范围内的最低编译器测试声明。较新编译器可以生成旧版本无法解析或无法同样推断的类型语法。版本兼容是发布契约的一部分，不能只以作者编辑器中的结果为准。
+
+## 声明输出暴露推断结果
+
+启用 `declaration` 或 `emitDeclarationOnly` 后，编译器会把导出声明的可见类型写入 `.d.ts`。没有显式返回注解的导出函数会把推断结果变成发布契约，所以实现细节可能进入版本控制、包产物和调用方诊断。
+
+这不表示每个导出都必须手写完整类型。小型常量表有时正需要把精确字面量公开出去，泛型工厂也可能依赖推断保存关系。关键是团队是否有意接受生成声明中的具体形状。
+
+库评审应把声明输出当作构建产物检查。对修改前后执行相同的 TypeScript 6 声明生成命令，比较导出签名，并为预期接受与拒绝的调用保留类型测试。只运行 JavaScript 测试看不到这类契约漂移。
+
+应用内部也可借用同一方法定位复杂推断。临时导出一个中间声明并生成 `.d.ts`，常比从错误信息猜测更直接。诊断完成后应删除临时导出，避免它意外成为真实 API。
+
+## 注解的放置原则
+
+参数通常需要注解，因为函数体必须在不知道未来调用实参的情况下接受检查。回调参数若有可靠上下文则可省略；一旦回调成为独立声明，它就拥有自己的边界。位置不同，所需证据也不同。
+
+返回类型注解适合稳定接口、递归函数和需要在实现处发现漂移的函数。局部辅助函数可以依赖推断，尤其当返回形状只是附近实现的自然结果。统一要求所有函数都写或都不写返回类型，会丢掉边界差异。
+
+变量注解适合空集合、完整生命周期宽于初始值的状态，以及需要主动拓宽为接口的对象。初始化值已完整表达意图时，重复原始类型通常没有收益。注解应该增加约束或稳定性，而不是统计上的覆盖感。
+
+最后检查错误落点。好的边界会让不兼容实现尽早在生产者处失败，让错误实参在调用处失败，并让外部坏数据在解析处失败。如果错误只能在很远的消费者中出现，通常说明推断链缺少一个应明确写出的契约。
+
+</Depth>
+
+<Checkpoint id="typescript/type-inference" />
+
+## 延伸阅读
+
+- [TypeScript 手册：类型推断](https://www.typescriptlang.org/docs/handbook/type-inference.html)
+- [TypeScript 手册：日常类型与类型注解](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-annotations-on-variables)
+- [TypeScript 手册：函数与泛型调用](https://www.typescriptlang.org/docs/handbook/2/functions.html)
+- [TypeScript 3.4 发布说明：`const` 断言](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions)
+- [TypeScript 4.9 发布说明：`satisfies` 操作符](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html#the-satisfies-operator)
+- [TypeScript 手册：从 JavaScript 生成 `.d.ts`](https://www.typescriptlang.org/docs/handbook/declaration-files/dts-from-js.html)

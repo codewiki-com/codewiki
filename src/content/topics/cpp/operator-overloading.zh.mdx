@@ -1,0 +1,405 @@
+---
+title: C++ 运算符重载
+description: 运算符重载让自定义类型使用自然的 C++ 表达式；理解候选查找、返回类型与比较契约，避免生成代码中常见的语义错误。
+track: cpp
+section: basics
+difficulty: intermediate
+tags: [operators, operator-overloading, overload-resolution, value-semantics]
+prerequisites: [cpp/classes, cpp/references]
+related: [cpp/function-objects, cpp/concepts, cpp/move-semantics, cpp/templates]
+terms: [operator-overloading, operator-function, overload-resolution, hidden-friend, argument-dependent-lookup, three-way-comparison, value-semantics]
+verified: { version: 'C++23', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/operator-overloading
+sources:
+  - { title: 'C++23 draft - Overloaded operators', url: 'https://timsong-cpp.github.io/cppwp/n4950/over.oper' }
+  - { title: 'C++23 draft - Operators in expressions', url: 'https://timsong-cpp.github.io/cppwp/n4950/over.match.oper' }
+  - { title: 'C++23 draft - Defaulted comparison operators', url: 'https://timsong-cpp.github.io/cppwp/n4950/class.compare.default' }
+  - { title: 'C++ Core Guidelines - Rules for overloading', url: 'https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Ro-rules' }
+origin: old/src/content/docs/cpp/operator-overloading.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="operator-overloading">运算符重载（operator overloading）</Term>用函数定义运算符处理类或枚举对象时的行为，让值类型可以使用符合领域含义的表达式。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    编译器只检查候选函数、转换与返回类型是否合法，不会保证 `+` 不修改左操作数、比较关系一致，或者重载后的 `&&` 仍能短路。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先写清运算符的语义契约，再选择成员、非成员或隐藏友元；用对称调用、边界值和代数性质测试契约。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+运算符重载是为已有 C++ 运算符声明一个<Term id="operator-function">运算符函数（operator function）</Term>。表达式中至少有一个操作数是类或枚举类型时，编译器可以在内置运算之外选择这个函数。于是 `total + tax`、`version < candidate` 和 `scores[index]` 可以直接表达领域操作。
+
+它解决的是接口表达问题。一个具有<Term id="value-semantics">值语义（value semantics）</Term>的距离、金额或复数类型，如果只能写成 `add(left, right)`，会丢掉读者熟悉的算术结构；迭代器、智能句柄和函数对象也依赖 `*`、`->` 或 `()` 参与通用接口。
+
+符号本身不会让设计变好。若两个操作数的关系没有公认含义，`merge_with_policy()` 往往比勉强重载 `|` 更清楚。读者还会自然假设 `+` 产生新值、`+=` 修改左侧、`==` 与排序使用同一套等价关系；偏离这些约定需要很强的理由。
+
+重载不能创造新符号，也不能改变优先级、结合方式或操作数个数。`.`、`.*`、`::` 与 `?:` 不能重载，`sizeof`、`typeid` 和 `alignof` 也不是可声明的运算符函数。语法仍由语言决定，只有选中函数后的行为由类型作者决定。
+
+你会在数值类、容器、迭代器、智能指针、流输出、比较与可调用对象中遇到运算符重载。赋值和资源所有权属于特殊成员函数设计，函数调用运算符属于函数对象设计；本主题只说明它们如何进入同一套运算符规则，并把完整设计留给关联主题。
+
+## 工作原理
+
+可以把 `left + right` 粗略理解为 `left.operator+(right)` 或 `operator+(left, right)`，但编译器不是按固定顺序试这两种拼法。它先建立候选集合，再执行<Term id="overload-resolution">重载决议（overload resolution）</Term>，比较参数是否可行以及转换序列的优劣，最后选出唯一最佳函数。
+
+候选集合可能包括成员候选、通过普通查找和参数依赖查找得到的非成员候选、内置候选，以及 C++20 比较运算使用的改写候选。没有任何类或枚举操作数时，只考虑内置运算；你不能通过声明 `operator+(int, int)` 改写整数加法。
+
+成员函数把左操作数作为隐式对象。非成员函数把两个操作数都写成形参，因此通常更适合对称的二元运算。`operator=`、`operator[]`、`operator()` 和 `operator->` 必须是成员；要支持 `std::cout << value`，`operator<<` 则必须是非成员，因为左操作数是不能由你添加成员的 `std::ostream`。
+
+`friend` 不是非成员运算符的必需条件，只是提供私有成员访问。直接在类定义中定义的友元运算符仍是非成员函数，通常只能通过<Term id="argument-dependent-lookup">参数依赖查找（argument-dependent lookup，ADL）</Term>找到。这种<Term id="hidden-friend">隐藏友元（hidden friend）</Term>让操作留在关联类型附近，又不会让普通非限定查找看到过多名称。
+
+成员形式会影响转换的对称性。对 `value + 2`，成员 `value.operator+(2)` 可以转换右侧实参；但 `2 + value` 的左侧不是该类对象，不能据此调用同一个成员。需要双向混合运算时，应明确提供相应非成员重载，并决定转换构造函数是否应该是 `explicit`，而不是依赖偶然转换。
+
+常见返回类型来自语义，而非语法要求：
+
+| 运算 | 常见签名结果 | 契约 |
+| --- | --- | --- |
+| 二元算术 `+`、`-` | `T` | 返回新值，不修改操作数 |
+| 复合赋值 `+=`、`-=` | `T&` | 修改左操作数并返回 `*this` |
+| 前缀 `++value` | `T&` | 修改后返回当前对象 |
+| 后缀 `value++` | `T`，带占位 `int` 形参 | 返回修改前的值 |
+| 下标 `[]` | `T&` 与 `const T&` | 分别支持可写对象和只读对象 |
+| 流输出 `<<` | `std::ostream&` | 返回原流以支持链式输出 |
+
+不会修改可观察状态的成员运算符通常应标为 `const`。复合赋值可以作为二元算术的单一实现来源：先复制左值，再对副本执行 `+=`。这样能减少两套加法逻辑逐渐分叉的机会。
+
+## 示例
+
+下面四个示例依次展示值运算、混合操作数、下标引用与显式转换。所有输出都由 GCC 13.3 使用 `-std=c++23` 实际编译执行，并同时启用了地址与未定义行为检查。
+
+### 从复合赋值实现加法
+
+`Distance` 的 `+=` 修改当前对象并返回引用；隐藏友元 `+` 按值接收左侧副本，再复用 `+=`。`+` 因而不会改变原来的 `route`。
+
+<Depth level="quick">
+
+```cpp
+#include <iostream>
+
+class Distance {
+    int metres_;
+
+public:
+    explicit constexpr Distance(int metres) : metres_(metres) {}
+
+    constexpr Distance& operator+=(const Distance& other) {
+        metres_ += other.metres_;
+        return *this;
+    }
+
+    friend constexpr Distance operator+(Distance left, const Distance& right) {
+        left += right;
+        return left;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Distance& distance) {
+        return out << distance.metres_ << " m";
+    }
+};
+
+int main() {
+    Distance route{120};
+    const Distance detour{35};
+
+    std::cout << "route + detour: " << route + detour << '\n';
+    route += detour;
+    std::cout << "route after +=: " << route << '\n';
+}
+```
+
+```text
+route + detour: 155 m
+route after +=: 155 m
+```
+
+</Depth>
+
+构造函数是 `explicit`，所以裸整数不会悄悄变成 `Distance`。调用方必须写出单位类型，避免把秒数或其他整数误当作米数。`constexpr` 还允许同一套算术在满足条件时用于常量求值。
+
+隐藏友元可以访问 `metres_`，但这里仍通过公开的 `+=` 组合行为。若以后加法需要检查溢出或维护不变量，只需把检查放在一条修改路径上。
+
+### 明确支持两种操作数顺序
+
+标量乘法在数学上通常允许两种顺序。两个非成员重载把 `amount * 2` 与 `2 * amount` 都写进接口，第二个实现委托给第一个。
+
+```cpp
+#include <iostream>
+
+class Money {
+    long cents_;
+
+public:
+    explicit constexpr Money(long cents) : cents_(cents) {}
+
+    friend constexpr Money operator*(Money amount, int multiplier) {
+        return Money{amount.cents_ * multiplier};
+    }
+
+    friend constexpr Money operator*(int multiplier, Money amount) {
+        return amount * multiplier;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Money& amount) {
+        return out << amount.cents_ << " cents";
+    }
+};
+
+int main() {
+    const Money price{1299};
+
+    std::cout << "price * 2: " << price * 2 << '\n';
+    std::cout << "3 * price: " << 3 * price << '\n';
+}
+```
+
+```text
+price * 2: 2598 cents
+3 * price: 3897 cents
+```
+
+这里没有接受 `double`，也没有假装处理舍入。真实金额类型还要定义溢出、币种和小数位规则；这些规则没有写清前，增加更多重载只会扩大模糊接口。
+
+两个函数都按值接收 `Money`，对这个只含一个整数的类型成本很低。对于较大的类型，常见写法是让一个重载按值取得准备修改的左侧对象，再把另一侧按 `const&` 传入并复用 `*=`。
+
+### 同时提供可写与只读下标
+
+非 `const` 下标返回 `int&`，所以 `scores[0] = 10` 能修改元素；`const` 重载返回 `const int&`，让只读调用方仍能使用相同语法，但不能借此修改对象。
+
+```cpp
+#include <array>
+#include <cstddef>
+#include <iostream>
+
+class Scores {
+    std::array<int, 3> values_;
+
+public:
+    explicit Scores(std::array<int, 3> values) : values_(values) {}
+
+    int& operator[](std::size_t index) {
+        return values_[index];
+    }
+
+    const int& operator[](std::size_t index) const {
+        return values_[index];
+    }
+};
+
+void print_first(const Scores& scores) {
+    std::cout << "first score: " << scores[0] << '\n';
+}
+
+int main() {
+    Scores scores{{7, 8, 9}};
+    print_first(scores);
+    scores[0] = 10;
+    print_first(scores);
+}
+```
+
+```text
+first score: 7
+first score: 10
+```
+
+这个 `operator[]` 沿用 `std::array::operator[]` 的未检查契约，索引越界会产生未定义行为。若类型承诺检查边界，应在运算符中检查并抛出异常，或像标准容器一样另设 `at()`；名称和文档必须让调用方知道选了哪种契约。
+
+只提供按值返回的下标会让读取看似正常，却让赋值失败。只提供非 `const` 重载则会让接受 `const Scores&` 的普通读取函数无法编译；这两种遗漏都常出现在只测试一个调用点的生成代码中。
+
+### 让布尔转换保持显式
+
+`explicit operator bool()` 允许对象用于 `if` 等布尔语境，但阻止它悄悄进入整数算术。流运算符返回收到的流引用，因此还能继续链接后续输出。
+
+```cpp
+#include <iostream>
+#include <string_view>
+
+class Subscription {
+    std::string_view name_;
+    bool active_;
+
+public:
+    Subscription(std::string_view name, bool active) : name_(name), active_(active) {}
+
+    explicit operator bool() const noexcept {
+        return active_;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Subscription& plan) {
+        return out << plan.name_;
+    }
+};
+
+int main() {
+    const Subscription pro{"pro", true};
+    const Subscription trial{"trial", false};
+
+    if (pro) {
+        std::cout << pro << " can sync\n";
+    }
+    std::cout << trial << " can sync: " << std::boolalpha
+              << static_cast<bool>(trial) << '\n';
+}
+```
+
+```text
+pro can sync
+trial can sync: false
+```
+
+条件语境会考虑这个显式转换，所以 `if (pro)` 合法；要把结果保存成 `bool`，调用方应写 `static_cast<bool>(trial)`。这种接口适合表达「有效／无效」或「持有／为空」，不应代替带有多个状态的命名查询。
+
+示例中的 `std::string_view` 不拥有字符。这里的名称来自字符串字面量，生命周期足够长；若构造参数来自临时字符串，运算符再正确也无法修复悬空视图，类型本身必须另行规定所有权。
+
+## 陷阱
+
+### 让 `+` 修改左操作数
+
+> [!PITFALL]
+> 生成代码有时为了少写一个副本，让 `operator+` 直接修改 `*this`。`a + b` 随后改变 `a`，破坏读者对算术表达式和值语义的预期，还会让重复求值产生不同结果。
+
+**修复方法：** 让 `+=` 负责修改并返回 `T&`，让 `+` 操作一个左侧副本并按值返回。测试 `result = a + b` 后 `a` 和 `b` 都保持原值，同时检查 `a += b` 返回的地址就是 `&a`。
+
+### 返回悬空引用或错误类别
+
+> [!PITFALL]
+> 二元运算符若返回局部结果的引用，函数结束后引用立即悬空。复合赋值若按值返回虽然可能编译，却会让 `(a += b) += c` 修改临时副本，而不是继续修改 `a`。
+
+**修复方法：** 新值按值返回，修改当前对象的运算按 `T&` 返回，流运算按 `std::ostream&` 返回。不要给按值结果加 `const`；它不能表达额外所有权，还可能妨碍后续移动或重载选择。
+
+### 把对称运算只写成成员
+
+> [!PITFALL]
+> 成员 `Quantity::operator*(double)` 可以支持 `quantity * 2.0`，却不能自动支持 `2.0 * quantity`。模型常根据第一种调用通过编译，就声称接口具有交换性。
+
+**修复方法：** 对确实对称的二元运算提供非成员或隐藏友元，并分别编译两种操作数顺序。若转换可能丢失单位、精度或范围，就保持构造函数 `explicit` 并只声明真正允许的组合。
+
+### 默认比较了错误字段
+
+> [!PITFALL]
+> 默认 `operator<=>` 会按声明顺序比较基类子对象和非静态数据成员。缓存、数据库代理键或调试计数若也在对象中，默认比较可能把实现状态误当作值身份；含浮点成员时还可能得到带 `unordered` 的偏序。
+
+**修复方法：** 先写出哪些字段定义相等与顺序，再决定能否 `= default`。用相等对象、只改变缓存的对象、边界值和 NaN 测试比较；需要有序容器时，确认比较满足其严格弱序契约。
+
+### 重载 `&&` 或 `||` 后仍假设短路
+
+> [!PITFALL]
+> 重载的 `operator&&` 与 `operator||` 是函数调用，两个实参都要求值。依赖右侧不执行来避免空指针访问、昂贵计算或副作用，会在类型换成重载版本后失效。
+
+**修复方法：** 不要用这两个重载表达守卫控制流。改用具名函数、普通 `if`，或者让内置布尔运算组合显式的布尔查询，并用带副作用的右侧测试确认求值行为。
+
+### 用隐式转换填满候选集合
+
+> [!PITFALL]
+> 同时提供多个单参数构造函数和多个转换运算符，会让一个表达式存在若干看似合理的路径。添加新重载后，旧调用可能变成歧义，甚至悄悄选择不同函数。
+
+**修复方法：** 默认把转换构造函数和转换运算符写成 `explicit`，只为确实无损且符合领域含义的转换放宽。让编译器展示具体候选，并为预期失败的混合类型表达式加入编译期测试。
+
+### 下标接口遗漏常量性或边界契约
+
+> [!PITFALL]
+> 只生成一个 `operator[]` 往往造成两类缺口：按值返回使元素不可写，非 `const` 成员又使只读对象不可读。另一种错误是实现做了未检查访问，文档却声称会抛出越界异常。
+
+**修复方法：** 根据容器语义成对提供引用返回的 `const` 与非 `const` 重载，并明确选择检查或不检查。编译可写、只读与越界三个测试；若提供 `at()`，还要验证两个入口的契约确实不同。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型容易按语法形状补齐运算符，却不先确定语义。常见结果包括：成员 `operator+` 意外修改 `*this`；只测试 `value * scalar` 就声称 `scalar * value` 可用；下标按值返回或缺少 `const` 重载；手写六个比较关系后出现 `a == b` 但 `a < b` 也为真；默认 `<=>` 把缓存字段纳入身份；以及用重载 `&&` 保护本应短路的右侧访问。另一类失败是加入过多隐式转换来消除编译错误，最后把原问题变成歧义或静默精度损失。
+
+**让 AI 检查**
+
+- 列出表达式的成员、非成员、内置与改写候选，并说明每个实参需要的转换以及最终选择。
+- 为每个运算符写出「是否修改操作数、返回类别、相等与排序字段、异常和边界行为」契约表。
+- 编译正反两种操作数顺序、`const` 对象调用、链式调用和预期失败的隐式转换，给出实际诊断。
+
+**审查清单**
+
+- 检查符号含义是否符合领域约定，并确认 `+`、`+=`、`==` 与排序之间没有语义分叉。
+- 检查返回值或引用的生命周期、成员函数的 `const` 限定，以及隐藏友元能否通过 ADL 找到。
+- 用边界值、混合类型、NaN、越界索引和带副作用的逻辑右操作数覆盖容易被样例漏掉的路径。
+
+**提示词词汇**
+
+使用准确术语：`operator function`（运算符函数）、`member operator`（成员运算符）、`non-member operator`（非成员运算符）、`hidden friend`（隐藏友元）、`argument-dependent lookup`（参数依赖查找）、`overload resolution`（重载决议）、`rewritten candidate`（改写候选）、`implicit conversion sequence`（隐式转换序列）、`three-way comparison`（三向比较）、`comparison category`（比较类别）与 `short-circuit evaluation`（短路求值）。要求模型给出候选集合和语义契约；只说「实现所有常用运算符」太容易得到一组能编译却彼此矛盾的函数。
+
+<Depth level="deep">
+
+## 候选查找与隐藏友元
+
+运算符表达式进入重载决议时，编译器按操作数类型建立几类候选。成员候选来自左操作数的类作用域；非成员候选来自普通非限定查找与 ADL；内置候选表示语言原有运算；关系与相等运算在 C++20 起还可能加入改写候选。最后仍按普通重载决议规则选择唯一最佳可行函数。
+
+ADL 会查看实参类型的关联命名空间和关联类。隐藏友元虽然不能靠普通非限定查找随处找到，但以所属类对象为实参时会进入 ADL 候选。这尤其适合对称运算：函数靠近类定义，可以访问私有表示，同时两个显式形参接受同一套转换比较。
+
+隐藏不等于私有。只要调用中有相关类型，函数就可能被发现；它也仍受重载决议和访问之外的普通语言规则约束。把大量无关友元塞进类体不会自动改善封装，真正收益是把只对该类型有意义的操作限制在关联查找路径上。
+
+转换序列决定候选是否可行以及谁更优。标准转换通常优于用户定义转换，而一个实参的隐式转换序列最多包含一次用户定义转换。设计混合算术时，要逐个写出左侧和右侧从源类型到形参类型的路径，不能只凭「看起来可以转换」判断。
+
+成员运算符的隐式对象形参不会通过用户定义转换把任意左值变成该类对象。这解释了许多左右不对称，而不是编译器的特殊例外。将对称操作写成非成员函数后，两侧都是普通显式形参，转换机会才真正对称。
+
+命名空间级普通函数也能完成同样工作，隐藏友元不是强制风格。若函数还需要按名称调用，或者它是多个类型共同拥有的操作，命名空间级声明更容易发现。选择依据是操作归属和查找方式，而不是把 `friend` 当作现代化标签。
+
+## C++23 比较模型
+
+<Term id="three-way-comparison">三向比较（three-way comparison）</Term>运算符 `<=>` 一次描述小于、等于或大于的关系，并可能表示无序。C++20 的改写候选允许 `<`、`>`、`<=` 和 `>=` 使用 `<=>`，`!=` 则可从 `==` 改写。这样能减少手写关系运算逐渐不一致的问题。
+
+类内写 `auto operator<=>(const T&) const = default;` 时，编译器按基类与非静态数据成员的声明顺序比较子对象。如果类中没有显式声明任何名为 `operator==` 的成员或友元，这个默认三向比较还会隐式声明默认的 `operator==`。因此，不需要为了相等比较再机械复制字段列表。
+
+默认并不表示一定可用。某个子对象不支持所需比较时，生成的比较可能被定义为删除；引用成员与联合体变体也受到额外限制。`auto` 返回类型会综合子对象的比较类别，所以添加一个浮点字段可能把原来的强序降为偏序。
+
+| 比较类别 | 典型语义 | 审查重点 |
+| --- | --- | --- |
+| `std::strong_ordering` | 相等值可互换，例如整数 | `==` 与等价必须一致 |
+| `std::weak_ordering` | 可排序的等价类，例如忽略大小写文本 | 等价不一定表示对象完全相同 |
+| `std::partial_ordering` | 可能无序，例如带 NaN 的浮点数 | 调用方必须处理 `unordered` |
+
+选择手写 `<=>` 时，应返回符合领域关系的类别，而不是一律声称 `strong_ordering`。大小写无关文本可能让不同拼写处于同一排序等价类；浮点 NaN 与任何值都可能无序。错误强化类别会向泛型代码承诺并不存在的性质。
+
+相等身份和排序等价必须作为一组设计。有序关联容器用比较定义键等价，不一定调用 `operator==`；若两套关系使用不同字段，同一个对象集合在查找、去重和直接比较中会得到冲突结果。测试应覆盖只改变每个候选字段的对象对。
+
+## 语法、求值与限制
+
+重载发生在解析之后，所以 `a + b * c` 永远先按 `*` 的优先级分组。你不能把二元 `+` 变成三元操作，也不能声明程序自己的符号。若表达式需要另一种结构，应使用命名函数或领域专用构建器。
+
+运算符写法和显式函数调用写法在求值规则上也不应随意混用。`a @ b` 的操作数遵守对应内置运算符规定的求值顺序，而显式 `operator@(a, b)` 是普通函数调用。依赖细微求值顺序会让接口难以审查，最好先把有副作用的子表达式拆成具名语句。
+
+重载 `&&` 与 `||` 不提供内置逻辑运算的短路。两个操作数都要成为函数调用实参，因此右侧会求值。模板代码若接收可能重载这些符号的类型，也不能把它们当作控制流守卫。
+
+重载逗号与一元取地址运算符同样会推翻低层代码的普遍预期。泛型库常使用专门技巧绕开被重载的取地址运算，逗号重载也很少比命名操作清楚。能声明不等于适合声明，接口成本通常高于节省的几个字符。
+
+转换运算符使用 `operator Type()` 形式，不写普通返回类型。除布尔条件等规定语境外，`explicit` 会阻止隐式使用。对所有权句柄、单位和值域受限类型，显式转换通常能让调用点保留原本需要审查的信息。
+
+C++23 允许 `operator[]` 接受多个下标实参，也允许 `operator[]` 与 `operator()` 成为静态成员，但它们仍属于必须以成员形式声明的运算符。这不会替旧接口自动增加多维边界检查；参数数量变化后，每一维的范围与返回引用生命周期仍要单独定义。
+
+## 验证语义契约
+
+编译成功只能证明某个候选可用。测试应先保存两个操作数，再执行二元运算并确认原值是否按契约保持；随后单独测试复合赋值、前缀与后缀形式。返回引用的运算还应比较地址，防止它返回副本或无关对象。
+
+对称运算至少要编译 `a @ b` 与 `b @ a`，并用不同类型覆盖允许和禁止的转换。预期不合法的表达式同样需要测试，可以借助 `requires` 表达式或类型特征确认它仍然不成立。这样，后来新增构造函数时不会静默扩大接口。
+
+比较测试不该只列几个固定结果。应检查自反性、反对称关系、传递性，以及 `==` 与排序等价是否一致；带浮点成员时要显式加入 NaN、正负零和无穷值。概念检查能验证语法形状，却不能证明这些运行时性质。
+
+下标与解引用运算要覆盖 `const` 和非 `const` 对象、首尾边界以及失效后的引用。返回代理对象时，还要测试赋值、读取和生命周期，而不能假设它与真正的 `T&` 完全相同。代理是独立的接口决定，应在类型文档中说明。
+
+流输出测试应把对象夹在前后文本之间，确认函数返回原流并支持链式操作。若实现修改精度、进制或填充字符，还要检查是否恢复调用方的格式状态；最安全的简单输出通常沿用收到的流状态，不擅自设置全局格式。
+
+生成代码审查可以把这些检查整理成一张矩阵：操作数类型、左右顺序、对象常量性、预期候选、是否修改、返回类别与失败方式。矩阵中的空格比重复样例更有价值，因为真正的错误常藏在模型没有生成的那一种调用形状里。
+
+</Depth>
+
+<Checkpoint id="cpp/operator-overloading" />
+
+## 延伸阅读
+
+- [C++23 草案：重载运算符](https://timsong-cpp.github.io/cppwp/n4950/over.oper)
+- [C++23 草案：表达式中的运算符候选](https://timsong-cpp.github.io/cppwp/n4950/over.match.oper)
+- [C++23 草案：默认比较运算符](https://timsong-cpp.github.io/cppwp/n4950/class.compare.default)
+- [C++ Core Guidelines：运算符重载规则](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Ro-rules)
