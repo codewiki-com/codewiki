@@ -88,7 +88,7 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
     const isShown = (element: HTMLElement) => element.getClientRects().length > 0;
     const shownSections = () => [...article.querySelectorAll<HTMLElement>('h2')].filter(isShown);
 
-    let sections = shownSections();
+    let sections: HTMLElement[] = [];
     const seen = new Set<Element>();
     let complete = false;
     /**
@@ -183,12 +183,17 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
     const observer = new IntersectionObserver(evaluate, { rootMargin: '0px 0px -20% 0px' });
 
     /** Re-reads which sections the current depth shows and observes exactly those. */
+    let refreshFrame = 0;
     const refresh = () => {
-      sections = shownSections();
-      observer.disconnect();
-      for (const section of sections) observer.observe(section);
-      if (checkpoint) observer.observe(checkpoint);
-      evaluate();
+      if (refreshFrame) return;
+      refreshFrame = requestAnimationFrame(() => {
+        refreshFrame = 0;
+        sections = shownSections();
+        observer.disconnect();
+        for (const section of sections) observer.observe(section);
+        if (checkpoint) observer.observe(checkpoint);
+        evaluate();
+      });
     };
 
     refresh();
@@ -214,6 +219,7 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
       observer.disconnect();
       document.removeEventListener(DEPTH_EVENT, refresh);
       removeEventListener('scroll', onScroll);
+      if (refreshFrame) cancelAnimationFrame(refreshFrame);
       if (frame) cancelAnimationFrame(frame);
       removeEventListener('pagehide', flush);
       flush();

@@ -91,6 +91,7 @@ export default function Toc({ labels }: TocProps) {
     const onDepth = (event: Event) => {
       const detail = (event as CustomEvent<Depth>).detail;
       apply(isDepth(detail) ? detail : 'standard');
+      scheduleMark();
     };
     document.addEventListener(DEPTH_EVENT, onDepth);
 
@@ -118,13 +119,22 @@ export default function Toc({ labels }: TocProps) {
         anchor.classList.toggle('on', headings[index]?.slug === active.slug);
     };
 
+    let frame = 0;
+    const scheduleMark = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        mark();
+      });
+    };
+
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) visible.add(entry.target.id);
           else visible.delete(entry.target.id);
         }
-        mark();
+        scheduleMark();
       },
       { rootMargin: '-80px 0px -65% 0px' },
     );
@@ -133,16 +143,9 @@ export default function Toc({ labels }: TocProps) {
     /* The observer only reports crossings, and a jump — an in-page link, a restored scroll
        position, a flick of the wheel — can skip the band entirely, so the scroll is watched too.
        One frame at a time is enough for a class swap. */
-    let frame = 0;
-    const onScroll = () => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        mark();
-      });
-    };
+    const onScroll = scheduleMark;
     addEventListener('scroll', onScroll, { passive: true });
-    mark();
+    scheduleMark();
 
     return () => {
       observer.disconnect();
