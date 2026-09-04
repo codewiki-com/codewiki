@@ -48,7 +48,11 @@ const FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 const HEADING = /^ {0,3}(#{1,6})(?:\s+.*)?$/;
 const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
 const THEMATIC_BREAK = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
-const COMPONENT = /^<(?:[A-Z]|\/)/;
+// A block-level component tag owns its whole line: `<Depth level="deep">`, `<Checkpoint />`
+// or `</Depth>`. A line that merely opens with an inline component and continues with prose
+// — `<Term id="x">event loop</Term> coordinates …` — is a paragraph, not a component.
+const COMPONENT_OPEN = /^<[A-Z][\w.]*(?:\s[^<>]*?)?\/?>$/;
+const COMPONENT_CLOSE = /^<\/[A-Za-z][\w.]*\s*>$/;
 const MDX_STATEMENT = /^(?:import|export)\s/;
 const INDENTED_CODE = /^(?: {4}|\t)/;
 
@@ -167,7 +171,7 @@ function classify(group: string[], line: number): Block {
   const heading = HEADING.exec(first);
   if (heading) return { kind: 'heading', depth: heading[1].length, line };
   const trimmed = first.trimStart();
-  if (COMPONENT.test(trimmed)) return { kind: 'component', line };
+  if (isComponentTag(trimmed)) return { kind: 'component', line };
   if (MDX_STATEMENT.test(trimmed)) return { kind: 'other', line };
   if (THEMATIC_BREAK.test(first)) return { kind: 'other', line };
   if (trimmed.startsWith('>')) {
@@ -177,6 +181,12 @@ function classify(group: string[], line: number): Block {
   if (trimmed.startsWith('|')) return { kind: 'table', line };
   if (LIST_ITEM.test(first)) return { kind: 'list', itemCount: topLevelItems(group), line };
   return { kind: 'paragraph', line };
+}
+
+/** True when the line is a standalone block-level component tag. */
+function isComponentTag(line: string): boolean {
+  const tag = line.trimEnd();
+  return COMPONENT_OPEN.test(tag) || COMPONENT_CLOSE.test(tag);
 }
 
 /**

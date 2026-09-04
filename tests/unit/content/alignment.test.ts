@@ -122,18 +122,15 @@ describe('alignBlocks', () => {
     expect(result.aligned).toBe(true);
   });
 
-  // The polished javascript/event-loop pair really is misaligned: its zh side opens a
-  // paragraph with an inline `<Term>` at line start, which the ruling classifies as a
-  // component. The pair is frozen here so the checker keeps naming that one block.
-  it('reports the one real mismatch in the javascript/event-loop pair', () => {
+  // The zh side of this pair opens a paragraph with an inline `<Term>` at line start; that
+  // is prose, not a block-level component, so the pair aligns. The files are frozen here.
+  it('aligns the polished javascript/event-loop pair', () => {
     const result = alignBlocks(
       blocks(read('alignment', 'event-loop.en.mdx')),
       blocks(read('alignment', 'event-loop.zh.mdx')),
     );
-    expect(result.aligned).toBe(false);
-    expect(result.mismatches).toHaveLength(1);
-    expect(result.mismatches[0]).toMatchObject({ index: 2, reason: 'kind: en=paragraph zh=component' });
-    expect(result.similarity).toBeGreaterThan(0.9);
+    expect(result.mismatches).toEqual([]);
+    expect(result.aligned).toBe(true);
   });
 });
 
@@ -151,6 +148,20 @@ describe('authoring patterns', () => {
   it('aligns a <Depth> wrapper against its translation', () => {
     const en = '<Depth level="deep">\n\n## Heading\n\nA paragraph.\n\n</Depth>\n';
     const zh = '<Depth level="deep">\n\n## 标题\n\n一段话。\n\n</Depth>\n';
+    expect(alignBlocks(blocks(en), blocks(zh)).aligned).toBe(true);
+  });
+
+  it('treats a standalone component tag as a component', () => {
+    for (const tag of ['<TLDR>', '<Depth level="deep">', '<Checkpoint id="python/closures" />', '</Depth>']) {
+      expect(blocks(`${tag}\n`)[0].kind).toBe('component');
+    }
+  });
+
+  it('treats a line that only opens with an inline component as a paragraph', () => {
+    const en = '<Term id="event-loop">event loop</Term> coordinates JavaScript execution.\n';
+    const zh = '<Term id="event-loop">事件循环</Term>负责协调 JavaScript 的执行。\n';
+    expect(blocks(en)[0].kind).toBe('paragraph');
+    expect(blocks(zh)[0].kind).toBe('paragraph');
     expect(alignBlocks(blocks(en), blocks(zh)).aligned).toBe(true);
   });
 
