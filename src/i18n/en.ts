@@ -603,4 +603,17 @@ export default {
   'search.hintClose': 'close',
   'search.unavailable': 'Search is unavailable here: the index is built by pnpm build.',
   'search.openPage': 'Open the search page',
+
+  // Task 12
+  'bilingual.enZh': 'EN + 中文',
+  'bilingual.zhEn': '中文 + EN',
+  'bilingual.aligned': 'aligned · paragraph for paragraph',
+  'bilingual.codeShared': 'code blocks are shared',
+  'bilingual.reading': 'reading',
+  'bilingual.layout': 'Layout',
+  'bilingual.paired': 'paired',
+  'bilingual.side': 'side by side',
+  'bilingual.pairedExplain': 'Paired puts each translated paragraph under its matching paragraph.',
+  'bilingual.sideExplain': 'Side by side needs a screen at least 1440 px wide.',
+  'bilingual.notAligned': 'not aligned yet',
 } as const;

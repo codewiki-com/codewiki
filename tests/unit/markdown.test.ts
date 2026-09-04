@@ -8,6 +8,7 @@ import type { Root as MdastRoot } from 'mdast';
 import type { Root as HastRoot, Element } from 'hast';
 import { remarkCallouts } from '@/markdown/remark-callouts';
 import { remarkDepth } from '@/markdown/remark-depth';
+import { rehypeBlockIds } from '@/markdown/rehype-block-ids';
 import { rehypeCodebox } from '@/markdown/rehype-codebox';
 import { rehypeDepthHeadings } from '@/markdown/rehype-depth-headings';
 import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
@@ -343,6 +344,71 @@ describe('rehypeDepthHeadings', () => {
     // Only h2/h3 reach the table of contents, so nothing else is marked.
     expect(other.properties['data-depth']).toBeUndefined();
     expect((tree.children[2] as Element).properties['data-depth']).toBeUndefined();
+  });
+});
+
+describe('rehypeBlockIds', () => {
+  it('uses unique TLDR, intro and per-heading ids and marks shared code blocks', () => {
+    const element = (tagName: string, properties: Element['properties'] = {}): Element => ({
+      type: 'element',
+      tagName,
+      properties,
+      children: [],
+    });
+    const tldrParagraph = element('p');
+    const intro = element('p');
+    const first = element('p');
+    const code = element('figure', { className: ['codebox'] });
+    const calloutText = element('p');
+    const callout = element('aside', { className: ['callout', 'callout-note'] });
+    callout.children.push(calloutText);
+    const list = element('ul');
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { className: ['tldr'] },
+          children: [
+            {
+              type: 'element',
+              tagName: 'div',
+              properties: { className: ['tldr-cell'] },
+              children: [tldrParagraph],
+            },
+          ],
+        },
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { 'data-depth': 'standard' },
+          children: [
+            intro,
+            element('h2', { id: 'first-section' }),
+            first,
+            code,
+            callout,
+            element('h3', { id: 'details' }),
+            list,
+          ],
+        },
+      ],
+    };
+
+    rehypeBlockIds()(tree);
+
+    const ids = [tldrParagraph, intro, first, code, callout, list].map((node) => node.properties['data-bi']);
+    expect(ids).toEqual([
+      'tldr:1',
+      'intro:1',
+      'first-section:1',
+      'first-section:2',
+      'first-section:3',
+      'details:1',
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(calloutText.properties['data-bi']).toBeUndefined();
   });
 });
 
