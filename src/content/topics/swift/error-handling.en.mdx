@@ -1,0 +1,401 @@
+---
+title: Swift Error Handling
+description: Model recoverable failure with Error, throw, do-catch, typed throws, and Result while preserving useful information at the right boundary.
+track: swift
+section: basics
+difficulty: intermediate
+tags: [swift, error-handling, throws, result]
+prerequisites: [swift/fundamentals, swift/enums-pattern-matching, swift/optionals]
+related: [swift/codable, swift/async-await, swift/concurrency, swift/closures]
+terms: [throwing-function, error-propagation, typed-throws, result-type, error-wrapping]
+verified: { version: 'Swift 6.3.3', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: swift/error-handling
+sources:
+  - { title: 'The Swift Programming Language — Error Handling', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/errorhandling/' }
+  - { title: 'The Swift Programming Language — Declarations', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/declarations/#Throwing-Functions-and-Methods' }
+  - { title: 'Swift Evolution SE-0413 — Typed throws', url: 'https://raw.githubusercontent.com/swiftlang/swift-evolution/main/proposals/0413-typed-throws.md' }
+  - { title: 'Apple Developer Documentation — Result', url: 'https://developer.apple.com/documentation/swift/result' }
+origin: old/src/content/docs/swift/error-handling.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Swift describes recoverable failures with values that conform to `Error`; throwing one ends the current normal path until a caller handles it.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `try?` discards the reason for failure, while `try!` turns a recoverable failure into a runtime error; a broad `catch` can silently swallow failure too.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Catch an error at a boundary that can recover, and otherwise propagate it; convert it to an optional only when the caller truly doesn't need the reason.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Error handling represents an operation that didn't produce its promised result and carries the reason to code that can decide what happens next. Swift errors are ordinary values: any type conforming to `Error` can be thrown. Enums work especially well for a finite set of failure categories, while associated values carry the context needed for a recovery decision.
+
+A <Term id="throwing-function">throwing function</Term> writes `throws` in its signature. Its call site must use `try`, making the possible early control transfer visible during review. Passing the error from the current scope to its caller is <Term id="error-propagation">error propagation</Term>.
+
+Errors and optionals solve different problems. An optional says that a value might be absent but doesn't explain why; an error fits when the caller needs to distinguish invalid input, unavailable resources, insufficient permission, or another cause. Assertions and preconditions report programmer contract violations or broken invariants, so they aren't substitutes for recoverable errors.
+
+You meet error handling in parsing, filesystems, networking, persistence, and asynchronous APIs. The central design question isn't “where can I add `catch`?” but which boundary knows enough to retry, fall back, inform the user, or translate the failure into a domain error.
+
+## How it works
+
+An error path has four actions: define an error value, issue the failure with `throw`, mark the possible control transfer with `try` at the call site, and either handle or propagate it. `throw` immediately leaves the current normal path, so later statements on that path don't run. A throwing function can return a value, but one invocation either returns or throws; it doesn't do both.
+
+A typical error enum puts stable categories in cases and dynamic information in associated values. For example, `invalidCoupon(code:)` supports programmatic handling better than a string error because callers can exhaustively match the category while retaining the exact coupon for a safe user message.
+
+Swift provides four call forms:
+
+1. `try` preserves the error so the current scope can catch or propagate it.
+2. `try?` turns the success value into an optional and produces `nil` when the call throws.
+3. `try!` asserts that the call won't throw; a false assertion causes a runtime error.
+4. `Result<Success, Failure>` stores either success or failure as a value, which fits caches, queues, or interfaces that still use completion callbacks.
+
+### Choose a representation by semantics
+
+One failure shouldn't be represented simultaneously as an optional, an error, and a Boolean flag. Choose one primary representation so callers can see what they must handle from the type and call syntax; convert once, explicitly, only when crossing a storage or callback boundary.
+
+| Situation | Representation | Caller guarantee |
+| --- | --- | --- |
+| Absence is an ordinary result | `Optional` | A value or no value, with no failure category |
+| An operation on the call stack can fail | `throws` | A success value or an open error set |
+| The abstraction owns every failure category | `throws(Failure)` | A success value or one concrete error type |
+| The outcome must be stored or sent as a message | `Result<Success, Failure>` | An exhaustively inspectable success or failure value |
+| A programmer broke a required invariant | Assertion or precondition | A defect, with no runtime recovery promise |
+
+The table describes an API contract, not error severity. The same “record not found” condition can be `nil` in a search interface and an error in an update-by-primary-key interface; the caller's promise and recovery needs decide.
+
+A `do`–`catch` selects the first matching `catch` in source order. A pattern can match a particular error case, bind associated values, add a `where` condition, or use a patternless `catch` for everything left. Plain `throws` is equivalent to `throws(any Error)`, so it usually needs a final fallback branch.
+
+Swift 6 typed throws writes a concrete failure type as `throws(MyError)`. The compiler rejects other thrown types in that function and can preserve the type through a call chain. A specific error type becomes part of the API contract, while unqualified `throws` allows an implementation and its dependencies to add error types later.
+
+The handling site defines an abstraction boundary. A low-level function should expose enough information to diagnose failure, while a higher boundary can recover or translate implementation details into a domain error. Translation can retain the low-level cause in an associated value, a form of <Term id="error-wrapping">error wrapping</Term>; don't reduce it to a context-free generic string.
+
+### Catch where recovery is possible
+
+Catching isn't the same as handling. Printing an error and returning a normal value usually makes failure disappear from the type system; if this layer can't take a different action, propagate it so a higher layer can decide.
+
+A valid recovery action changes the outcome: retry an operation classified as transient, use an explicit fallback, ask the user to correct input, or translate a technical error into a stable domain failure. Logging alone doesn't change the failed state, so it normally still needs a rethrow.
+
+An error can pass through several intermediate functions that don't catch it. That isn't less robust; it avoids copying the same `do`–`catch` through every layer. Fewer boundaries make translation rules and observability policy easier to keep consistent.
+
+Throwing initializers follow the same model: when input fails a condition before initialization completes, throw instead of producing a partly valid instance. The caller still uses `try` and receives no instance on failure.
+
+## Examples
+
+### Define, throw, and catch domain errors
+
+The first example uses an enum to distinguish an empty cart from an invalid coupon. `checkoutTotal` uses plain `throws`, so its caller keeps a fallback `catch` for any `Error` value the signature permits.
+
+<Depth level="quick">
+
+```swift title="checkout_errors.swift"
+// # not executed here: Swift toolchain is not installed.
+enum CheckoutError: Error {
+    case emptyCart
+    case invalidCoupon(code: String)
+}
+
+func checkoutTotal(subtotal: Int, coupon: String?) throws -> Int {
+    guard subtotal > 0 else { throw CheckoutError.emptyCart }
+    guard let coupon else { return subtotal }
+    guard coupon == "SAVE10" else {
+        throw CheckoutError.invalidCoupon(code: coupon)
+    }
+    return subtotal * 90 / 100
+}
+
+for order in [(2500, "SAVE10"), (0, nil), (1800, "FALL")] {
+    do {
+        print(try checkoutTotal(subtotal: order.0, coupon: order.1))
+    } catch CheckoutError.emptyCart {
+        print("empty cart")
+    } catch CheckoutError.invalidCoupon(let code) {
+        print("invalid coupon: \(code)")
+    } catch {
+        print("unexpected error: \(error)")
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+</Depth>
+
+Each loop iteration either prints a total or transfers control into one matching handler. The empty-cart branch doesn't need the error value, while the coupon branch binds its associated value. The final `catch` isn't decoration; it corresponds to the open error set exposed by plain `throws`.
+
+Production business code usually doesn't print at the low level. A UI boundary can turn `emptyCart` into an action message and attach `invalidCoupon` to an input field; a service can instead keep throwing and leave the decision to a caller that understands the user action.
+
+### Close the failure set with typed throws
+
+Typed throws lets `parseQuantity` throw only `QuantityError`. Inside the patternless `catch`, `error` keeps the concrete enum type, so its `switch` must cover every case; adding a case later makes the compiler identify handling code that needs an update.
+
+```swift title="typed_quantity.swift"
+// # not executed here: Swift toolchain is not installed.
+enum QuantityError: Error {
+    case empty
+    case notANumber(String)
+    case outsideRange(Int)
+}
+
+func parseQuantity(_ text: String) throws(QuantityError) -> Int {
+    guard !text.isEmpty else { throw .empty }
+    guard let value = Int(text) else { throw .notANumber(text) }
+    guard 1...20 ~= value else { throw .outsideRange(value) }
+    return value
+}
+
+for input in ["3", "", "many", "25"] {
+    do {
+        print("quantity: \(try parseQuantity(input))")
+    } catch {
+        switch error {
+        case .empty:
+            print("quantity is empty")
+        case .notANumber(let text):
+            print("not a number: \(text)")
+        case .outsideRange(let value):
+            print("outside range: \(value)")
+        }
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+The short form `throw .empty` works because the function signature already supplies the error type. A concrete type fits a function whose complete failure set is controlled by the current module; if the function directly propagates errors from several dependencies, forcing them into one enum can create wrapping code with no recovery value.
+
+You can also write `do throws(QuantityError) { ... }` to constrain a `do` block explicitly. Swift can usually infer a single concrete error type, but spelling it out in a public function signature makes the contract immediately visible to callers.
+
+### Store failure in Result
+
+The <Term id="result-type">result type</Term>, `Result`, is an enum with `.success` and `.failure` cases. This function stores one inventory reservation as a value, so a caller can switch over it later instead of handling it immediately on the stack where it was produced.
+
+```swift title="stored_result.swift"
+// # not executed here: Swift toolchain is not installed.
+enum StockError: Error {
+    case invalidRequest
+    case insufficient(available: Int)
+}
+
+func reserve(stock: Int, requested: Int) throws(StockError) -> Int {
+    guard requested > 0 else { throw .invalidRequest }
+    guard requested <= stock else { throw .insufficient(available: stock) }
+    return stock - requested
+}
+
+func reservation(stock: Int, requested: Int) -> Result<Int, StockError> {
+    do {
+        return .success(try reserve(stock: stock, requested: requested))
+    } catch {
+        return .failure(error)
+    }
+}
+
+for requested in [2, 7] {
+    switch reservation(stock: 5, requested: requested) {
+    case .success(let remaining):
+        print("remaining: \(remaining)")
+    case .failure(.invalidRequest):
+        print("invalid request")
+    case .failure(.insufficient(let available)):
+        print("only \(available) available")
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+`Result.get()` rethrows a stored failure, `map` transforms only the success value, and `mapError` transforms only the failure. These operations compose in value pipelines, but they don't decide which failures are recoverable and don't replace a native `async throws` signature.
+
+New asynchronous Swift APIs normally return a value directly and use `async throws`. An explicit `Result` adds value only when an outcome must be stored, passed as a collection element, or adapted to a callback protocol.
+
+### Preserve caller capabilities with rethrows
+
+`rethrows` means a function can throw only when one of its function parameters throws; it can't originate a new error. The call to `audited` with a nonthrowing closure needs no `try`, while a throwing closure propagates its error through the wrapper. `defer` runs before the current scope exits by either returning or throwing.
+
+```swift title="rethrows_cleanup.swift"
+// # not executed here: Swift toolchain is not installed.
+enum ExportError: Error {
+    case empty
+}
+
+func audited<T>(_ operation: () throws -> T) rethrows -> T {
+    print("begin")
+    defer { print("end") }
+    return try operation()
+}
+
+func export(rowCount: Int) throws(ExportError) -> String {
+    guard rowCount > 0 else { throw .empty }
+    return "report.csv"
+}
+
+let cached = audited { "cached.csv" }
+print(cached)
+
+do {
+    print(try audited { try export(rowCount: 0) })
+} catch ExportError.empty {
+    print("empty export")
+} catch {
+    print("unexpected error: \(error)")
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+`defer` fits releasing locks, closing manually managed handles, or restoring temporary state, but it doesn't roll back business side effects that already committed. If the wrapper itself can throw because an audit write fails, it can't be `rethrows`; it must use plain or typed `throws` to expose the larger failure set.
+
+## Pitfalls
+
+> [!PITFALL]
+> Wrapping decoding, disk writes, or permission checks in `try?` compresses every failure into the same `nil`. The caller can't distinguish genuine absence from corrupt data, and monitoring loses the root cause.
+
+**Fix:** use `try?` only when the reason is irrelevant and `nil` has an unambiguous meaning. At a data boundary, use `do`–`catch` to record approved diagnostics and then propagate or translate the error; don't log complete input or sensitive associated values by default.
+
+> [!PITFALL]
+> `try!` isn't a compiler proof; it's a runtime assertion. Test fixtures, bundled resources, and generated code can change with configuration or deployment, turning a supposedly infallible call into process termination.
+
+**Fix:** use ordinary `try` and handle or propagate the error. Consider `try!` only when failure truly means an unrecoverable programmer defect and tests plus encapsulation enforce the invariant; even then, keep the assertion at the smallest boundary.
+
+> [!PITFALL]
+> A patternless `catch` before a specific branch shadows the later handling. At an untyped `throws` boundary, handling only today's known errors also misses error types that a dependency adds later.
+
+**Fix:** put specific patterns first and keep a fallback for an open error set. When the failure set is genuinely closed, use typed throws and an exhaustive switch so a new case becomes a compile-time failure.
+
+> [!PITFALL]
+> Replacing errors with `operationFailed` at every layer discards the underlying cause. Conversely, making UI or domain code match filesystem and transport-library details leaks implementation across the abstraction boundary.
+
+**Fix:** translate only at an abstraction boundary and retain the category and context needed for recovery. Store an underlying error as an associated value when diagnostics need it, while letting a separate logging policy decide which data may be emitted.
+
+> [!PITFALL]
+> `throws` describes control flow, not transaction semantics. Messages sent, external state changed, or partial data written before the throw aren't rolled back automatically, and `defer` only runs the cleanup you wrote.
+
+**Fix:** validate before irreversible side effects, use storage APIs with atomic guarantees, or design compensation for a multistep operation. Inject failure at every throwing step and inspect final state instead of merely asserting that some error arrived.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often insert `try?` plus a default to satisfy the type checker, disguising corrupt data as missing data, or carry `try!` from a test into production. Another failure is `catch { print(error); return fallback }`: it reports success to the caller while leaving the original error only in a potentially sensitive log. Generated retry loops may also catch everything and repeatedly execute invalid input or a `CancellationError` as if it were a transient failure.
+
+**Ask your AI to check**
+
+- List the failure type at every `try` and justify whether that site recovers, translates, or propagates it.
+- Find every `try?`, `try!`, broad `catch`, and default return, and name the error information each one discards.
+- Trace success, every domain failure, dependency errors, and cancellation separately; verify that retries cover only genuinely retryable categories.
+
+**Review checklist**
+
+- Inject failure at each throwing step and confirm partial side effects, cleanup, and returned state match the contract.
+- Check that translation preserves actionable categories without exposing sensitive associated values in logs or user messages.
+- Compile in the target Swift language mode and verify that typed throws, exhaustive handling, and function conversions aren't hidden by widening or forced casts.
+
+**Prompt vocabulary**
+
+Use the exact terms `error propagation`, `typed throws`, `exhaustive catch`, `error translation`, `underlying error`, `rethrows`, `recovery boundary`, and `partial side effect`. Ask for control flow and state changes along every failure path; “add error handling” doesn't specify a recovery contract.
+
+<Depth level="deep">
+
+## Typed throws and API boundaries
+
+Plain `throws` is shorthand for `throws(any Error)`. When an error exists as `any Error`, a caller can discover its concrete type only through pattern matching or casting; that leaves room for dependencies and implementations to add errors. Typed `throws(Failure)` instead makes the failure type part of the function type.
+
+A concrete error type fits code with a small, stable failure set wholly owned by the current abstraction. Parsers, state-machine steps, and internal module algorithms often meet that condition. A public API spanning filesystems, networking, and third-party libraries often needs an open error set, or careful translation of several low-level failures at a stable domain boundary.
+
+A nonthrowing function is equivalent to a failure type of `Never`, and you can write that explicitly as `throws(Never)`. This rule gives the compiler one model for nonthrowing functions, concrete-error functions, and any-error functions, but ordinary nonthrowing declarations don't need to spell it out.
+
+### Error identity and display text
+
+`Error` itself is an empty protocol and doesn't require user-facing text. Error cases and associated values should first support programmatic decisions; the presentation layer can then produce a message for the category, locale, and operation context.
+
+Foundation's `LocalizedError` can provide a localized description, failure reason, and recovery suggestion, but those strings remain presentation data rather than branch keys. Comparing strings to decide whether to retry breaks under copy edits, localization, or changes in a low-level library.
+
+Internal diagnostics can retain the underlying error object without making its concrete type part of a public API. A stable domain case can carry `underlying: any Error` for diagnosis while callers depend only on the category promised by the domain layer.
+
+An error description isn't a safe logging format either. Associated values can contain paths, input, server responses, or account identifiers; retaining them in an error value doesn't grant permission to emit all of them.
+
+### Catch patterns and casting
+
+`catch` branches match from top to bottom, so concrete cases and `where` conditions belong before broad types. A patternless `catch` matches everything left; branches after it are meaningless and produce an unreachable diagnostic.
+
+With an open error set, `catch let error as DomainError` can recover a domain type and then switch over it. This is a runtime type check; it doesn't change the original function's `throws(any Error)` contract into typed throws.
+
+When a concrete failure type survives through the call chain, prefer static typing and exhaustive patterns over repeated forced casts. `as!` merely turns an unknown error into a new runtime error and can't supply a recovery policy.
+
+Cases that share one recovery action can combine patterns, but don't use a large `default` to hide future categories. Exhaustiveness is an evolution signal for errors you own; a fallback is the compatibility path for an open error set.
+
+### Function conversions
+
+Whether a function throws, and which type it throws, are both part of its function type. A nonthrowing function can fill a position that accepts a throwing function because it gives a stronger guarantee; the reverse isn't valid. A concrete-error function can also widen to an `any Error` function, after which the caller no longer has its original static error information.
+
+An API shouldn't widen a function type merely for implementation convenience. When a higher-order function can propagate a closure's errors unchanged, it can use `rethrows` or typed throws parameterized by the error type. If it also originates failures, it must add them to an explicit public type or admit that the boundary throws `any Error`.
+
+You can't overload otherwise identical functions based only on `throws`, because the call syntax can't distinguish them reliably. Whether a function parameter itself throws can participate in overload resolution, but that API shape can complicate inference and diagnostics, so use it only when it materially improves the call site.
+
+### Result is storage, not another error semantics
+
+`Result<Success, Failure>` turns a control-flow event into a storable enum value. `Failure` conforms to `Error`, and a switch can exhaustively cover success and failure. Calling `get()` turns `.failure` back into throwing control flow, so the two representations can meet at an explicit adapter boundary.
+
+When a synchronous function produces one outcome for its immediate caller, `throws` is usually more direct. Returning `Result` through every layer makes each caller unpack the enum manually and can produce meaningless shapes such as `Result<Result<Value, Error>, Error>`.
+
+`Result` is natural when you need to retain outcomes from several attempts, put outcomes in a collection, or implement an interface whose protocol message is a result value. The choice depends on whether failure needs to become data, not on which mechanism is newer.
+
+### The rethrows constraint
+
+`rethrows` restricts a higher-order function on behalf of its caller: it can throw only when a declared throwing function parameter throws. A wrapper called with a nonthrowing closure therefore needs no `try`; many standard-library operations that accept transforms have this shape.
+
+The wrapper can't catch the closure's error and originate an unrelated one, nor can it add a failure from its own logging, locking, or cache work. If it needs those capabilities, use plain `throws` or design an error type that represents both closure and wrapper failures.
+
+Retry helpers make this constraint easy to violate. A helper can rethrow the last error provided by its closure, but when the attempt count is zero there is no error to throw; force-unwrapping an empty error variable is unsafe and hides the parameter contract. Reject an invalid count at the boundary or use ordinary `throws` for the configuration failure.
+
+### Cleanup, rollback, and error priority
+
+`defer` runs before scope exit whether that exit is a normal return or a throw. Multiple defers run in last-in, first-out order. It is useful for restoring in-process state, but a failing cleanup needs an explicit design; Swift doesn't automatically preserve both the original error and the cleanup error.
+
+When both the body and cleanup can fail, the API must state which error has priority and how it records the other one. Replacing the body error with the cleanup error loses the initial cause, while ignoring cleanup can hide facts such as data not reaching disk or a lock not being released. A domain error carrying both causes, controlled logging, or a result state can encode the policy.
+
+An error boundary also needs an observability policy. Stable categories, operation names, and request identifiers are usually enough to correlate failures; file contents, tokens, full server responses, and arbitrary `localizedDescription` text can contain sensitive data. Error values should support recovery, while logs follow an independent data-minimization policy.
+
+### Cancellation is still control flow
+
+Asynchronous operations often report cancellation by throwing, but not every throwing async API promises the same concrete error type. Depend on the target API's contract and distinguish cancellation, retryable failure, and permanent failure explicitly at a task boundary.
+
+An intermediate layer usually shouldn't turn cancellation into fallback success or immediately retry it. Doing so violates the initiator's request to stop and may repeat side effects that already occurred; preserve and propagate cancellation when the layer can't truly handle it.
+
+A boundary that owns the user interaction can decide not to display a cancellation as a failure, because a user navigating away might need no alert. That is a product-boundary decision, not something a broad `catch` around the entire call chain should implement accidentally.
+
+### Test failure paths as state transitions
+
+Asserting that a particular error was thrown isn't enough. Tests should inspect external state, cleanup, log fields, and callback counts before and after the throw, proving that failure didn't leave a partial result that looks successful.
+
+Give each throwing dependency a controllable substitute and fail it at the first step, a middle step, and the commit step. For multistep work, verify that compensation runs exactly once and define which cause survives if compensation also fails.
+
+Tests for a typed error should cover every case and important associated-value boundary. An adapter with plain `throws` should also receive an unexpected error type, proving that its fallback neither force-casts, leaks sensitive data, nor reports success.
+
+Generated code needs the same failure injection. A successful example proves only that the normal path works; it can't establish that catch order, retry categories, and `defer` cleanup match the real contract.
+
+</Depth>
+
+<Checkpoint id="swift/error-handling" />
+
+## Further reading
+
+- [The Swift Programming Language: Error Handling](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/errorhandling/)
+- [The Swift Programming Language: Throwing Functions and Methods](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/declarations/#Throwing-Functions-and-Methods)
+- [Swift Evolution SE-0413: Typed throws](https://raw.githubusercontent.com/swiftlang/swift-evolution/main/proposals/0413-typed-throws.md)
+- [Apple Developer Documentation: Result](https://developer.apple.com/documentation/swift/result)

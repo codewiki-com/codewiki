@@ -1,0 +1,401 @@
+---
+title: Swift 错误处理
+description: 用 Error、throw、do-catch、类型化 throws 与 Result 表达可恢复失败，并在正确的边界保留错误信息。
+track: swift
+section: basics
+difficulty: intermediate
+tags: [swift, error-handling, throws, result]
+prerequisites: [swift/fundamentals, swift/enums-pattern-matching, swift/optionals]
+related: [swift/codable, swift/async-await, swift/concurrency, swift/closures]
+terms: [throwing-function, error-propagation, typed-throws, result-type, error-wrapping]
+verified: { version: 'Swift 6.3.3', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: swift/error-handling
+sources:
+  - { title: 'The Swift Programming Language — Error Handling', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/errorhandling/' }
+  - { title: 'The Swift Programming Language — Declarations', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/declarations/#Throwing-Functions-and-Methods' }
+  - { title: 'Swift Evolution SE-0413 — Typed throws', url: 'https://raw.githubusercontent.com/swiftlang/swift-evolution/main/proposals/0413-typed-throws.md' }
+  - { title: 'Apple Developer Documentation — Result', url: 'https://developer.apple.com/documentation/swift/result' }
+origin: old/src/content/docs/swift/error-handling.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Swift 用遵循 `Error` 的值描述可恢复失败；抛出错误会终止当前正常路径，直到某个调用方处理它。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `try?` 会丢掉错误原因，`try!` 则把可恢复失败变成运行时错误；宽泛的 `catch` 也可能悄悄吞掉失败。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    在能够恢复的边界捕获错误，否则继续传播；只有调用方确实不需要失败原因时才把错误转换为可选值。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+错误处理用于表示操作没有产生承诺的结果，并把失败原因交给能够决定下一步的代码。Swift 的错误是普通值：任何遵循 `Error` 协议的类型都可以被抛出。枚举特别适合表示一组有限的失败类别，关联值则可以携带导致恢复决策所需的上下文。
+
+可抛出函数（<Term id="throwing-function">throwing function</Term>）在签名中写出 `throws`。调用点必须写 `try`，让控制流可能提前离开这件事在代码审查时可见。错误从当前作用域继续交给调用方的过程叫作<Term id="error-propagation">错误传播（error propagation）</Term>。
+
+错误与可选值解决的问题不同。可选值表示“可能没有值”，但不解释原因；错误适合调用方需要区分输入无效、资源不可用或权限不足等情况。断言与前置条件则用于程序员违约或状态不变量被破坏，不能代替可恢复错误。
+
+你会在解析、文件系统、网络、持久化和异步 API 中遇到错误处理。关键设计问题不是“在哪里加 `catch`”，而是哪个边界有足够信息来重试、降级、提示用户或把失败转换成领域错误。
+
+## 工作原理
+
+一个错误路径包含四个动作：定义错误值、用 `throw` 发出失败、在调用点用 `try` 标记可能的控制转移，以及处理或继续传播。`throw` 会立即离开当前正常路径；它后面的语句不会执行。抛出函数可以返回值，但一次调用只会返回值或抛出错误，不会同时发生两者。
+
+常见的错误枚举把稳定类别放在 `case` 中，把动态信息放在关联值中。例如，`invalidCoupon(code:)` 比一个字符串错误更适合程序化处理，因为调用方可以穷尽匹配类别，同时保留具体优惠码用于安全的用户提示。
+
+Swift 提供四种调用形式：
+
+1. `try` 保留错误，让当前作用域捕获或继续传播。
+2. `try?` 把成功值变成可选值，并在抛错时得到 `nil`。
+3. `try!` 断言不会抛错；如果断言错误，程序会触发运行时错误。
+4. `Result<Success, Failure>` 把成功或失败保存为一个值，适合缓存、队列或仍使用完成回调的接口。
+
+### 按语义选择表示
+
+同一个失败不应该同时被包装成可选值、错误和布尔标记。选择一种主要表示，让调用方从类型和调用语法中看出需要处理什么；只有跨越存储或回调边界时再做一次明确转换。
+
+| 情况 | 表示 | 调用方得到的保证 |
+| --- | --- | --- |
+| 缺失本身就是正常结果 | `Optional` | 有值或无值，没有失败类别 |
+| 调用栈上的操作可能失败 | `throws` | 成功值或开放的错误集合 |
+| 当前抽象拥有全部失败类别 | `throws(Failure)` | 成功值或一个具体错误类型 |
+| 结果需要存储或作为消息传递 | `Result<Success, Failure>` | 可穷尽检查的成功或失败值 |
+| 程序员破坏了必须成立的不变量 | 断言或前置条件 | 这是缺陷，不承诺运行时恢复 |
+
+表格描述的是 API 契约，不是错误严重程度。同一个“找不到记录”在搜索接口中可以是 `nil`，在按主键更新的接口中则可能是错误；决定因素是调用方承诺与恢复需求。
+
+`do`–`catch` 按源码顺序选择第一个匹配的 `catch`。模式可以匹配具体错误 case、绑定关联值、使用 `where` 增加条件，或用无模式的 `catch` 接住剩余错误。普通 `throws` 等价于 `throws(any Error)`，因此通常需要最终兜底分支。
+
+Swift 6 的类型化 `throws`（<Term id="typed-throws">typed throws</Term>）把具体失败类型写成 `throws(MyError)`。编译器会拒绝函数体抛出其他类型，并能在调用链中保留这个类型。具体错误类型是 API 契约的一部分；无类型限定的 `throws` 则允许实现与依赖在以后增加新的错误类型。
+
+处理位置决定抽象边界。低层函数应该提供足以诊断的错误，高层边界可以恢复，或把实现细节转换为领域错误。转换时可以通过关联值保留底层原因，这是一种<Term id="error-wrapping">错误包装（error wrapping）</Term>；不要只留下失去上下文的通用字符串。
+
+### 捕获位置就是恢复位置
+
+捕获并不等于处理。只打印错误后返回一个正常值，通常会让失败从类型系统中消失；如果本层无法采取不同动作，应继续传播，让更高层决定。
+
+合适的恢复动作必须改变结果：重试一个被判定为瞬时的操作、改用明确的后备数据、提示用户修正输入，或把技术错误转换成稳定的领域失败。单纯记录日志不改变失败状态，因此通常还要重新抛出。
+
+错误可以经过多个不捕获的中间函数。这样不会降低健壮性，反而能避免每层复制相同的 `do`–`catch`。边界越少，错误转换规则和可观测性策略越容易保持一致。
+
+抛出初始化器使用同一套规则：初始化完成前发现输入不满足条件，就抛错而不是构造一个部分有效的实例。调用方仍然通过 `try` 处理，失败时不会得到该实例。
+
+## 示例
+
+### 定义、抛出并捕获领域错误
+
+第一个例子用枚举区分空购物车与无效优惠码。`checkoutTotal` 使用普通 `throws`，所以调用方最后保留兜底 `catch`，以应对签名允许的任意 `Error` 值。
+
+<Depth level="quick">
+
+```swift title="checkout_errors.swift"
+// # not executed here: Swift toolchain is not installed.
+enum CheckoutError: Error {
+    case emptyCart
+    case invalidCoupon(code: String)
+}
+
+func checkoutTotal(subtotal: Int, coupon: String?) throws -> Int {
+    guard subtotal > 0 else { throw CheckoutError.emptyCart }
+    guard let coupon else { return subtotal }
+    guard coupon == "SAVE10" else {
+        throw CheckoutError.invalidCoupon(code: coupon)
+    }
+    return subtotal * 90 / 100
+}
+
+for order in [(2500, "SAVE10"), (0, nil), (1800, "FALL")] {
+    do {
+        print(try checkoutTotal(subtotal: order.0, coupon: order.1))
+    } catch CheckoutError.emptyCart {
+        print("empty cart")
+    } catch CheckoutError.invalidCoupon(let code) {
+        print("invalid coupon: \(code)")
+    } catch {
+        print("unexpected error: \(error)")
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+</Depth>
+
+每轮循环中的调用要么打印总价，要么转入一个匹配的处理分支。空购物车分支不需要错误对象，优惠码分支则绑定关联值。最后的 `catch` 不是装饰；它对应普通 `throws` 暴露的开放错误集合。
+
+真正的业务代码通常不会在低层直接打印。界面层可以把 `emptyCart` 转成操作提示，把 `invalidCoupon` 标记到输入字段；服务层也可以继续 `throw`，把决定权留给更了解用户操作的调用方。
+
+### 用类型化 throws 封闭失败集合
+
+类型化 `throws` 让 `parseQuantity` 只能抛出 `QuantityError`。无模式的 `catch` 中，`error` 保持具体枚举类型，因此内部的 `switch` 必须穷尽所有 case；以后新增 case 时，编译器会指出需要同步更新的处理代码。
+
+```swift title="typed_quantity.swift"
+// # not executed here: Swift toolchain is not installed.
+enum QuantityError: Error {
+    case empty
+    case notANumber(String)
+    case outsideRange(Int)
+}
+
+func parseQuantity(_ text: String) throws(QuantityError) -> Int {
+    guard !text.isEmpty else { throw .empty }
+    guard let value = Int(text) else { throw .notANumber(text) }
+    guard 1...20 ~= value else { throw .outsideRange(value) }
+    return value
+}
+
+for input in ["3", "", "many", "25"] {
+    do {
+        print("quantity: \(try parseQuantity(input))")
+    } catch {
+        switch error {
+        case .empty:
+            print("quantity is empty")
+        case .notANumber(let text):
+            print("not a number: \(text)")
+        case .outsideRange(let value):
+            print("outside range: \(value)")
+        }
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+短写法 `throw .empty` 成立，是因为函数签名已经给出错误类型。具体类型适合失败集合由当前模块完整控制的函数；如果函数直接传播多个依赖的错误，强行压成一个枚举可能带来大量没有恢复价值的包装代码。
+
+`do throws(QuantityError) { ... }` 也可以显式限制一个 `do` 块的错误类型。单一具体错误类型通常能被推断出来，但在公共函数签名中写明它，能让调用方直接看到契约。
+
+### 把失败保存为 Result
+
+`Result` 类型（<Term id="result-type">result type</Term>）是带有 `.success` 与 `.failure` 两个 case 的枚举。这里的函数把一次库存预留保存成值；调用方可以稍后 `switch`，而不必在产生结果的同一调用栈中立刻处理。
+
+```swift title="stored_result.swift"
+// # not executed here: Swift toolchain is not installed.
+enum StockError: Error {
+    case invalidRequest
+    case insufficient(available: Int)
+}
+
+func reserve(stock: Int, requested: Int) throws(StockError) -> Int {
+    guard requested > 0 else { throw .invalidRequest }
+    guard requested <= stock else { throw .insufficient(available: stock) }
+    return stock - requested
+}
+
+func reservation(stock: Int, requested: Int) -> Result<Int, StockError> {
+    do {
+        return .success(try reserve(stock: stock, requested: requested))
+    } catch {
+        return .failure(error)
+    }
+}
+
+for requested in [2, 7] {
+    switch reservation(stock: 5, requested: requested) {
+    case .success(let remaining):
+        print("remaining: \(remaining)")
+    case .failure(.invalidRequest):
+        print("invalid request")
+    case .failure(.insufficient(let available)):
+        print("only \(available) available")
+    }
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+`Result.get()` 可以把保存的失败重新抛出，`map` 只转换成功值，`mapError` 只转换失败值。它们适合在值管道中组合，但不会自动决定哪些错误应该恢复，也不会替代异步函数原生的 `async throws`。
+
+新写的异步 Swift API 通常直接返回值并使用 `async throws`。只有结果需要存储、作为集合元素传递，或必须适配回调协议时，显式 `Result` 才提供额外价值。
+
+### 用 rethrows 保留调用方能力
+
+`rethrows` 表示函数只能在传入的函数参数抛错时抛错，不能自行产生新的错误。`audited` 的非抛出闭包调用不需要 `try`；传入抛出闭包时，错误穿过包装函数。`defer` 在成功返回或抛错离开当前作用域前都会运行。
+
+```swift title="rethrows_cleanup.swift"
+// # not executed here: Swift toolchain is not installed.
+enum ExportError: Error {
+    case empty
+}
+
+func audited<T>(_ operation: () throws -> T) rethrows -> T {
+    print("begin")
+    defer { print("end") }
+    return try operation()
+}
+
+func export(rowCount: Int) throws(ExportError) -> String {
+    guard rowCount > 0 else { throw .empty }
+    return "report.csv"
+}
+
+let cached = audited { "cached.csv" }
+print(cached)
+
+do {
+    print(try audited { try export(rowCount: 0) })
+} catch ExportError.empty {
+    print("empty export")
+} catch {
+    print("unexpected error: \(error)")
+}
+```
+
+```text
+Not executed here: Swift toolchain is not installed.
+```
+
+`defer` 适合释放锁、关闭自行管理的句柄或恢复临时状态，但它不会回滚已经提交的业务副作用。如果包装器本身可能因审计写入失败而抛出新错误，它就不能声明为 `rethrows`，而应该使用普通或类型化 `throws` 明确扩大失败集合。
+
+## 陷阱
+
+> [!PITFALL]
+> 用 `try?` 包住解码、写盘或权限检查，会把所有失败压成同一个 `nil`。调用方无法区分“确实没有值”与“数据损坏”，监控也失去根因。
+
+**修复：** 只有失败原因无关紧要且 `nil` 语义明确时才使用 `try?`。在数据边界使用 `do`–`catch` 记录获准的诊断信息，再传播或转换错误；不要默认记录完整输入或敏感关联值。
+
+> [!PITFALL]
+> `try!` 不是编译器证明，而是运行时断言。测试夹具、应用内置资源和生成代码都可能随配置或部署发生变化，原本“不会失败”的调用就会让进程终止。
+
+**修复：** 使用普通 `try` 并处理或传播错误。只有失败确实表示不可继续的程序缺陷，而且该不变量由测试和封装共同保证时，才考虑 `try!`；即使如此，也应把断言限制在最小边界。
+
+> [!PITFALL]
+> 把无模式 `catch` 放在具体分支之前，会遮住后面的处理；在无类型 `throws` 边界只处理当前已知错误，又会遗漏依赖以后新增的错误类型。
+
+**修复：** 具体模式写在前面，最后为开放错误集合提供兜底。失败集合确实封闭时使用类型化 `throws`，并用穷尽 `switch` 让新增 case 变成编译错误。
+
+> [!PITFALL]
+> 在每一层都把错误替换成 `operationFailed`，会丢掉底层原因；反过来，让 UI 或领域层直接匹配文件系统、传输库的具体错误，又会泄漏实现细节。
+
+**修复：** 只在抽象边界转换错误，并保留调用方做恢复决策所需的类别与上下文。需要诊断底层原因时，把原错误存入关联值，同时让日志策略决定哪些数据可以输出。
+
+> [!PITFALL]
+> `throws` 只描述控制流，不提供事务语义。抛错之前发送的消息、修改的外部状态或写入的部分数据不会自动撤销，`defer` 也只执行清理代码。
+
+**修复：** 在不可逆副作用之前完成校验，使用具备原子性的存储 API，或为分步操作设计补偿路径。测试应在每个可能抛错的步骤注入失败并检查最终状态，而不只是断言收到某个错误。
+
+## AI 时代
+
+**生成代码在这里容易出什么错**
+
+模型常用 `try?` 和默认值让类型检查通过，却把损坏数据伪装成缺失数据；也会把测试里的 `try!` 带进生产路径。另一类失败是生成一个 `catch { print(error); return fallback }`，既向调用方报告成功，又让原始错误只存在于可能泄密的日志中。重试代码还可能捕获全部错误，把无效输入或 `CancellationError` 当成瞬时故障反复执行。
+
+**让 AI 检查什么**
+
+- 列出每个 `try` 的失败类型，并说明该位置选择恢复、转换还是继续传播的依据。
+- 找出所有 `try?`、`try!`、宽泛 `catch` 和默认返回值，说明它们丢失了哪些错误信息。
+- 逐条跟踪成功、每种领域失败、依赖错误与取消路径，检查重试是否只覆盖真正可重试的类别。
+
+**审查清单**
+
+- 对每个可抛出步骤注入失败，确认部分副作用、清理与返回状态符合契约。
+- 检查错误转换是否保留可操作的类别，同时避免在日志和用户提示中泄露敏感关联值。
+- 用目标 Swift 语言模式编译，确认类型化 `throws`、穷尽处理与函数类型转换没有被宽化或强制转换掩盖。
+
+**提示词词汇**
+
+使用精确术语 `error propagation`（错误传播）、`typed throws`（类型化 throws）、`exhaustive catch`（穷尽捕获）、`error translation`（错误转换）、`underlying error`（底层错误）、`rethrows`（重抛约束）、`recovery boundary`（恢复边界）和 `partial side effect`（部分副作用）。要求模型给出每条失败路径的控制流与状态变化；“加上错误处理”无法表达恢复契约。
+
+<Depth level="deep">
+
+## 类型化 throws 与 API 边界
+
+普通 `throws` 是 `throws(any Error)` 的简写。错误以 `any Error` 存在时，调用方只能通过模式匹配或类型转换发现具体类型；这为依赖和实现增加新错误保留了演进空间。类型化 `throws(Failure)` 则让失败类型成为函数类型的一部分。
+
+具体错误类型最适合失败集合小、稳定且由当前抽象完整拥有的代码。解析器、状态机步骤或模块内部算法通常符合这个条件。跨越文件系统、网络与第三方库的公共 API 往往更适合开放错误集合，或者在稳定的领域边界把多个底层错误谨慎转换成一个受控类型。
+
+不抛出的函数等价于失败类型为 `Never`，也可以显式写作 `throws(Never)`。这条规则让编译器统一描述“不抛错”、抛具体错误以及抛任意错误的函数类型，但日常非抛出函数没有必要写出它。
+
+### 错误身份与展示文本
+
+`Error` 本身是空协议，不要求错误提供面向用户的文本。错误 case 和关联值应该首先支持程序化决策；展示层再根据类别、语言环境和操作上下文生成消息。
+
+来自 Foundation 的 `LocalizedError` 可以提供本地化描述、失败原因与恢复建议，但这些字符串仍是展示信息，不应成为分支判断条件。用字符串比较决定是否重试，会被文案修改、本地化或底层库差异轻易破坏。
+
+内部诊断可以保留底层错误对象，但公共 API 不一定要暴露其具体类型。一个稳定领域 case 可以携带 `underlying: any Error` 用于诊断，同时让调用方只依赖领域层承诺的类别。
+
+错误描述也不是安全日志格式。关联值可能含路径、输入、服务端响应或账户标识；在错误类型中保留它们不等于允许把它们全部写入日志。
+
+### 捕获模式与类型转换
+
+`catch` 分支从上到下匹配，因此具体 case 与带 `where` 的条件要写在宽泛类型之前。无模式 `catch` 会匹配剩余一切，后面再写分支既没有意义，也会收到不可达诊断。
+
+开放错误集合中可以用 `catch let error as DomainError` 取得某个领域类型，再对它进行 `switch`。这是一项运行时类型检查，不会把原函数的 `throws(any Error)` 契约改成类型化 `throws`。
+
+具体失败类型沿调用链保留下来时，优先依赖静态类型与穷尽模式，而不是反复强制转换。`as!` 只会把未知错误变成新的运行时错误，不能补足恢复策略。
+
+多个 case 共享同一恢复动作时可以合并模式，但不要用一个大 `default` 隐藏未来类别。错误由自己控制时，穷尽性是演进提示；错误集合开放时，兜底分支才是兼容路径。
+
+### 函数类型转换
+
+函数是否抛错以及抛出的错误类型都属于函数类型。非抛出函数可以用在接受抛出函数的位置，因为它提供了更强的保证；反方向不成立。抛具体错误的函数也可以被宽化为抛出 `any Error` 的函数，宽化后调用方不再拥有原来的静态错误类型信息。
+
+API 不应只为了实现方便就宽化函数类型。高阶函数能够原样传播闭包的错误时，可以使用 `rethrows`，或使用以错误类型为泛型参数的类型化 `throws`。如果高阶函数还会产生自己的失败，就必须把这些失败纳入一个明确的公共类型，或承认边界是 `any Error`。
+
+仅凭 `throws` 不能重载两个同名且参数相同的函数，因为调用语法不足以稳定地区分它们。不过，函数参数本身是否可抛出可以参与重载；这种 API 容易让类型推断与错误信息变复杂，应只在调用体验确有改善时使用。
+
+### Result 是存储，不是另一套错误语义
+
+`Result<Success, Failure>` 把控制流事件变成可存储的枚举值。`Failure` 必须遵循 `Error`，而 `switch` 可以穷尽成功与失败两个分支。调用 `get()` 又会把 `.failure` 变回抛出控制流，因此两种表示可以在清晰的适配边界互换。
+
+如果一个同步函数只产生结果并由当前调用方立即处理，`throws` 通常更直接。层层返回 `Result` 会让每个调用点手动展开枚举，也容易出现 `Result<Result<Value, Error>, Error>` 这类没有意义的嵌套。
+
+需要保存多次尝试的结果、把结果放入集合，或实现以结果值为协议消息的接口时，`Result` 更自然。选择依据是失败是否需要成为数据，而不是错误处理方式的新旧。
+
+### rethrows 的约束
+
+`rethrows` 是高阶函数对调用方作出的限制：只有某个声明为可抛出的函数参数抛错，包装器才能抛错。因此，传入非抛出闭包时，调用包装器不需要 `try`；标准库中接受变换闭包的许多操作采用这种形式。
+
+包装器不能捕获闭包错误后自行抛出一个无关错误，也不能因为自己的日志、锁或缓存失败而增加错误来源。需要这些能力时，应改用普通 `throws`，或设计一个能同时表示闭包失败与包装器失败的错误类型。
+
+重试函数尤其容易违反这条约束。它可以重新抛出闭包提供的最后一个错误，但参数次数为零时没有错误可抛；把一个强制解包的空错误变量扔出去既不安全，也掩盖了参数契约。应在入口拒绝无效次数，或使用普通 `throws` 表示配置错误。
+
+### 清理、回滚与错误优先级
+
+`defer` 在作用域退出前执行，无论退出来自正常返回还是抛错。多个 `defer` 按后进先出的顺序运行。它适合恢复进程内状态，但清理操作本身的失败需要单独设计，不能假定原始错误和清理错误都会自动保留。
+
+当主体操作与清理都可能失败时，API 必须规定哪个错误优先，以及如何记录另一个错误。直接用清理错误覆盖主体错误会丢掉最初原因；完全忽略清理错误又可能掩盖数据未落盘或锁未释放等事实。可以用包含两个原因的领域错误、受控日志或返回状态表达策略。
+
+错误边界还要考虑可观测性。记录稳定类别、操作名与请求标识通常足够关联故障；文件内容、令牌、完整服务端响应和任意 `localizedDescription` 可能含有敏感数据。错误值应为恢复提供信息，日志则遵循独立的数据最小化策略。
+
+### 取消仍然是控制流
+
+异步操作经常通过抛错报告取消，但并非每个可抛出的异步 API 都承诺相同的具体错误类型。代码应该依赖目标 API 的契约，并在任务边界明确区分取消、可重试故障与永久失败。
+
+中间层通常不应把取消转换成后备成功值或立即重试。这样会违背发起者停止工作的请求，还可能重复已发生的副作用；无法真正处理取消时，应保留它并继续传播。
+
+拥有用户交互的边界可以选择不展示取消错误，因为用户主动离开并不一定是故障提示。这个决定属于产品边界，不能通过一个覆盖整个调用链的宽泛 `catch` 偶然实现。
+
+### 把失败路径当作状态转换测试
+
+只断言抛出了某种错误还不够。测试还要检查抛错前后的外部状态、清理动作、日志字段与回调次数，确认失败没有留下看似成功的部分结果。
+
+为每个可抛出依赖提供可控替身，并分别在第一步、中间步骤和提交步骤失败。多步操作尤其要验证补偿动作是否只执行一次，以及补偿本身失败时保留哪个原因。
+
+类型化错误的测试应该覆盖每个 case 与关键关联值边界。普通 `throws` 的适配层还要注入一个未预期的错误类型，确认兜底路径不会强制转换、泄密或错误地报告成功。
+
+生成代码需要同样的失败注入。成功示例只能证明正常路径能工作，无法证明 `catch` 顺序、重试集合与 `defer` 清理符合真实契约。
+
+</Depth>
+
+<Checkpoint id="swift/error-handling" />
+
+## 延伸阅读
+
+- [Swift 编程语言：错误处理](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/errorhandling/)
+- [Swift 编程语言：抛出函数与方法](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/declarations/#Throwing-Functions-and-Methods)
+- [Swift Evolution SE-0413：类型化 throws](https://raw.githubusercontent.com/swiftlang/swift-evolution/main/proposals/0413-typed-throws.md)
+- [Apple 开发者文档：Result](https://developer.apple.com/documentation/swift/result)
