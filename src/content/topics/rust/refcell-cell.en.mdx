@@ -1,0 +1,475 @@
+---
+title: Cell and RefCell
+description: Use Cell value replacement and RefCell runtime borrowing to model interior mutability without hiding borrow conflicts or thread boundaries.
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [interior-mutability, cell, refcell, borrow-checking, unsafe-cell]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/box-rc-arc, rust/mutex-rwlock, rust/send-sync, rust/unsafe]
+terms: [interior-mutability, borrow-checker, borrow-guard, unsafe-cell]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/refcell-cell
+sources:
+  - { title: 'Rust standard library - std::cell', url: 'https://doc.rust-lang.org/std/cell/index.html' }
+  - { title: 'Rust standard library - Cell', url: 'https://doc.rust-lang.org/std/cell/struct.Cell.html' }
+  - { title: 'Rust standard library - RefCell', url: 'https://doc.rust-lang.org/std/cell/struct.RefCell.html' }
+  - { title: 'Rust standard library - UnsafeCell', url: 'https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html' }
+  - { title: 'The Rust Programming Language - RefCell and interior mutability', url: 'https://doc.rust-lang.org/book/ch15-05-interior-mutability.html' }
+origin: old/src/content/docs/rust/refcell-cell.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="interior-mutability">Interior mutability</Term> lets a type change controlled state through a shared reference. `Cell<T>` takes out or replaces whole values, while `RefCell<T>` checks shared and exclusive borrows at runtime.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `RefCell<T>` does not remove the borrowing rules. If a live `Ref` or `RefMut` conflicts with a new borrow, `borrow()` and `borrow_mut()` panic; reentrant callbacks are a common trigger.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Prefer `Cell<T>` for small values or state that can be replaced as a whole. Use `RefCell<T>` when you must borrow the contents, keep guards short, and use `try_borrow*()` only when conflict is normal control flow.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Rust normally prohibits mutation of `T` through `&T`. This rule makes shared references observational for ordinary data, allowing the compiler to rule out dangling references and conflicting access at compile time. Some types still have shared public semantics while internally updating counts, caches, test records, or callback registries.
+
+`Cell<T>` and `RefCell<T>` are safe interior-mutability types in the standard `std::cell` module. A caller still holds a shared reference, but the wrapper confines mutation to its API. They do not bypass Rust's aliasing rules; they uphold those rules in different ways.
+
+`Cell<T>` does not return a reference to its inner `T` from a shared `&Cell<T>`. It lets you copy, take, or replace the whole value, so no inner borrow can overlap a write. `get()` requires `T: Copy`, but `Cell<T>` itself can store non-`Copy` types such as `String`; use `replace()`, `take()`, or `into_inner()` with those values.
+
+`RefCell<T>` returns `Ref<'_, T>` or `RefMut<'_, T>`. These <Term id="borrow-guard">borrow guards</Term> represent shared or exclusive access at runtime, and dropping a guard releases that access. The rules are the same as those for ordinary references; only the checking time moves from compile time to runtime.
+
+You meet these types in caches whose methods take `&self`, test doubles, single-threaded GUI state, callback registries, and shared objects shaped as `Rc<RefCell<T>>`. If a method can reasonably take `&mut self`, an ordinary field is usually clearer. Interior mutability should not be the default escape from ownership design.
+
+| Need | Starting point | Access model | Failure mode |
+| --- | --- | --- | --- |
+| Update a count or flag through `&self` | `Cell<T>` | Copy or replace the whole value | Ordinary operations do not panic from dynamic borrow conflicts |
+| Mutate a collection or struct through `&self` | `RefCell<T>` | Runtime shared/exclusive borrowing | Conflicting `borrow*()` calls panic |
+| Share mutable state between threads | `Mutex<T>`, `RwLock<T>`, or atomics | Synchronized access | Blocking, errors, or atomic-operation semantics |
+| You already have `&mut T` or own `T` | Plain `T` | Compile-time exclusive access | The compiler rejects conflicting borrows |
+
+## How it works
+
+### Whole-value operations with `Cell<T>`
+
+`Cell<T>` can contain a non-`Copy` value, but a shared reference to the cell cannot produce an ordinary reference to that value. `set()` writes a new value and drops the old one, `replace()` writes a new value and returns the old one, and `take()` replaces the value with its default and returns the old value when `T: Default`. When you own the wrapper, `into_inner()` returns `T` directly.
+
+`get()` is available only for `T: Copy` because it copies the value to the caller. If you already have `&mut Cell<T>`, `get_mut()` can return an ordinary `&mut T`; exclusivity is already proven by the outer mutable reference, so interior mutation is not involved in that check. Choose an API according to whether you need to copy, replace, or borrow, not just according to the size of `T`.
+
+| `Cell<T>` operation | Requirement | Result |
+| --- | --- | --- |
+| `get()` | `T: Copy` | Returns a copy of the inner value |
+| `set(value)` | No extra trait bound | Replaces and drops the old value |
+| `replace(value)` | No extra trait bound | Replaces and returns the old value |
+| `take()` | `T: Default` | Leaves the default and returns the old value |
+| `get_mut()` | Caller holds `&mut Cell<T>` | Returns `&mut T` |
+| `into_inner()` | Caller owns `Cell<T>` | Consumes the wrapper and returns `T` |
+
+### Dynamic borrowing with `RefCell<T>`
+
+Conceptually, `RefCell<T>` has three states: unborrowed, one or more shared borrows, or one exclusive borrow. `borrow()` adds shared access when no exclusive borrow exists, while `borrow_mut()` obtains exclusive access only when the value is completely unborrowed. The exact counter representation is a standard-library implementation detail; application code should depend only on public behavior.
+
+After a successful borrow, `Ref<T>` provides `&T`-like access through `Deref`, and `RefMut<T>` provides `&mut T`-like access through `DerefMut`. The dynamic borrow lasts as long as the guard. Storing a guard, returning it from a method, or carrying it across a callback all widen the conflict window.
+
+`borrow()` and `borrow_mut()` treat conflicts as programming errors and panic. `try_borrow()` and `try_borrow_mut()` return `Result`, which fits an interface where conflict is genuinely allowed, such as a nonblocking "currently busy" query. If a conflict should be impossible by design, discarding a `try_*` error only changes a panic into a silent lost write.
+
+When the caller has `&mut RefCell<T>`, `get_mut()` returns `&mut T` without a dynamic check. Consuming a `RefCell<T>` with `into_inner()` likewise returns the inner value without checking. These APIs let initialization, bulk updates, and destruction paths return to ordinary compile-time borrowing.
+
+### Ownership and access are separate axes
+
+`RefCell<T>` answers only "who may access `T` now"; it does not provide multiple owners. `Rc<T>` answers only "how many strong owners exist on this thread"; it does not permit mutation of `T`. Combined as `Rc<RefCell<T>>`, multiple `Rc` handles share one dynamic borrow point, and every clone can conflict with every other clone at runtime.
+
+Read a composed type from the outside inward. `Rc<RefCell<T>>` means shared ownership plus single-threaded dynamic borrowing, while `Arc<Mutex<T>>` means cross-thread shared ownership plus mutual exclusion. Mechanically changing the former into the latter introduces blocking, lock ordering, and poisoning policy; it is more than a "thread-safe version."
+
+Neither `Cell<T>` nor `RefCell<T>` implements `Sync`, so shared references to them cannot be used concurrently across threads. A wrapper can be moved as a whole to another thread when `T: Send`; that is different from sharing it between threads. `Rc<T>` itself is neither `Send` nor `Sync`.
+
+## Examples
+
+The four programs below build from whole-value replacement with `Cell<T>` to `RefCell<T>` guards, reentrant callbacks, and shared ownership with `Rc<RefCell<T>>`. They were executed with the Rust 1.98.0 toolchain, and the output blocks contain the actual results.
+
+### Replacing values with `Cell<T>`
+
+`completed` is a `Copy` count, so the method can read it with `get()` and write it with `set()`. `phase` is a `String`; it still fits in `Cell<T>`, but its whole value moves through `replace()`, `take()`, and `into_inner()`.
+
+<Depth level="quick">
+
+```rust title="cell_basics.rs"
+use std::cell::Cell;
+
+struct JobState {
+    completed: Cell<u32>,
+    phase: Cell<String>,
+}
+
+impl JobState {
+    fn finish_one(&self) -> u32 {
+        let next = self.completed.get() + 1;
+        self.completed.set(next);
+        next
+    }
+}
+
+fn main() {
+    let state = JobState {
+        completed: Cell::new(0),
+        phase: Cell::new(String::from("queued")),
+    };
+
+    println!("completed: {}", state.finish_one());
+    println!("completed: {}", state.finish_one());
+
+    let old_phase = state.phase.replace(String::from("running"));
+    println!("phase: {old_phase} -> {}", state.phase.take());
+    state.phase.set(String::from("done"));
+    println!("final phase: {}", state.phase.into_inner());
+}
+```
+
+```text
+completed: 1
+completed: 2
+phase: queued -> running
+final phase: done
+```
+
+<TryToBreak items={['a counter starting at u32::MAX', 'replacing the String twice', 'moving the Cell early with into_inner()']} />
+
+</Depth>
+
+`finish_one()` only receives `&self`, but the count mutation is confined to `Cell<u32>`. Whether addition may overflow is a separate contract. If a real count can reach its limit, choose `checked_add()`, `saturating_add()`, or a wider type and state the intended behavior.
+
+`take()` returns `"running"` and leaves `String::default()`, an empty string, in the cell. The example immediately writes `"done"` and never relies on that temporary empty state. If an empty value violates the type's invariant, use `replace()` with an explicitly valid replacement.
+
+### Observing `RefCell<T>` guards
+
+`entries()` uses `Ref::map()` to project the shared vector guard into a slice guard. While `view` remains alive, `try_record()` cannot obtain exclusive access; after the explicit `drop(view)`, the same write can succeed.
+
+```rust title="refcell_guards.rs"
+use std::cell::{Ref, RefCell};
+
+struct AuditLog {
+    entries: RefCell<Vec<String>>,
+}
+
+impl AuditLog {
+    fn record(&self, event: &str) {
+        self.entries.borrow_mut().push(event.to_owned());
+    }
+
+    fn entries(&self) -> Ref<'_, [String]> {
+        Ref::map(self.entries.borrow(), Vec::as_slice)
+    }
+
+    fn try_record(&self, event: &str) -> bool {
+        if let Ok(mut entries) = self.entries.try_borrow_mut() {
+            entries.push(event.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn main() {
+    let log = AuditLog { entries: RefCell::new(Vec::new()) };
+    log.record("created");
+    log.record("validated");
+
+    let view = log.entries();
+    println!("entries: {:?}", &*view);
+    println!("write while view lives: {}", log.try_record("committed"));
+    drop(view);
+
+    println!("write after drop: {}", log.try_record("committed"));
+    println!("entries: {:?}", &*log.entries());
+}
+```
+
+```text
+entries: ["created", "validated"]
+write while view lives: false
+write after drop: true
+entries: ["created", "validated", "committed"]
+```
+
+Returning `Ref<'_, [String]>` avoids copying the log, but it also exposes the dynamic borrow duration in the public API. If callers need only a length, a boolean, or a small amount of copyable data, an owned result usually reduces the conflict surface. If you expose a guard, document which methods it blocks.
+
+### Releasing a borrow before callbacks
+
+A callback may call back into the bus. `publish()` first clones a list of lightweight `Rc` handles, and the shared guard drops at the end of that assignment statement. `subscribe()` can therefore obtain a new exclusive borrow while callbacks run. A new subscriber takes effect on the next publication.
+
+```rust title="reentrant_bus.rs"
+use std::cell::RefCell;
+use std::rc::Rc;
+
+type Listener = Rc<dyn Fn(&EventBus)>;
+
+struct EventBus {
+    listeners: RefCell<Vec<Listener>>,
+}
+
+impl EventBus {
+    fn subscribe(&self, listener: Listener) {
+        self.listeners.borrow_mut().push(listener);
+    }
+
+    fn publish(&self) {
+        let snapshot = self.listeners.borrow().clone();
+        for listener in snapshot {
+            listener(self);
+        }
+    }
+
+    fn listener_count(&self) -> usize {
+        self.listeners.borrow().len()
+    }
+}
+
+fn main() {
+    let bus = EventBus { listeners: RefCell::new(Vec::new()) };
+    bus.subscribe(Rc::new(|bus| {
+        println!("primary");
+        bus.subscribe(Rc::new(|_| println!("secondary")));
+    }));
+
+    bus.publish();
+    println!("listeners after first: {}", bus.listener_count());
+    bus.publish();
+    println!("listeners after second: {}", bus.listener_count());
+}
+```
+
+```text
+primary
+listeners after first: 2
+primary
+secondary
+listeners after second: 3
+```
+
+If `publish()` directly used `for listener in self.listeners.borrow().iter()`, the shared guard would span the loop body. The first callback's `borrow_mut()` inside `subscribe()` would then panic. Snapshot semantics must also be part of the contract because they decide when listeners added or removed during publication become visible.
+
+### Separating ownership and borrowing with `Rc<RefCell<T>>`
+
+Cloning `Queue` only increments the strong `Rc` count; both handles point to the same `VecDeque`. Each method then obtains short-lived access through `RefCell`, so the worker can remove jobs inserted by the producer.
+
+```rust title="shared_queue.rs"
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+#[derive(Clone)]
+struct Queue {
+    jobs: Rc<RefCell<VecDeque<String>>>,
+}
+
+impl Queue {
+    fn new() -> Self {
+        Self { jobs: Rc::new(RefCell::new(VecDeque::new())) }
+    }
+
+    fn push(&self, job: &str) {
+        self.jobs.borrow_mut().push_back(job.to_owned());
+    }
+
+    fn pop(&self) -> Option<String> {
+        self.jobs.borrow_mut().pop_front()
+    }
+
+    fn owner_count(&self) -> usize {
+        Rc::strong_count(&self.jobs)
+    }
+}
+
+fn main() {
+    let producer = Queue::new();
+    let worker = producer.clone();
+
+    producer.push("index");
+    producer.push("publish");
+    println!("owners: {}", producer.owner_count());
+    println!("worker took: {}", worker.pop().unwrap());
+    println!("producer sees: {}", producer.pop().unwrap());
+}
+```
+
+```text
+owners: 2
+worker took: index
+producer sees: publish
+```
+
+This queue supports single-threaded collaboration only. If the worker is an operating-system thread, `Rc<RefCell<_>>` cannot cross that boundary; reconsider message passing, `Arc<Mutex<_>>`, or another synchronization design. The choice depends on blocking, ownership, and shutdown semantics, not on the shortest change that passes type checking.
+
+## Pitfalls
+
+### Treating `Cell<T>` as `Copy`-only
+
+> [!PITFALL]
+> `Cell::get()` requires `T: Copy`, but the `Cell<T>` type itself does not. Generated code often changes `Cell<String>` into `RefCell<String>` for this reason, adding dynamic borrow state and panic paths for no benefit.
+
+**Fix:** A non-`Copy` type can still use `set()`, `replace()`, `take()`, or `into_inner()` when the operation is whole-value replacement. Choose `RefCell<T>` only when you actually need to borrow inner fields or mutate a collection in place.
+
+### Carrying guards across unknown calls
+
+> [!PITFALL]
+> A guard obtained by iterating over `self.callbacks.borrow()` usually spans the whole loop. Any callback that registers or removes a callback, or calls another method borrowing the same cell, can trigger a runtime panic.
+
+**Fix:** Extract the owned data you need and end the `Ref` or `RefMut` before calling user code. If you use a snapshot, define the visibility of additions, removals, and nested publications; do not silently change event semantics just to shorten a guard.
+
+### Treating dynamic conflicts as lock contention
+
+> [!PITFALL]
+> An error from `try_borrow_mut()` does not mean another thread temporarily holds a lock. `RefCell<T>` cannot be shared across threads; the error means the current call stack, an iterator, or a returned guard still holds conflicting access.
+
+**Fix:** Draw the creation point, last use, and every reentrant call for each guard. If conflict should be impossible, change the scope or API. Convert `BorrowMutError` into a domain result only when "busy" is genuinely a valid state.
+
+### Reaching for `Rc<RefCell<T>>` too early
+
+> [!PITFALL]
+> Wrapping a value in `Rc<RefCell<_>>` to get past one compile-time borrow error adds shared ownership, runtime panics, and possible strong-reference cycles at once. The original state owner also becomes harder to identify.
+
+**Fix:** First try shortening an ordinary borrow, splitting struct fields, changing the method receiver, or giving one component ownership. Use this combination only when the domain needs several single-threaded owners of one mutable object, and model non-owning back edges with `Weak<T>`.
+
+### Sending single-threaded wrappers into concurrent tasks
+
+> [!PITFALL]
+> AI often changes local state into `Rc<RefCell<T>>` and later captures the handle in a thread or multithreaded async task that requires `Send`. More calls to `clone()` cannot add `Send` or `Sync`, and they provide no synchronization.
+
+**Fix:** Establish whether the task crosses a thread boundary and whether messages can transfer ownership of the state. If direct sharing is required, use a synchronization primitive matched to the access pattern and review critical sections, lock ordering, and failure policy. `Arc<Mutex<_>>` is not a syntactic substitution.
+
+### Leaking long-lived `Ref` or `RefMut` values from an API
+
+> [!PITFALL]
+> Returning a guard can avoid a copy, but exposes internal dynamic borrow state to the caller. If the caller retains it in a wide scope, a later and apparently unrelated `&self` method may panic.
+
+**Fix:** Prefer a computed scalar, a clone of the necessary value, or a callback that runs during a short internal borrow. If a guard must be returned, expose the constraint in its name, type, and documentation, and test which operations fail while it is live.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often use `Rc<RefCell<_>>` to suppress ownership errors without saying who owns the state. They then hold `borrow_mut()` while calling a callback, letting reentry panic on the same object. They also claim that `Cell<T>` can store only `Copy` types, promote replaceable `String` state to `RefCell<String>`, or capture `Rc<RefCell<_>>` in `tokio::spawn` and add more `clone()` calls to chase the `Send` error. A quieter failure turns `try_borrow_mut()` into `.ok()` and ignores the error, intermittently losing updates.
+
+**Ask your AI to check**
+
+- List the owner and thread boundary for every `Cell`, `RefCell`, `Rc`, and `Arc`, and mark the last use of every `Ref` or `RefMut`.
+- Find function calls, callbacks, formatting, iteration, and error conversion performed while a guard is live, then check whether they can borrow the same `RefCell` again.
+- For every `try_borrow*()`, explain why conflict is an allowed runtime state and whether dropping or retrying the failure can break a domain invariant.
+
+**Review checklist**
+
+- Test registration, removal, and nested calls with a reentrant callback, and assert that dynamic conflicts cannot become undocumented panics.
+- Check whether `Cell<T>` can express the operation as whole-value replacement and whether any `RefCell<T>` guard escapes into an unnecessarily wide scope.
+- Verify the thread model, `Send`/`Sync` requirements, strong `Rc` cycles, and every failure path for shared state.
+
+**Prompt vocabulary**
+
+Use the exact terms `interior mutability`, `runtime borrow checking`, `borrow guard`, `shared borrow`, `exclusive borrow`, `reentrant callback`, `guard scope`, `strong reference cycle`, and `thread boundary`. Ask for a guard timeline and ownership graph; "fix the RefCell" is too vague to expose which call creates the conflict.
+
+<Depth level="deep">
+
+## `UnsafeCell<T>` and the safety boundary
+
+<Term id="unsafe-cell">`UnsafeCell<T>`</Term> is the language-recognized primitive for interior mutability in Rust. A shared `&UnsafeCell<T>` can call `get()` to obtain a raw `*mut T`, but dereferencing and writing through that pointer remain `unsafe` operations. The type disables part of the compiler's assumption that data reached through a shared reference is immutable; it does not prove reference validity, nonoverlap, or freedom from data races.
+
+Both `Cell<T>` and `RefCell<T>` use this primitive internally and add their own safe contracts. `Cell<T>` avoids aliasing by not producing ordinary inner references from shared access. `RefCell<T>` dynamically checks shared and exclusive access whenever it creates a guard. Those maintained restrictions make the wrappers safe; an `UnsafeCell<T>` field alone proves nothing.
+
+When implementing a custom interior-mutability type, unsafe code must explain which pointers may coexist, when reads and writes are permitted, whether the value is initialized, and how data races are excluded across threads. Putting a field in `UnsafeCell<T>` without stating those invariants leaves blank the proof the compiler used to provide.
+
+`UnsafeCell<T>` does not automatically make its inner `T` thread-safe. Concurrent standard-library primitives also need atomics, locks, or another synchronization protocol. When an existing safe wrapper fits, application code should use `Cell<T>`, `RefCell<T>`, `Mutex<T>`, `RwLock<T>`, or an atomic type instead of manipulating raw pointers.
+
+### Wrapper guarantees and domain invariants
+
+Safe interior mutability guarantees memory safety, not correct business updates. Two sequentially successful short borrows can still form a broken transaction, such as reading a balance, releasing the guard, and later writing from the stale balance. Borrow checking cannot know whether that read-modify-write sequence must be atomic.
+
+Public methods must therefore preserve domain invariants too. Keeping validation and commit inside one `RefMut` scope prevents single-threaded reentry from observing a half-finished state, but calling unknown code while that guard is live can panic. A common design prepares inputs before borrowing, commits the state transition during one short borrow, drops the guard, and only then notifies external callbacks.
+
+That ordering is not universal. If a callback must cancel the operation or inspect old state, you may need an explicit event object, two-phase commit, or queued notifications. Review "when state becomes visible" and "when the guard is live" as one contract.
+
+## Dynamic borrow lifetimes
+
+### Guard lifetime follows the value
+
+A `RefCell<T>` borrow follows the returned guard rather than the `borrow()` call alone. A named guard normally remains active until its drop scope ends, even after its last ordinary read, because dropping the guard releases the dynamic borrow. Returning the guard or placing it in a container extends that period; a smaller block or explicit `drop(guard)` ends it earlier.
+
+Temporary values sometimes drop later than surface syntax suggests, particularly in `match`, `if let`, iterator chains, and tail expressions. When diagnosing a conflict, do not guess from indentation. Name the guard, inspect its last use, and use a small block or `drop(guard)` when the end of access should be explicit.
+
+An explicit `drop()` usefully says that later calls require the guard to be gone. If code constantly needs it to work, the API may return too broad a view or place too many fields in one `RefCell`. Splitting fields into independent cells narrows conflict domains, but also makes cross-field invariants harder to update atomically.
+
+### Mapped guards retain the same borrow
+
+`Ref::map()` and `RefMut::map()` project a guard to an inner field or slice without borrowing the `RefCell` again. The mapped guard still keeps the original dynamic borrow active. Exposing only one field does not mean the rest of the wrapper can be borrowed exclusively at the same time.
+
+`Ref::filter_map()` and its mutable counterpart can return the original guard when projection fails. These APIs can build precise read interfaces, but put a guard type and lifetime in the signature. If a caller needs only a `Copy` value, a length, or a predicate result, computing and returning that result is usually simpler.
+
+Guard-splitting APIs are valid only where their safe contract proves the targets do not overlap. Do not manufacture two `RefMut` values with raw pointers to bypass dynamic checking. Once that check is skipped, an aliasing violation changes a diagnosable panic into undefined behavior.
+
+### Panic is not a scheduling mechanism
+
+`borrow()` panics on failure because that API defines conflict as a program logic error. The panic strategy may unwind or abort the process, so `catch_unwind` is not an ordinary "retry later" control path. Library values may also lack the traits needed to cross an unwind boundary safely.
+
+`try_borrow()` makes the same check explicit but does not wait for a guard to be released. If you need to wait for another thread or task, `RefCell<T>` is the wrong primitive. Single-threaded async code can still interleave at `.await`; a long-lived guard may conflict with a later polling path even when only one operating-system thread runs it.
+
+In async code, extracting owned data and releasing the guard before `.await` is usually easier to review. If state must remain exclusively accessible across suspension, reconsider task ownership, message passing, or an async-aware synchronization primitive instead of assuming that one thread rules out reentry.
+
+## Graph and thread semantics of composed types
+
+### `Rc<RefCell<T>>` does not prevent cycles
+
+`Rc<T>` uses a strong reference count to decide when to destroy a value. If two nodes store strong `Rc<RefCell<Node>>` references to each other, neither count reaches zero. The memory can remain reachable to the cycle while being useless to the application, and Rust's memory safety permits this leak.
+
+A tree or directed ownership design commonly gives children a `Weak<T>` reference to the parent and gives the parent strong `Rc<T>` references to children. `Weak::upgrade()` returns `Option<Rc<T>>`, so callers must handle an owner that has already been destroyed. Which edge owns its target is a domain decision, not something a generator can infer from field names.
+
+Dynamic borrowing and reference counting solve different problems. Changing a back edge to `Weak<RefCell<T>>` can break a strong cycle but does not reduce borrow conflicts; shortening a `RefMut` does not make a strong count reach zero. Draw the ownership graph and guard timeline separately when diagnosing the design.
+
+### Conditional `Send` is not `Sync`
+
+When `T: Send`, an unshared `Cell<T>` or `RefCell<T>` can move as a whole to another thread. They do not implement `Sync`, so `&Cell<T>` and `&RefCell<T>` cannot be shared safely by multiple threads. The shortcut "they are not thread-safe" often hides this valid ownership transfer.
+
+`Rc<T>` cannot be sent between threads. `Arc<T>` supplies thread-safe reference counting, but `Arc<T>` can be shared only when its inner type meets the relevant constraints. `Arc<RefCell<T>>` still lacks the required `Sync` because `Arc` does not change the inner access protocol.
+
+Before choosing a synchronization type, decide whether one task owns the state, several tasks send it commands, or several threads genuinely need direct sharing. A channel transfers operation or data ownership; a mutex provides an exclusive critical section; a read-write lock permits a particular read/write pattern; atomics provide only their defined atomic operations. These are not interchangeable wrapper layers.
+
+## API design and testing
+
+### Make hidden writes visible in shared methods
+
+If a method receiving `&self` updates a cache, statistics, or a log, its type documentation should state that observable side effect. Callers may rely on the intuition that a read does not mutate during reentry, assertions, or performance-sensitive paths. Names, error types, and documentation should make the hidden write discoverable.
+
+Do not promise that `RefCell<T>` is an implementation detail while returning `Ref<T>`. The guard type exposes the wrapper, its lifetime, and conflict behavior, so changing to a lock or plain field later breaks the API. Return owned results, or accept a callback that runs during one short internal borrow, when the implementation needs to remain abstract.
+
+Callback-based access has its own cost: the callback may panic, reenter, or run for a long time. An API can restrict the view given to the callback and place internal state in a valid condition before the call. Safe Rust prevents dangling references; it does not define callback business semantics for you.
+
+### Test conflicts without depending on panic text
+
+Prefer testing `RefCell<T>` through public APIs and observable state or errors. If a method promises to return an error on conflict, hold a guard, call the method, and assert the error variant. Do not match the display text of `BorrowError`; its wording is not the central contract.
+
+If conflict is an implementation defect, construct the real reentrant path in a test, such as a listener subscribing or unsubscribing inside its callback. Two consecutive `borrow_mut()` calls in one function prove the basic rule but do not cover the actual call graph. A regression test should also confirm that event order and snapshot semantics did not change with the fix.
+
+Add two dimensions to tests of `Rc<RefCell<T>>`: whether several handles observe the same state and whether non-owning edges allow destruction. `Rc::strong_count()` can help diagnose the graph, but business tests should prefer observing whether nodes or resources are released as promised. Temporary clones created by the test itself can change a count.
+
+### Choose the narrowest capability
+
+With one owner and access to `&mut self`, a plain field gives the strongest static guarantees. When only whole-value replacement through `&self` is needed, `Cell<T>` grants a narrower capability than `RefCell<T>`. Accept the dynamic failure surface of `RefCell<T>` only when you need to borrow inner structure. Multiple ownership is another decision and should lead to a separate evaluation of `Rc<T>` or `Arc<T>`.
+
+Broader capability creates more states for callers to review. `Rc<RefCell<T>>` permits both owner cloning and delayed access conflicts, while `Arc<Mutex<T>>` adds thread scheduling and lock behavior. Types that state the actual sharing relationship are usually more reliable than a flexible wrapper constrained later by convention.
+
+When the compiler rejects a borrow, first describe the intended ownership and access timeline. If that intent can be expressed at compile time, restructure the data or control flow. Interior mutability expresses a real need only when the access relationship is genuinely known at runtime; otherwise, it hides the problem.
+
+</Depth>
+
+<Checkpoint id="rust/refcell-cell" />
+
+## Further reading
+
+- [Rust standard library: `std::cell`](https://doc.rust-lang.org/std/cell/index.html)
+- [Rust standard library: `Cell<T>`](https://doc.rust-lang.org/std/cell/struct.Cell.html)
+- [Rust standard library: `RefCell<T>`](https://doc.rust-lang.org/std/cell/struct.RefCell.html)
+- [Rust standard library: `UnsafeCell<T>`](https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html)
+- [The Rust Programming Language: `RefCell<T>` and interior mutability](https://doc.rust-lang.org/book/ch15-05-interior-mutability.html)

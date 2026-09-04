@@ -1,0 +1,400 @@
+---
+title: 'Tests as agent guardrails'
+description: 'Design focused tests that constrain implementation choices, expose regressions, and make agent work auditable.'
+track: ai-era
+section: specs-and-tests
+difficulty: intermediate
+tags: [agent-guardrails, regression-tests, behavioral-contracts, mutation-testing]
+prerequisites: [ai-era/executable-specifications]
+related: [ai-era/examples-and-counterexamples, ai-era/generated-change-review, ai-era/code-provenance-and-verification, ai-era/llm-application-evals]
+terms: [api-contract, characterization-test, contract-testing, class-invariant, mutation-testing]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: ai-era/tests-as-agent-guardrails
+sources:
+  - { title: 'Node.js documentation - Test runner', url: 'https://nodejs.org/docs/latest-v24.x/api/test.html' }
+  - { title: 'Node.js documentation - Assert', url: 'https://nodejs.org/docs/latest-v24.x/api/assert.html' }
+  - { title: 'web.dev - Learn Testing', url: 'https://web.dev/learn/testing' }
+  - { title: 'Testing Library - Guiding Principles', url: 'https://testing-library.com/docs/guiding-principles/' }
+  - { title: 'Google Testing Blog - Change-detector tests considered harmful', url: 'https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A guardrail test states behavior an agent must preserve, including boundaries, failures, and forbidden side effects.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A green suite is weak evidence when it checks only the happy path or mirrors the current implementation.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Select tests from the change's risks, prove new tests fail for the intended fault, and retain the command, exit code, and diff as evidence.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A test acts as an agent guardrail when it narrows the set of acceptable changes around a delegated task. It turns a behavior claim into an executable rejection condition. The agent may choose the implementation, but a change that violates a named condition cannot be accepted merely because its explanation sounds plausible.
+
+The distinction is purpose, not a special test framework. An ordinary unit, integration, or <Term id="contract-testing">contract test</Term> can be a guardrail when it covers a risk in the task and runs in the delivery gate. A test that is never executed, silently skipped, or unrelated to the patch cannot constrain the work.
+
+Coding agents optimize against the feedback they can observe. If visible tests cover only a successful request, an agent can preserve that path while breaking an empty input, an authorization boundary, a retry rule, or an external side effect. More assertions do not automatically solve the problem; the suite needs assertions at the places where a plausible edit could be wrong.
+
+Guardrail tests serve three jobs. Before editing, they communicate non-negotiable behavior. During the edit loop, they give the agent precise counterevidence. Afterward, they give a reviewer repeatable evidence tied to the repository state rather than to the agent's memory of what it ran.
+
+You encounter this approach when fixing a reproduced defect, refactoring unfamiliar code, changing an <Term id="api-contract">API contract</Term>, or replacing an implementation behind a stable interface. It is especially useful when the prompt leaves several valid implementation choices but the observable behavior is already decided.
+
+Tests do not decide unstated product policy. They also do not prove properties outside their inputs, environment, and assertion scope. A strong guardrail makes that boundary visible: it says what is protected, why those cases were selected, and what still needs human or production validation.
+
+### A guardrail is a constraint, not a blueprint
+
+A behavioral test should leave irrelevant choices open. If the requirement says a member receives free delivery, the test should observe the fee, not insist on a particular helper name, branch order, or private call count. The agent can then improve the structure without negotiating with a test that copied yesterday's implementation.
+
+Some implementation details are real contracts. A database transaction boundary, one call to an irreversible payment API, or use of a constant-time comparison may be directly relevant. Name the risk when asserting such a detail so a future reviewer knows whether the test protects behavior, security, performance, or merely an old shape.
+
+The useful question is not “how much coverage do we have?” but “which incorrect changes would this suite reject?” Line coverage can show code that never ran, yet it cannot tell whether an assertion distinguishes the right result from a convenient wrong one. Guardrail design starts from failure modes, then chooses the smallest tests that expose them.
+
+## How it works
+
+Begin with the task contract: the intended behavior, allowed edit scope, and completion command. Convert each material risk into an observable claim. A claim might concern a return value, error type, durable write, emitted event, ordering rule, permission decision, or the absence of an effect.
+
+Then choose cases that separate plausible implementations. A typical success value confirms the main path, while an adjacent boundary distinguishes `<` from `<=`. An invalid value checks failure semantics. A second identity or tenant exposes accidentally shared state. The set should be small enough to diagnose quickly but varied enough that a shortcut cannot satisfy everything by coincidence.
+
+For each claim, record three parts:
+
+1. **Setup:** the smallest state and collaborators needed to reach the behavior.
+2. **Action:** one operation described through a public or stable seam.
+3. **Observation:** the result and relevant side effects, including what must not happen.
+
+This is a design discipline rather than a mandatory test syntax. Arrange–Act–Assert, Given–When–Then, and table-driven cases can all express it. Consistency matters because an agent and reviewer must be able to map a failure back to one contract clause without reverse-engineering a large fixture.
+
+### Map risk to the right test boundary
+
+Use the narrowest boundary that can observe the risk without replacing the subject with mocks. Pure calculations and state transitions fit unit tests. Serialization, database queries, queues, and service adapters often need component or contract tests. Routing, dependency wiring, and real protocol behavior require an integration test even if a unit test is cheaper.
+
+| Risk | Useful observation | Common weak substitute |
+| --- | --- | --- |
+| Threshold changed by one | Values immediately below and at the threshold | One typical value far from the edge |
+| Unauthorized cross-tenant access | Same resource id under two tenant identities | One allowed identity |
+| Failure writes partial state | Durable state and emitted events after rejection | Error message alone |
+| Caller input is mutated | Input before and after the operation | Return value alone |
+| Adapter breaks a provider contract | Request and response at the real boundary | A mock that accepts any shape |
+
+The test boundary should survive the intended change. If an agent is asked to replace a parser, asserting its private token array blocks the task. Assert the accepted language and error behavior instead. If token positions are public diagnostic data, however, they belong in the contract and should remain tested.
+
+### Make the test discriminating
+
+A test is discriminating when at least one plausible wrong implementation fails it. You can check that property before trusting a newly generated test. Temporarily restore the old defect, reverse the boundary operator, remove validation, or return a hard-coded happy-path value; the test should turn red for the expected reason.
+
+This counterfactual check catches tautological tests. Agents sometimes generate an assertion from the implementation's current output, mock the method under test, or catch an error without failing when no error occurs. Such tests execute code and add coverage while accepting the defect they were meant to constrain.
+
+For a defect fix, the strongest sequence is red, green, then relevant regression:
+
+1. Run the new focused test against the uncorrected baseline and retain the expected failure.
+2. Apply the implementation change and rerun the focused test to see it pass.
+3. Run the surrounding suite and checks to detect behavior displaced elsewhere.
+
+The first run proves sensitivity to the named defect. The second connects the patch to the correction. The third widens the evidence to existing contracts. Skipping the red step leaves open whether the new test ever represented the problem.
+
+### Keep execution evidence separate
+
+The agent that writes a test is not the authority that declares it passed. A runner should record the exact command, working directory, baseline or commit, exit code, and skipped tests. For important work, preserve enough failure output to identify the assertion without storing unrelated secrets or unbounded logs.
+
+Fresh execution matters because test results describe one workspace state. A green run before the last edit says nothing about the final diff. A run from the wrong package may find zero tests or use a different configuration. The delivery gate should therefore run after the final change and fail closed when results are missing or ambiguous.
+
+## Examples
+
+These examples use Node 24 and `node:assert/strict`. Each file uses a compact deterministic harness so the shown output contains only stable pass or rejection evidence; the same assertions can be placed in `node:test` cases in a repository.
+
+### Guarding a threshold and invalid input
+
+The delivery rule has two valid ways to reach a zero fee and one explicit input constraint. Cases immediately below and at the threshold distinguish the comparison operator, while the negative case fixes the error contract.
+
+<Depth level="quick">
+
+```js run title="delivery_contract.js"
+import assert from "node:assert/strict";
+
+function deliveryFee(orderTotalCents, member) {
+  if (!Number.isInteger(orderTotalCents) || orderTotalCents < 0) {
+    throw new RangeError("order total must be a non-negative integer");
+  }
+  if (member || orderTotalCents >= 5_000) return 0;
+  return 799;
+}
+
+const cases = [
+  { name: "below threshold", args: [4_999, false], expected: 799 },
+  { name: "at threshold", args: [5_000, false], expected: 0 },
+  { name: "member order", args: [1_200, true], expected: 0 },
+];
+
+for (const { name, args, expected } of cases) {
+  assert.equal(deliveryFee(...args), expected);
+  console.log(`PASS ${name}`);
+}
+
+assert.throws(
+  () => deliveryFee(-1, false),
+  { name: "RangeError", message: "order total must be a non-negative integer" },
+);
+console.log("PASS negative total");
+```
+
+```text
+PASS below threshold
+PASS at threshold
+PASS member order
+PASS negative total
+```
+
+<TryToBreak items={['a non-integer amount', 'a total of zero', 'a truthy non-boolean member flag']} />
+
+</Depth>
+
+The table makes the contract visible without coupling to branch order. If an agent changes `>=` to `>`, the “at threshold” case fails. If it removes member handling, a different row fails, so the signal identifies which behavior moved.
+
+The invalid case asserts both the error class and stable message because callers in this example are allowed to depend on them. In a repository where only rejection matters, asserting the message would be needless coupling. The contract, not a universal testing rule, decides the precision.
+
+### Observing effects and non-effects
+
+Return-value assertions alone would miss an in-place mutation or a write performed before validation. This test double records the storage boundary, and the frozen input makes ownership explicit.
+
+```js run title="profile_effects.js"
+import assert from "node:assert/strict";
+
+function renameAccount(store, account, rawName) {
+  const displayName = rawName.trim();
+  if (displayName === "") throw new TypeError("display name is required");
+
+  const updated = { ...account, displayName };
+  store.save(updated);
+  return updated;
+}
+
+const writes = [];
+const store = { save: (account) => writes.push(structuredClone(account)) };
+const original = Object.freeze({ id: "acct-7", displayName: "Mina" });
+
+const updated = renameAccount(store, original, "  Min Chen  ");
+
+assert.deepEqual(updated, { id: "acct-7", displayName: "Min Chen" });
+assert.deepEqual(original, { id: "acct-7", displayName: "Mina" });
+assert.deepEqual(writes, [{ id: "acct-7", displayName: "Min Chen" }]);
+console.log("PASS success result, input, and write");
+
+const writesBeforeFailure = writes.length;
+assert.throws(
+  () => renameAccount(store, original, "   "),
+  { name: "TypeError", message: "display name is required" },
+);
+assert.equal(writes.length, writesBeforeFailure);
+console.log("PASS invalid input causes no write");
+```
+
+```text
+PASS success result, input, and write
+PASS invalid input causes no write
+```
+
+The success path checks three surfaces: returned data, caller-owned input, and the storage write. Together they protect a <Term id="class-invariant">class invariant</Term>-like ownership rule even though the example uses plain objects. An agent may refactor the function freely as long as these observations stay true.
+
+The failure path measures the write count before the call and confirms it does not change. This negative assertion matters because “throws the right error” and “causes no effect” are separate claims. A generated implementation that saves first and validates later would satisfy only the first.
+
+### Testing whether tests reject faults
+
+This small contract is run against the intended implementation and two deliberately faulty variants. The suite distinguishes floor rounding from nearest rounding and rejection from clamping, so each faulty program must be rejected.
+
+```js run title="mutation_probe.js"
+import assert from "node:assert/strict";
+
+function discount(subtotalCents, percent) {
+  if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
+    throw new RangeError("percent must be an integer from 0 to 100");
+  }
+  return subtotalCents - Math.floor((subtotalCents * percent) / 100);
+}
+
+function discountContract(calculate) {
+  assert.equal(calculate(1_005, 10), 905);
+  assert.equal(calculate(5_000, 100), 0);
+  assert.throws(() => calculate(5_000, 101), RangeError);
+}
+
+function rejectMutant(name, calculate) {
+  try {
+    discountContract(calculate);
+  } catch {
+    console.log(`REJECTED ${name}`);
+    return;
+  }
+  throw new Error(`contract did not reject ${name}`);
+}
+
+discountContract(discount);
+console.log("PASS baseline");
+
+rejectMutant("rounding mutant", (subtotal, percent) =>
+  subtotal - Math.round((subtotal * percent) / 100));
+rejectMutant("validation mutant", (subtotal, percent) =>
+  subtotal - Math.floor((subtotal * Math.min(percent, 100)) / 100));
+```
+
+```text
+PASS baseline
+REJECTED rounding mutant
+REJECTED validation mutant
+```
+
+This is a hand-sized form of <Term id="mutation-testing">mutation testing</Term>. A production mutation tool changes operators, constants, and control flow systematically, then reports mutants the suite failed to reject. Surviving mutants do not always indicate a missing test, but they force a concrete decision about equivalent behavior or an uncovered rule.
+
+The contract uses `1_005` because a round number would make floor and nearest rounding agree. Good test data is selected for discrimination, not realism alone. The full-discount and invalid-percentage cases cover separate branches and prevent one clever assertion from standing in for the whole contract.
+
+## Pitfalls
+
+### Testing only the reported happy path
+
+> [!PITFALL]
+> A generated regression test repeats the successful reproduction input but omits the adjacent boundary, failure state, and forbidden effect. The agent can hard-code or narrowly special-case that input while breaking the surrounding behavior.
+
+**Fix:** list the plausible fault before choosing cases. Add the smallest counterexample that distinguishes it: a neighbor around a threshold, a second identity, an empty collection, or a failed collaborator. Keep each assertion tied to a named risk.
+
+### Mirroring implementation details
+
+> [!PITFALL]
+> A test asserts private helper names, internal call order, or an intermediate object even though none is part of the public contract. A safe refactor then fails while a behaviorally wrong implementation with the expected shape passes.
+
+**Fix:** observe stable inputs, outputs, and boundary effects. Assert internals only when they protect a stated requirement such as transactionality, constant-time handling, or a provider rate limit, and write that reason next to the assertion.
+
+### Letting the same agent weaken the gate
+
+> [!PITFALL]
+> An agent makes its patch green by deleting an assertion, changing expected output to match the defect, adding a broad skip, or moving the new test outside discovery. The final message mentions passing tests but not the altered protection.
+
+**Fix:** review the test diff separately from the implementation diff. Reject unexplained assertion changes and new skips, check discovered test counts, and rerun required commands independently after the final edit. For sensitive behavior, restrict which test or policy files the task may modify.
+
+### Trusting a test that was never red
+
+> [!PITFALL]
+> A new test passes before and after the fix because it invokes the wrong path, mocks the subject, catches every exception, or asserts a value already true under the defect. Its presence looks like regression coverage but contributes no constraint.
+
+**Fix:** run the focused test against the faulty baseline or a deliberate minimal fault and retain the expected failure. Check that the failure comes from the intended assertion, not from broken setup or an unrelated import.
+
+### Treating a green suite as universal proof
+
+> [!PITFALL]
+> A unit suite passes while the real database collation, clock, queue delivery, browser, or provider protocol behaves differently. The completion claim silently expands beyond the environment the tests exercised.
+
+**Fix:** match test layers to patch risk and label remaining evidence gaps. Run contract or integration checks for real boundaries, use deterministic fakes only for the properties they faithfully model, and keep operational or product judgments as explicit review items.
+
+### Growing one opaque end-to-end guardrail
+
+> [!PITFALL]
+> One large scenario covers many behaviors but fails with a generic timeout or snapshot difference. The agent receives weak feedback, retries unrelated edits, and a reviewer cannot tell which contract was violated.
+
+**Fix:** keep a small number of end-to-end checks for wiring and add focused tests near each rule. Give cases domain names, minimize shared fixture state, and make failure output identify the input and expected observation.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Agents frequently generate tests that replay one prompt example, duplicate the implementation formula inside the expected value, or mock the function they claim to test. They may update snapshots and assertions until green, accept broad error types, miss “no write on failure,” or place a test in a file the runner does not discover. Another failure is optimization against visible cases: a patch special-cases a named input while untested tenants, boundaries, ordering, or retries regress.
+
+**Ask your AI to check**
+
+- Map every changed behavior to a test name, assertion, and execution layer; identify uncovered failure and side-effect paths.
+- Show that each new regression test fails on the faulty baseline or under one deliberate fault, and quote the relevant failure line.
+- Report the exact test command, working directory, discovered and skipped counts, exit code, final diff state, and any environment boundary not exercised.
+
+**Review checklist**
+
+- Inspect test changes for weakened assertions, permissive mocks, updated snapshots, hidden skips, and files outside runner discovery.
+- Challenge the patch with an adjacent boundary, a second identity or instance, and a collaborator failure chosen from the change's actual risks.
+- Rerun the focused test and relevant suite after the final edit, then map every completion claim to retained evidence or a named human check.
+
+**Prompt vocabulary**
+
+Use the exact terms `behavioral contract`, `regression test`, `boundary-value case`, `negative assertion`, `test double`, `test discovery`, `fault injection`, `mutation testing`, `red-green verification`, and `independent test run`. Ask for a risk-to-test matrix and counterfactual failure evidence; “add more tests” does not say what the suite must reject.
+
+<Depth level="deep">
+
+## Designing a resilient guardrail suite
+
+A resilient suite constrains externally meaningful behavior without freezing incidental structure. Its strength comes from complementary observations rather than raw case count. Designing one requires an explicit model of allowed variation, forbidden outcomes, and which layer can observe each rule honestly.
+
+### Model the accepted behavior set
+
+Think of every implementation as producing observations for a set of inputs and environments. The specification defines which observation sets are acceptable. Tests sample that space and reject implementations that cross a boundary; they cannot enumerate the whole space, so selection quality matters more than repetition.
+
+Equivalence classes reduce the space. If all ordinary positive amounts follow one rule, choose one representative plus the values where the rule changes. Add cases for different state ownership, permissions, time order, and collaborator outcomes only when those dimensions can alter behavior.
+
+This model explains why a thousand generated examples may remain weak. If every example is a positive integer well above the same threshold, they occupy one class and distinguish few faults. One value at the threshold may contribute more constraint than the entire generated set.
+
+### Build a risk-to-test matrix
+
+Write the matrix before allowing a large patch. Rows name credible failure modes; columns record the observation, layer, fixture, and evidence command. The matrix is also a compact review artifact: a missing cell exposes an assumption that fluent test code might hide.
+
+| Failure mode | Discriminating case | Layer | Evidence |
+| --- | --- | --- | --- |
+| Boundary operator changes | Below, at, and above the threshold | Unit | Focused test command |
+| Tenant filter disappears | Same record id under two tenants | Component | Query and authorization assertions |
+| Retry duplicates a charge | Timeout after accepted request | Integration | Provider stub plus idempotency record |
+| Migration loses old nulls | Representative pre-migration rows | Database | Forward and rollback checks |
+| Error path emits an event | Collaborator rejects the write | Component | State and outbox remain unchanged |
+
+Not every row becomes an automated test. A visual design judgment or production capacity claim may remain a human or operational check. Keeping it in the matrix prevents the suite's green status from being misreported as evidence for that claim.
+
+### Protect invariants across examples
+
+Example-based tests pin individual observations. Invariants relate many observations: totals never become negative, sorting preserves the input multiset, decoding an encoded supported value returns the original, and a failed command never records completion. These relations can expose faults that no memorable fixture happened to cover.
+
+Property-based tools can generate inputs, but generation is not the point. State the property, constrain the valid domain, make randomness reproducible, and preserve the smallest failing example. An unconstrained generator that mostly produces irrelevant values adds runtime without meaningful pressure on the implementation.
+
+Metamorphic checks help when an exact result is expensive to calculate. Adding a zero-value item should not change a sum; permuting independent requests should not change their individual decisions. The relation itself must come from the contract, not from a pattern the current implementation happens to exhibit.
+
+### Use collaborators without testing a fantasy
+
+A test double should model the one boundary property the test needs. A recording store can prove which writes were attempted, while a rejecting store can expose rollback behavior. It should not silently accept invalid calls that the real provider rejects, because then the guardrail protects a protocol that exists only in the test.
+
+For stable external protocols, add <Term id="contract-testing">contract tests</Term> against a schema, provider sandbox, or verified local implementation. Keep unit tests for decision logic and use fewer integration tests for serialization, configuration, and network semantics. This layered design gives the agent fast feedback without erasing reality at the boundary.
+
+Mocks become dangerous when every internal call is prescribed. Such tests fail during harmless refactoring and encourage the agent to recreate call choreography rather than correct behavior. Prefer state, returned results, published messages, or requests at an owned boundary.
+
+### Characterize before changing unfamiliar code
+
+A <Term id="characterization-test">characterization test</Term> records observed legacy behavior before a risky refactor. It is useful when documentation is incomplete and current consumers depend on behavior that is hard to infer. It is evidence of what the system does, not automatic proof of what the product should promise.
+
+Label surprising behavior and decide whether to preserve or correct it. If an old parser accepts a malformed record, a characterization test can prevent accidental change while the team investigates, but promoting that acceptance into a permanent contract requires a product decision. Otherwise a temporary safety net quietly fossilizes a defect.
+
+Characterization should be narrow. Capture outputs and effects at a stable seam, then replace broad snapshots with named assertions as understanding improves. Large snapshots make accidental behavior look equally important and invite agents to approve updates wholesale.
+
+### Measure suite sensitivity
+
+<Term id="mutation-testing">Mutation testing</Term> estimates whether assertions notice small semantic changes. A tool creates variants such as reversed comparisons, removed conditions, or changed constants and runs the tests against each. A rejected mutant demonstrates sensitivity to that change; a surviving mutant demands inspection.
+
+A survivor can mean missing coverage, a weak assertion, unreachable code, or an equivalent transformation. Mutation score is therefore a diagnostic, not a release target. Chasing the number can produce brittle tests for behavior nobody owns, just as chasing line coverage can.
+
+Use mutation selectively on changed decision logic, validation, authorization, and calculations. Do not begin with a whole slow repository. A small mutation budget around a high-risk patch gives the reviewer concrete counterfactual evidence while keeping the feedback loop usable.
+
+### Preserve an audit chain
+
+An auditable guardrail connects the requirement, test source, failing baseline, correcting diff, and final execution. Store machine-readable test reports when the delivery system needs them, but keep the human summary short enough to inspect. A pass without provenance can belong to a different revision or configuration.
+
+The evidence record should name skipped tests and expected failures. “128 passed” hides whether the one relevant integration test was deselected. Treat unexpected zero-test runs, parser failures, timeouts, and truncated results as unknown rather than success.
+
+Finally, separate evidence from conclusion. Test output establishes that selected observations matched expectations in one environment. A reviewer combines that evidence with diff inspection, threat modeling, performance data, or product approval according to the change. This boundary makes the agent's work auditable without pretending tests can replace judgment.
+
+Revisit the risk matrix when the patch scope changes. A guardrail selected for the original diff does not automatically cover a new dependency, data path, or permission boundary.
+
+</Depth>
+
+<Checkpoint id="ai-era/tests-as-agent-guardrails" />
+
+## Further reading
+
+- [Node.js documentation: Test runner](https://nodejs.org/docs/latest-v24.x/api/test.html)
+- [Node.js documentation: Assert](https://nodejs.org/docs/latest-v24.x/api/assert.html)
+- [web.dev: Learn Testing](https://web.dev/learn/testing)
+- [Testing Library: Guiding Principles](https://testing-library.com/docs/guiding-principles/)
+- [Google Testing Blog: Change-detector tests considered harmful](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)

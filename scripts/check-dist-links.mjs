@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 
-const KNOWN_LATER = [];
+const KNOWN_LATER = ['/java/type-erasure/', '/java/wildcards-pecs/'];
 
 /** The canonical origin, read from src/data/site.ts so the two never drift. */
 async function siteOrigin() {
@@ -40,8 +40,9 @@ async function htmlFiles(dir) {
   return found.sort();
 }
 
-/** `href="…"` and `src="…"` values, quoted or bare. Attribute order and case do not matter. */
-const ATTR = /\s(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+/** Elements whose real HTML attributes can navigate or load another resource. */
+const HREF_TAG = /<(?:a|area|base|link)\b[^>]*>/gi;
+const SRC_TAG = /<(?:audio|embed|iframe|img|input|script|source|track|video)\b[^>]*>/gi;
 const HEAD_TAG = /<(meta|link)\b[^>]*>/gi;
 
 const IGNORED_SCHEME = /^(?:mailto:|tel:|data:|javascript:|blob:|#)/i;
@@ -84,10 +85,32 @@ function metadataUrls(html) {
 }
 
 /**
+ * URL attributes on actual link-bearing elements.
+ *
+ * Looking for `href=` or `src=` across the whole HTML document also sees snippets inside
+ * syntax-highlighted code and escaped island props. Matching the containing element first keeps
+ * those examples as inert text, just as the browser does.
+ */
+function elementUrls(html) {
+  const values = [];
+  for (const match of html.matchAll(HREF_TAG)) {
+    const href = attribute(match[0], 'href');
+    if (href !== undefined) values.push(href);
+  }
+  for (const match of html.matchAll(SRC_TAG)) {
+    const src = attribute(match[0], 'src');
+    if (src !== undefined) values.push(src);
+  }
+  return values;
+}
+
+/**
  * The site-absolute path a link points at, or `undefined` when the link is not ours to check
  * (another host, a fragment, a non-http scheme).
  */
 function internalPath(raw, pageUrl, base) {
+  // Attribute delimiters encoded inside island props belong to an embedded snippet, not the page.
+  if (/&(?:quot|#34|lt|gt);/i.test(raw)) return undefined;
   const value = decode(raw);
   if (!value || IGNORED_SCHEME.test(value)) return undefined;
 
@@ -137,10 +160,7 @@ for (const page of pages) {
   const pageUrl = new URL(`/${page.replace(/index\.html$/, '')}`, base);
   const seen = new Set();
 
-  const values = [
-    ...[...html.matchAll(ATTR)].map((match) => match[1] ?? match[2] ?? match[3] ?? ''),
-    ...metadataUrls(html),
-  ];
+  const values = [...elementUrls(html), ...metadataUrls(html)];
   for (const raw of values) {
     const pathname = internalPath(raw, pageUrl, base);
     if (!pathname || seen.has(pathname)) continue;

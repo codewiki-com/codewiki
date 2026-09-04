@@ -1,0 +1,430 @@
+---
+title: 'Unicode text'
+description: 'Handle code points, encodings, grapheme clusters, normalization, and text comparison without corrupting user data.'
+track: foundations
+section: text-numbers
+difficulty: intermediate
+tags: [unicode, utf-8, grapheme-clusters, normalization, text-comparison]
+prerequisites: []
+related: [foundations/i18n, foundations/regular-expressions, foundations/hash-maps, foundations/sorting-and-searching]
+terms: [unicode-code-point, unicode-scalar-value, utf-16-code-unit, grapheme-cluster]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: foundations/unicode-text
+sources:
+  - { title: 'Unicode Standard Annex #15 - Unicode Normalization Forms', url: 'https://www.unicode.org/reports/tr15/' }
+  - { title: 'Unicode Standard Annex #29 - Unicode Text Segmentation', url: 'https://www.unicode.org/reports/tr29/' }
+  - { title: 'WHATWG Encoding Standard', url: 'https://encoding.spec.whatwg.org/' }
+  - { title: 'ECMAScript Internationalization API - Segmenter objects', url: 'https://tc39.es/ecma402/#segmenter-objects' }
+  - { title: 'MDN - String.prototype.normalize()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Unicode assigns code points to text, while encodings turn scalar values into bytes. A user-perceived character may span several code points and several storage units.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Byte length, string length, code-point count, and grapheme count answer different questions. Slicing or comparing with the wrong unit can split text or miss equivalent input.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Decode strictly at byte boundaries, preserve the original text, and choose an explicit unit and comparison policy for each operation. Normalize only where the contract calls for it.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Unicode is a shared character repertoire and a set of algorithms for processing text across writing systems. It gives abstract characters numbered positions called <Term id="unicode-code-point">code points</Term>, written like `U+0041` for `A`. It does not say that every character occupies one byte, one string index, or one visible cursor position.
+
+Programs meet text in layers. A file or network message contains bytes in an encoding such as UTF-8. A runtime string exposes storage units or scalar values through its APIs. A renderer and a user usually care about grapheme clusters, which may combine base letters, marks, emoji modifiers, and joiners.
+
+The layers separate because no single integer can answer every text question. A byte limit protects a protocol frame, a code-point loop examines Unicode values, and a grapheme limit constrains what a person sees. Treating those counts as interchangeable corrupts data at their boundaries.
+
+You encounter the distinction in database keys, usernames, file imports, form limits, logs, regular expressions, cursor movement, search, and sorting. ASCII-only test data hides most errors because an ASCII character is one UTF-8 byte, one UTF-16 code unit, one code point, and normally one grapheme cluster.
+
+Unicode also allows some visually identical text to have different code-point sequences. The letter `é` can be stored as `U+00E9` or as `e` followed by combining acute accent `U+0301`. Normalization provides defined conversions between such representations, but it is a policy tool rather than a command to rewrite all strings.
+
+Text comparison has several legitimate meanings. Protocol identifiers may require exact equality, canonical text may compare after NFC normalization, and names sorted for display may use a locale-sensitive collator. A program must choose among those meanings instead of assuming that one generic “Unicode-safe comparison” exists.
+
+This topic uses JavaScript because its string API makes an important boundary visible: indexing and `length` use UTF-16 code units, while iteration uses code points. The same design questions apply in other runtimes, even when their internal string representation or standard library APIs differ.
+
+## How it works
+
+### Five units that must stay distinct
+
+A byte is an integer from 0 through 255 in serialized data. An encoding maps Unicode scalar values to byte sequences and a decoder maps valid byte sequences back. Without the encoding label, bytes alone do not determine text.
+
+A code point is a position in the Unicode codespace from `U+0000` through `U+10FFFF`. The surrogate range `U+D800` through `U+DFFF` is reserved for UTF-16 mechanics and is not made of <Term id="unicode-scalar-value">Unicode scalar values</Term>. UTF-8 encodes scalar values, not isolated surrogate code points.
+
+A <Term id="utf-16-code-unit">UTF-16 code unit</Term> is 16 bits. Code points in the Basic Multilingual Plane normally use one unit; supplementary code points use a high-surrogate and low-surrogate pair. JavaScript's `length`, bracket indexing, and `slice()` operate on these units.
+
+A <Term id="grapheme-cluster">grapheme cluster</Term> is a sequence that text-segmentation rules treat as one user-perceived character. `e` plus a combining accent is one cluster. Many emoji sequences contain several code points joined into one cluster, so even code-point iteration is too fine for a user-facing character limit.
+
+| Unit | Example question | Suitable mechanism in JavaScript |
+| --- | --- | --- |
+| UTF-8 byte | Will the encoded field fit a 64-byte limit? | `TextEncoder().encode(text).length` |
+| UTF-16 code unit | Which unit does this legacy API index? | `text.length` or `text.slice()` |
+| Code point | Which assigned values occur in the string? | `for...of`, `[...text]`, `codePointAt()` |
+| Grapheme cluster | How many editing characters does the user see? | `Intl.Segmenter` with `granularity: "grapheme"` |
+| Locale collation element | How should labels sort for this audience? | `Intl.Collator` |
+
+The same string can have a different count in every row. Always name the unit in variables and limits: `maximumUtf8Bytes` is safer than `maximumLength`. An API that merely says “characters” has an incomplete contract.
+
+### Encoding is a boundary contract
+
+UTF-8 is a variable-width encoding using one to four bytes per scalar value. ASCII bytes keep their familiar values, but non-ASCII text expands. UTF-16 instead represents a scalar value with one or two 16-bit code units; the two encodings therefore expose different useful offsets.
+
+Decode bytes once at the system boundary with an explicit encoding. Encode again only when crossing back into a byte-oriented protocol or storage format. Reinterpreting UTF-8 bytes as Latin-1 characters and then re-encoding them produces mojibake rather than a reversible text transformation.
+
+Malformed input requires a declared policy. A replacement decoder substitutes `U+FFFD`, which can be reasonable for a best-effort display but destroys evidence about the original bytes. A strict decoder rejects the input, which is preferable for identifiers, signed content, imports, and any path where silent mutation would be dangerous.
+
+Chunked input adds state. A multibyte UTF-8 sequence can begin in one network chunk and finish in the next, so decoding each chunk independently can reject or replace valid data. Use a streaming decoder that carries partial-sequence state, and finish it explicitly at end of input.
+
+### JavaScript strings expose UTF-16 semantics
+
+JavaScript strings are sequences of UTF-16 code units. `"💡".length` is `2`, and taking only the first unit creates an unpaired surrogate rather than half a valid Unicode scalar value. Bracket indexing has the same unit boundary.
+
+String iteration recognizes surrogate pairs and yields code-point strings. `[..."💡"]` therefore has length `1`. Iteration still does not combine accents or joined emoji, so it cannot replace grapheme segmentation.
+
+JavaScript strings can contain isolated surrogates because the language permits arbitrary 16-bit unit sequences. `String.prototype.isWellFormed()` detects them, and `toWellFormed()` replaces them with `U+FFFD`. Replacement is lossy; reject invalid internal text when preserving exact input matters.
+
+Offsets must carry their unit with them. A database byte offset, JavaScript code-unit index, code-point ordinal, and grapheme position cannot be passed between APIs without conversion. Store a stable semantic anchor when text may be normalized or edited, because any transformation can move numeric offsets.
+
+### Grapheme boundaries follow an algorithm
+
+Unicode text segmentation defines default extended grapheme-cluster boundaries from character properties and rules. `Intl.Segmenter` exposes locale-sensitive segmentation through the JavaScript internationalization API. It is the normal starting point for cursor steps, truncation, and user-visible counts.
+
+A grapheme cluster is not necessarily a word, glyph, or fixed-width display cell. A font can render several clusters as one ligature, and one cluster can occupy different visual widths across fonts or terminals. Layout measurement still belongs to the rendering system.
+
+Segmentation data evolves as Unicode adds characters and refines rules. Persisting only a grapheme index and recomputing it years later under a different Unicode version can select a different boundary. Persist source text and application-level anchors when the result must remain reproducible.
+
+### Normalization defines equivalence conversions
+
+Normalization Form C (`NFC`) canonically decomposes and then composes where defined. Normalization Form D (`NFD`) keeps the canonical decomposition. They make canonically equivalent sequences converge without treating compatibility characters as ordinary substitutes.
+
+`NFKC` and `NFKD` add compatibility decomposition. That can make circled digits, width variants, and some presentation forms converge with plain characters. The broader folding may be useful in a deliberately specified search key, but it can erase distinctions that storage, display, or identifiers need.
+
+Normalization is idempotent: applying the same form again produces the same result. It is not transliteration, spell correction, accent stripping, or locale-aware case conversion. Each of those is a separate operation with separate data-loss and language consequences.
+
+Normalize at a defined comparison or ingestion boundary, not randomly throughout the codebase. Preserve original display text when users may need it, and derive a normalized key alongside it. If a database already contains mixed forms, changing only new writes creates a split contract until old data is migrated or reads handle both.
+
+### Comparison depends on purpose
+
+Exact equality compares the stored code-unit sequence in JavaScript. It is appropriate when a specification defines identifiers as exact strings or when you must detect whether bytes decoded to precisely the expected text. It deliberately treats canonically equivalent sequences as different.
+
+Normalized equality applies the same selected normalization form to both operands before exact comparison. It is useful only when the domain declares those normalization equivalents interchangeable. Store or compute the key consistently on every write and lookup path.
+
+Locale-aware collation answers presentation questions such as how customer names should sort. `Intl.Collator` needs an explicit locale and options such as `sensitivity`, `numeric`, and `usage`. A comparison result of zero means equivalent under that collation policy, not necessarily identical or safe to merge.
+
+| Purpose | Typical policy | Important warning |
+| --- | --- | --- |
+| Protocol token | Exact equality from the protocol specification | Do not add normalization or case folding silently |
+| Canonical text key | Same normalization form on both sides | Migrate existing data and enforce one write path |
+| User search | Product-defined normalization, case, and locale rules | Preserve original text and test language-specific cases |
+| Display sorting | One `Intl.Collator` with explicit locale and options | Add a stable secondary key for deterministic ties |
+| Security identifier | Specification-specific canonicalization | Collation equality is not an authorization rule |
+
+Case-insensitive matching is not just `toLowerCase()` everywhere. Case behavior can depend on language, and full case folding can change string length. Use the governing protocol or product specification and test its exact mapping rather than inventing a universal sequence of normalization and lowercasing.
+
+### A reliable processing sequence
+
+1. Keep incoming data as bytes until the encoding is known from a trustworthy contract.
+2. Decode with a chosen malformed-input policy and preserve raw bytes when audit or recovery needs them.
+3. Validate application constraints in the unit they actually name: bytes, scalar values, graphemes, or something domain-specific.
+4. Preserve the original string and derive normalized or search keys only for explicit purposes.
+5. Compare identifiers with their specification and human-facing text with an explicit locale policy.
+6. Encode at the outgoing boundary, then enforce byte-oriented protocol limits on the encoded result.
+
+This order prevents accidental double decoding and keeps lossy transformations visible. Some systems combine steps for performance, but their API contract should still describe the same logical boundaries.
+
+## Examples
+
+The examples first inspect text units, then enforce a strict byte boundary, build a normalized lookup key, and segment and sort human-facing text. Every file was run with Node 24.14.0; each adjacent text block is its exact output.
+
+### Measure the unit you mean
+
+The same sample is measured in UTF-16 code units, code points, grapheme clusters, and UTF-8 bytes. The names make it impossible to report a bare, ambiguous “length.”
+
+<Depth level="quick">
+
+```js run title="inspect_units.js"
+const samples = ["A", "é", "e\u0301", "💡", "👨‍👩‍👧‍👦"];
+const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+const encoder = new TextEncoder();
+
+for (const sample of samples) {
+  const codeUnits = sample.length;
+  const codePoints = [...sample].length;
+  const graphemes = [...segmenter.segment(sample)].length;
+  const utf8Bytes = encoder.encode(sample).length;
+
+  console.log(
+    `${JSON.stringify(sample)}: units=${codeUnits}, points=${codePoints}, graphemes=${graphemes}, bytes=${utf8Bytes}`,
+  );
+}
+```
+
+```text
+"A": units=1, points=1, graphemes=1, bytes=1
+"é": units=1, points=1, graphemes=1, bytes=2
+"é": units=2, points=2, graphemes=1, bytes=3
+"💡": units=2, points=1, graphemes=1, bytes=4
+"👨‍👩‍👧‍👦": units=11, points=7, graphemes=1, bytes=25
+```
+
+<TryToBreak items={['an empty string', 'a flag emoji', 'a letter with two combining marks', 'a newly supported emoji sequence']} />
+
+</Depth>
+
+The precomposed and decomposed accented letters look alike and each forms one grapheme, yet their code-unit, code-point, and byte counts differ. The family emoji is the sharper counterexample: it is one user-perceived cluster built from seven code points and eleven JavaScript string units.
+
+`Intl.Segmenter` is the only operation here intended to count editing characters. The encoder count is suitable for a UTF-8 protocol limit. Neither count should replace the other.
+
+### Reject malformed bytes at ingestion
+
+This import boundary encodes a message only to produce self-contained bytes, prints the stored representation, and decodes it in fatal mode. Removing the last byte leaves an incomplete four-byte emoji sequence.
+
+```js run title="decode_utf8.js"
+const encoder = new TextEncoder();
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+const message = "订单 💡";
+const stored = encoder.encode(message);
+
+const hex = [...stored]
+  .map((byte) => byte.toString(16).padStart(2, "0"))
+  .join(" ");
+
+console.log(hex);
+console.log(strictUtf8.decode(stored));
+
+const truncated = stored.slice(0, -1);
+try {
+  strictUtf8.decode(truncated);
+} catch (error) {
+  console.log(`rejected: ${error.constructor.name}`);
+}
+```
+
+```text
+e8 ae a2 e5 8d 95 20 f0 9f 92 a1
+订单 💡
+rejected: TypeError
+```
+
+Strict failure lets the caller quarantine the original bytes, return a validation error, or request another transfer. A replacement-mode decoder would produce a string containing `�`, which could make two distinct malformed identifiers collapse to the same visible value.
+
+The example decodes a complete buffer. For network chunks, reuse a decoder with streaming enabled and call it once more at end-of-stream so an unfinished sequence is detected.
+
+### Keep display text beside a normalized key
+
+The directory preserves the spelling originally supplied for display and derives an NFC key for exact lookup. It also demonstrates why substituting NFKC without a domain decision broadens equality.
+
+```js run title="normalize_keys.js"
+const composed = "Am\u00e9lie";
+const decomposed = "Ame\u0301lie";
+
+function exactComparisonKey(value) {
+  return value.normalize("NFC");
+}
+
+const directory = new Map();
+directory.set(exactComparisonKey(composed), { id: "customer-17", displayName: composed });
+
+console.log(composed === decomposed);
+console.log(exactComparisonKey(composed) === exactComparisonKey(decomposed));
+console.log(directory.get(exactComparisonKey(decomposed)).id);
+console.log(`NFC circled one equals 1: ${"①".normalize("NFC") === "1"}`);
+console.log(`NFKC circled one equals 1: ${"①".normalize("NFKC") === "1"}`);
+```
+
+```text
+false
+true
+customer-17
+NFC circled one equals 1: false
+NFKC circled one equals 1: true
+```
+
+NFC makes the two canonically equivalent name sequences converge without changing the stored display name. The circled digit remains distinct under NFC but converges with plain `1` under NFKC, showing that the normalization form is part of the data contract.
+
+A production directory must also decide case, whitespace, locale, duplicates, and migration. NFC alone does not make a complete username or search policy.
+
+### Segment display text and collate names
+
+The final example truncates a preview only at grapheme boundaries, then sorts customer names with a French display collator. A stable identifier resolves names that compare equal under the selected sensitivity.
+
+```js run title="segment_and_sort.js"
+const message = "👍🏽 café e\u0301lan 👨‍👩‍👧‍👦";
+const segmenter = new Intl.Segmenter("fr", { granularity: "grapheme" });
+
+function takeGraphemes(text, maximum) {
+  return [...segmenter.segment(text)]
+    .slice(0, maximum)
+    .map(({ segment }) => segment)
+    .join("");
+}
+
+console.log(takeGraphemes(message, 8));
+console.log([...segmenter.segment(message)].length);
+
+const customers = [
+  { id: "u3", name: "Élodie" },
+  { id: "u1", name: "Elodie" },
+  { id: "u2", name: "Zoë" },
+];
+const collator = new Intl.Collator("fr", { sensitivity: "base" });
+const ordered = customers.toSorted(
+  (left, right) => collator.compare(left.name, right.name) || left.id.localeCompare(right.id),
+);
+
+console.log(collator.compare("Élodie", "elodie") === 0);
+console.log(ordered.map(({ id }) => id).join(", "));
+```
+
+```text
+👍🏽 café é
+13
+true
+u1, u3, u2
+```
+
+The preview keeps the skin-tone emoji and decomposed accented letter intact. It preserves the original code-point sequence; segmentation finds boundaries but does not normalize the text.
+
+At base sensitivity, the collator considers `Élodie` and `elodie` equivalent for this comparison. The identifier tie-breaker produces repeatable output, but it does not make the two names the same account or authorization identity.
+
+## Pitfalls
+
+### Slicing by code unit for a user limit
+
+> [!PITFALL]
+> `text.slice(0, 20)` cuts at a UTF-16 code-unit boundary. It can leave an unpaired surrogate or detach a combining mark, emoji modifier, or joiner sequence from the cluster a user entered.
+
+**Fix:** state whether the limit protects encoded bytes or constrains user-visible input. Use `TextEncoder` for UTF-8 bytes and `Intl.Segmenter` for grapheme clusters; test the encoded result again when both limits apply.
+
+### Decoding with an implicit or forgiving policy
+
+> [!PITFALL]
+> A decoder with the wrong encoding produces mojibake, while a replacement decoder silently turns malformed byte sequences into `U+FFFD`. The resulting string no longer proves what bytes arrived.
+
+**Fix:** obtain the encoding from the protocol rather than guessing from content. Use fatal decoding for integrity-sensitive data, retain raw bytes for diagnosis when permitted, and use a streaming decoder across chunk boundaries.
+
+### Treating normalization as sanitization
+
+> [!PITFALL]
+> NFC or NFKC does not remove scripts, control characters, bidirectional behavior, markup, or visually confusable characters. NFKC also merges compatibility distinctions, so applying it globally can change identifiers and user content.
+
+**Fix:** use a named normalization form only inside a documented comparison or storage policy. Apply security validation, escaping, script restrictions, and confusable handling as separate controls required by the specific threat model.
+
+### Using locale comparison for identity
+
+> [!PITFALL]
+> `collator.compare(a, b) === 0` means the strings tie under one locale and option set. With base sensitivity, differences in accents or case may disappear, and runtime locale data can change across upgrades.
+
+**Fix:** keep identity equality separate and specification-driven. Use collation only for human-facing search or order, record its locale and options, and add a stable secondary key when sorting must be deterministic.
+
+### Losing the original through derived keys
+
+> [!PITFALL]
+> Replacing stored user text with a lowercased, normalized, or accent-stripped search key makes the transformation irreversible. It can alter display, legal names, audit evidence, and later migrations to a better comparison policy.
+
+**Fix:** preserve original text and store derived keys with a versioned policy when indexing needs them. Rebuild keys when the policy or Unicode data version changes, and enforce the same derivation on writes and queries.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate `string.length` as a “character” count, use `slice()` to truncate emoji, or spread a string and claim that code points equal visible characters. They may decode buffers with an implicit replacement policy, normalize every field with NFKC, or use `localeCompare()` for account equality. Generated migrations frequently normalize new writes without converting old rows, leaving lookups dependent on which generation wrote the data.
+
+**Ask your AI to check**
+
+- Inventory every length, index, slice, regular expression, encoder, decoder, normalization call, and comparison, and name the unit or equality policy each one uses.
+- Generate tests for decomposed accents, supplementary code points, joined emoji, malformed and chunk-split UTF-8, compatibility characters, and locale-specific case behavior.
+- Trace original text and every derived key through storage, logging, lookup, migration, and rendering, including the malformed-input and collision policy.
+
+**Review checklist**
+
+- Verify that every boundary declares its encoding and its reject, replace, or preserve behavior for malformed input.
+- Confirm that limits and offsets use the intended byte, code-unit, code-point, or grapheme unit without unsafe conversions.
+- Confirm that normalization, casing, and collation are purpose-specific, consistent on both operands, and never silently reused as security identity.
+
+**Prompt vocabulary**
+
+Use the exact terms `Unicode code point`, `Unicode scalar value`, `UTF-8 byte sequence`, `UTF-16 code unit`, `surrogate pair`, `extended grapheme cluster`, `canonical equivalence`, `NFC`, `NFKC`, `fatal decoding`, `streaming decoder`, `collation`, and `comparison key`. Ask for a boundary table naming encoding, unit, normalization form, locale, error policy, and preservation requirement; “make this Unicode-safe” leaves every important choice unspecified.
+
+<Depth level="deep">
+
+## Unicode boundaries and comparison contracts
+
+### Ill-formed UTF-16 inside strings
+
+Unicode scalar values exclude surrogates, but a JavaScript string can contain a lone high or low surrogate. Such a string can arise from code-unit slicing, manual construction, legacy data, or an API that exposes unchecked UTF-16. It is a valid JavaScript value but not a sequence of Unicode scalar values.
+
+When encoded as UTF-8 by `TextEncoder`, isolated surrogates are replaced with `U+FFFD`. That conversion is not a byte-preserving round trip. Check `isWellFormed()` and reject before encoding when an identifier, signature input, or audit record must not change silently.
+
+`toWellFormed()` is useful when the product explicitly prefers renderable replacement text. It should not be presented as repair of the original character because the missing surrogate partner cannot be inferred. Preserve the source representation separately if later investigation matters.
+
+### Incremental decoding owns partial sequences
+
+A UTF-8 decoder decides boundaries from leading and continuation bytes. A transport chunk has no obligation to end at a character boundary, so a decoder must retain an incomplete prefix between calls. Concatenating bytes before one final decode is correct but may use too much memory for a stream.
+
+The streaming alternative passes each chunk to the same decoder with stream state enabled. At end-of-input, a final call without more bytes forces validation of any pending prefix. Recreating a decoder per chunk discards exactly the state needed to distinguish a split valid sequence from malformed input.
+
+Protocol limits must say whether they apply before or after decoding. A maximum wire size is a byte limit; a maximum display length may be a grapheme limit. Enforce both at their own boundaries so an input with many multibyte characters cannot bypass capacity planning or suffer premature truncation.
+
+### Canonical ordering of combining marks
+
+Canonical normalization does more than replace one decomposed pair with one precomposed code point. It also places combining marks into canonical order according to their combining classes, except where starter boundaries or blocking rules apply. Handwritten tables for a few accented Latin letters cannot reproduce this algorithm.
+
+Not every sequence has a precomposed character. NFC may therefore still contain several code points for one grapheme cluster. Code that assumes “NFC means one code point per visible character” remains incorrect.
+
+Normalization form should be recorded with derived data. A key produced by NFC cannot safely be compared with one produced by NFKC merely because both are called normalized. Version the key scheme when other mappings such as case folding, whitespace rules, or application aliases are added.
+
+### Segmentation is necessary but not sufficient for layout
+
+Extended grapheme clusters are designed as useful default units for editing and boundary operations. They keep common combining sequences, emoji modifiers, regional-indicator flags, and joiner sequences together. They do not promise that every user community treats every cluster as one meaningful “character.”
+
+Display width depends on fonts, shaping, terminal conventions, and surrounding text. Counting clusters cannot predict pixels or terminal columns. Use the renderer's measurement API for layout and a segmentation API for text boundaries.
+
+Regular expressions also have their own units and Unicode modes. A dot, character class, or quantifier may operate on code units or code points and still split grapheme clusters. When a pattern is supposed to validate whole user-perceived characters, combine explicit Unicode properties and segmentation rather than assuming a Unicode flag changes the unit to graphemes.
+
+### Storage text and comparison keys have different jobs
+
+Original text answers “what did the user or source provide?” A comparison key answers “which differences does this operation ignore?” Collation produces an ordering under a locale policy. Combining these values into one field makes future display, audit, and policy changes harder.
+
+A robust record can keep `displayName`, an exact normalized lookup key, and a search index derived under a separately versioned policy. The fields may intentionally collide: two display names can share a search key without representing the same record. Uniqueness constraints belong only on the key whose equivalence relation matches the business rule.
+
+Database collations and application collators may use different Unicode versions, tailoring, or sensitivity. Sorting in one layer and applying binary-search boundaries in another is safe only if their order contracts match. Otherwise, retrieve a broader candidate set or keep ordering and searching in the same owner.
+
+Changing Unicode or locale data can change segmentation and collation without changing source text. Reproducible indexes therefore need a declared implementation or data version and a rebuild plan. Presentation sorting can often accept upgraded behavior, while persisted pagination cursors may need a stable secondary identifier.
+
+### A boundary-focused test matrix
+
+Start with cases that make units diverge rather than a large list of ordinary words:
+
+1. Empty text and ASCII establish ordinary boundary behavior.
+2. A supplementary code point exposes UTF-16 surrogate-pair handling.
+3. A decomposed accent exposes canonical equivalence and multi-code-point graphemes.
+4. An emoji modifier, flag, and joiner sequence exercise grapheme segmentation.
+5. Valid UTF-8 split at every byte boundary exercises streaming decoder state.
+6. Overlong, truncated, surrogate-encoding, and stray-continuation bytes exercise rejection.
+7. Compatibility characters distinguish NFC from NFKC policy.
+8. Locale-specific case and collation ties expose hidden comparison defaults.
+
+Assertions should name the intended property. Check that strict decoding rejects a malformed byte array, that truncation ends on a segment boundary, and that a comparison key collides only where the business rule permits. Snapshotting one runtime's sorted names without stating locale and options records an accident rather than a contract.
+
+Property tests can add useful invariants. Decoding bytes produced by the matching encoder returns the original well-formed scalar sequence; normalizing twice equals normalizing once; concatenating segments reconstructs the original text; and a collator-backed sort never decreases under that same collator.
+
+Keep fixtures as explicit escape sequences when the source editor could normalize them. A test containing decomposed `e\u0301` should say so in code, because a formatter or copy operation that silently turns it into `é` removes the case the test was meant to cover.
+
+</Depth>
+
+<Checkpoint id="foundations/unicode-text" />
+
+## Further reading
+
+- [Unicode Standard Annex #15: Unicode Normalization Forms](https://www.unicode.org/reports/tr15/)
+- [Unicode Standard Annex #29: Unicode Text Segmentation](https://www.unicode.org/reports/tr29/)
+- [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/)
+- [ECMAScript Internationalization API: `Intl.Segmenter`](https://tc39.es/ecma402/#segmenter-objects)
+- [MDN: `String.prototype.normalize()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize)

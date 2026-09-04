@@ -1,0 +1,400 @@
+---
+title: '作为智能体护栏的测试'
+description: '设计聚焦的测试来约束实现选择、暴露回归，并让智能体的工作可审计。        '
+track: ai-era
+section: specs-and-tests
+difficulty: intermediate
+tags: [agent-guardrails, regression-tests, behavioral-contracts, mutation-testing]
+prerequisites: [ai-era/executable-specifications]
+related: [ai-era/examples-and-counterexamples, ai-era/generated-change-review, ai-era/code-provenance-and-verification, ai-era/llm-application-evals]
+terms: [api-contract, characterization-test, contract-testing, class-invariant, mutation-testing]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: ai-era/tests-as-agent-guardrails
+sources:
+  - { title: 'Node.js documentation - Test runner', url: 'https://nodejs.org/docs/latest-v24.x/api/test.html' }
+  - { title: 'Node.js documentation - Assert', url: 'https://nodejs.org/docs/latest-v24.x/api/assert.html' }
+  - { title: 'web.dev - Learn Testing', url: 'https://web.dev/learn/testing' }
+  - { title: 'Testing Library - Guiding Principles', url: 'https://testing-library.com/docs/guiding-principles/' }
+  - { title: 'Google Testing Blog - Change-detector tests considered harmful', url: 'https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    护栏测试明确智能体必须保留的行为，包括边界、失败方式和禁止出现的副作用。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    如果测试只检查成功路径，或照搬当前实现，那么全绿的测试套件也只是薄弱证据。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    根据改动风险选择测试，证明新测试能因目标缺陷而失败，并保留命令、退出码和差异作为证据。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+当一项测试能缩小委派任务可接受改动的范围时，它就在充当智能体护栏。它把一项行为声明转化为可执行的拒绝条件。智能体可以选择实现方式，但只要改动违反了具名条件，就不能仅凭看似合理的解释获得验收。
+
+区别在于用途，而不在于特殊的测试框架。普通的单元测试、集成测试或<Term id="contract-testing">契约测试（contract test）</Term>，只要覆盖任务风险并进入交付门，就可以成为护栏。没有执行、被静默跳过或与补丁无关的测试，都无法约束工作。
+
+编程智能体会针对自己能观察到的反馈进行优化。如果可见测试只覆盖成功请求，智能体可能保住这条路径，却破坏空输入、授权边界、重试规则或外部副作用。增加断言数量不会自动解决问题；测试套件必须在合理改动可能出错的位置放置断言。
+
+护栏测试承担三项工作。编辑前，它传达不可妥协的行为；编辑循环中，它给智能体提供精确的反证；编辑后，它给审查者提供与代码库状态绑定、可重复执行的证据，而不是依赖智能体对运行记录的记忆。
+
+修复已复现缺陷、重构陌生代码、修改<Term id="api-contract">API 契约（API contract）</Term>或替换稳定接口背后的实现时，都会用到这种方法。当提示词允许多种有效实现，但可观察行为已经确定时，它尤其有用。
+
+测试不能决定未写明的产品策略，也不能证明输入、环境和断言范围之外的属性。强护栏会把这个边界写清楚：它说明保护什么、为何选择这些用例，以及哪些内容仍需要人工判断或生产环境验证。
+
+### 护栏是约束，不是蓝图
+
+行为测试应保留无关选择的自由度。如果需求规定会员免配送费，测试就应观察费用，而不是强制使用某个辅助函数名称、分支顺序或私有调用次数。这样，智能体可以改进结构，不必迁就一项复制了旧实现的测试。
+
+有些实现细节确实属于契约。数据库事务边界、不可逆支付 API 只能调用一次，或必须使用恒定时间比较，都可能与要求直接相关。断言这类细节时应写明风险，让后续审查者知道测试保护的是行为、安全、性能，还是仅仅保护旧结构。
+
+有用的问题不是「覆盖率有多高」，而是「测试套件会拒绝哪些错误改动」。行覆盖率可以指出从未运行的代码，却不能说明断言能否区分正确结果与便利的错误结果。设计护栏时，应从失败模式出发，再选出能暴露它们的最小测试集。
+
+## 工作原理
+
+先确定任务契约：预期行为、允许编辑的范围和完成命令。把每项重大风险转化为可观察声明。声明可以涉及返回值、错误类型、持久化写入、发出的事件、顺序规则、权限决定，或某项副作用必须缺席。
+
+接着选择能区分合理实现的用例。一个典型成功值确认主路径，而相邻边界值可以区分 `<` 与 `<=`；无效值检查失败语义；第二个身份或租户可以暴露意外共享的状态。用例集应足够小，便于快速诊断，又要有足够差异，避免捷径碰巧满足所有断言。
+
+每项声明都记录三个部分：
+
+1. **准备：**只包含到达目标行为所需的最小状态与协作者。
+2. **操作：**通过公开或稳定接缝描述的一次操作。
+3. **观察：**结果与相关副作用，包括不得发生的事情。
+
+这是一项设计纪律，并不强制使用某种测试语法。 Arrange–Act–Assert、Given–When–Then 和表驱动用例都能表达它。保持一致很重要，因为智能体和审查者需要把失败映射回一项契约条款，而不是先逆向分析庞大夹具。
+
+### 把风险映射到合适的测试边界
+
+选择能够观察风险、又不需要用模拟对象替换被测主体的最窄边界。纯计算和状态转换适合单元测试；序列化、数据库查询、队列和服务适配器通常需要组件测试或契约测试；路由、依赖装配和真实协议行为则需要集成测试，即使单元测试更便宜。
+
+| 风险 | 有效观察 | 常见的薄弱替代项 |
+| --- | --- | --- |
+| 阈值偏移一位 | 紧邻阈值下方与恰好等于阈值的值 | 一个远离边界的典型值 |
+| 未授权的跨租户访问 | 两个租户身份下相同的资源 ID | 一个获准身份 |
+| 失败后写入部分状态 | 拒绝后的持久状态与已发事件 | 只检查错误消息 |
+| 修改调用方输入 | 操作前后的输入 | 只检查返回值 |
+| 适配器违反提供方契约 | 真实边界上的请求与响应 | 接受任意形状的模拟对象 |
+
+测试边界应能经受预期改动。如果智能体的任务是替换解析器，断言私有令牌数组会阻碍任务；应改为断言接受的语言和错误行为。不过，如果令牌位置是公开诊断数据，它就属于契约，应继续接受测试。
+
+### 让测试具有区分力
+
+只要至少有一种合理但错误的实现会使测试失败，这项测试就有区分力。信任新生成的测试前，可以先检查这个属性。暂时恢复旧缺陷、反转边界运算符、删除校验，或返回硬编码的成功路径值；测试应因预期原因变红。
+
+这种反事实检查可以发现同义反复式测试。智能体有时会根据当前实现输出生成断言、模拟被测方法，或捕获错误却没有在错误未出现时失败。这些测试执行了代码，也增加了覆盖率，却仍会接受原本要约束的缺陷。
+
+对于缺陷修复，最有力的顺序是先红、再绿、最后运行相关回归：
+
+1. 在未修正的基线上运行新的聚焦测试，并保留预期失败。
+2. 应用实现改动，再运行聚焦测试并看到它通过。
+3. 运行周边测试套件和检查，发现其他位置被挤出的行为。
+
+第一次运行证明测试对具名缺陷敏感；第二次把补丁与修正关联起来；第三次把证据扩大到现有契约。跳过红色阶段，就无法确定新测试是否真正代表过这个问题。
+
+### 单独保存执行证据
+
+编写测试的智能体不能成为宣告测试通过的权威。运行器应记录确切命令、工作目录、基线或提交、退出码和跳过的测试。对于重要工作，应保留足以定位断言的失败输出，同时避免存储无关秘密或无限增长的日志。
+
+必须重新执行，因为测试结果只描述某一次工作区状态。最后一次编辑前的绿色结果无法说明最终差异；从错误包目录运行命令，可能发现零项测试或读取另一份配置。因此，交付门应在最终改动后执行，并在结果缺失或含糊时失败关闭。
+
+## 示例
+
+下面的示例使用 Node 24 和 `node:assert/strict`。每个文件都采用简洁且确定性的执行方式，因此输出只包含稳定的通过或拒绝证据；在代码库中，同样的断言可以放进 `node:test` 用例。
+
+### 保护阈值与无效输入
+
+这条配送规则有两种合法的免配送费方式，同时明确限制了输入。紧邻阈值下方与恰好等于阈值的用例可以区分比较运算符，负数用例则固定错误契约。
+
+<Depth level="quick">
+
+```js run title="delivery_contract.js"
+import assert from "node:assert/strict";
+
+function deliveryFee(orderTotalCents, member) {
+  if (!Number.isInteger(orderTotalCents) || orderTotalCents < 0) {
+    throw new RangeError("order total must be a non-negative integer");
+  }
+  if (member || orderTotalCents >= 5_000) return 0;
+  return 799;
+}
+
+const cases = [
+  { name: "below threshold", args: [4_999, false], expected: 799 },
+  { name: "at threshold", args: [5_000, false], expected: 0 },
+  { name: "member order", args: [1_200, true], expected: 0 },
+];
+
+for (const { name, args, expected } of cases) {
+  assert.equal(deliveryFee(...args), expected);
+  console.log(`PASS ${name}`);
+}
+
+assert.throws(
+  () => deliveryFee(-1, false),
+  { name: "RangeError", message: "order total must be a non-negative integer" },
+);
+console.log("PASS negative total");
+```
+
+```text
+PASS below threshold
+PASS at threshold
+PASS member order
+PASS negative total
+```
+
+<TryToBreak items={['非整数金额', '总额为零', '值为真的非布尔会员标记']} />
+
+</Depth>
+
+表格让契约清晰可见，同时不耦合分支顺序。如果智能体把 `>=` 改成 `>`，「at threshold」用例就会失败；如果删除会员逻辑，则是另一行失败，因此信号可以指出哪项行为发生了变化。
+
+无效输入用例同时断言错误类型和稳定消息，因为本例允许调用方依赖二者。在只要求拒绝的代码库中，断言消息会形成不必要的耦合。需要多精确由契约决定，不存在普适测试规则。
+
+### 观察副作用与无副作用
+
+只断言返回值会漏掉原地修改，或校验前发生的写入。这个测试替身记录存储边界，冻结输入则明确了所有权。
+
+```js run title="profile_effects.js"
+import assert from "node:assert/strict";
+
+function renameAccount(store, account, rawName) {
+  const displayName = rawName.trim();
+  if (displayName === "") throw new TypeError("display name is required");
+
+  const updated = { ...account, displayName };
+  store.save(updated);
+  return updated;
+}
+
+const writes = [];
+const store = { save: (account) => writes.push(structuredClone(account)) };
+const original = Object.freeze({ id: "acct-7", displayName: "Mina" });
+
+const updated = renameAccount(store, original, "  Min Chen  ");
+
+assert.deepEqual(updated, { id: "acct-7", displayName: "Min Chen" });
+assert.deepEqual(original, { id: "acct-7", displayName: "Mina" });
+assert.deepEqual(writes, [{ id: "acct-7", displayName: "Min Chen" }]);
+console.log("PASS success result, input, and write");
+
+const writesBeforeFailure = writes.length;
+assert.throws(
+  () => renameAccount(store, original, "   "),
+  { name: "TypeError", message: "display name is required" },
+);
+assert.equal(writes.length, writesBeforeFailure);
+console.log("PASS invalid input causes no write");
+```
+
+```text
+PASS success result, input, and write
+PASS invalid input causes no write
+```
+
+成功路径检查三个表面：返回数据、调用方拥有的输入和存储写入。它们共同保护了类似<Term id="class-invariant">类不变量（class invariant）</Term>的所有权规则，虽然本例只使用普通对象。只要这些观察仍然为真，智能体就可以自由重构函数。
+
+失败路径先测量调用前的写入次数，再确认它没有变化。这项否定断言很重要，因为「抛出正确错误」与「不产生副作用」是两项独立声明。先保存再校验的生成实现只能满足前一项。
+
+### 检查测试能否拒绝缺陷
+
+下面的小型契约会分别针对预期实现和两个故意写错的变体运行。测试套件能够区分向下取整与四舍五入，也能区分拒绝与截断，因此必须拒绝两个错误程序。
+
+```js run title="mutation_probe.js"
+import assert from "node:assert/strict";
+
+function discount(subtotalCents, percent) {
+  if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
+    throw new RangeError("percent must be an integer from 0 to 100");
+  }
+  return subtotalCents - Math.floor((subtotalCents * percent) / 100);
+}
+
+function discountContract(calculate) {
+  assert.equal(calculate(1_005, 10), 905);
+  assert.equal(calculate(5_000, 100), 0);
+  assert.throws(() => calculate(5_000, 101), RangeError);
+}
+
+function rejectMutant(name, calculate) {
+  try {
+    discountContract(calculate);
+  } catch {
+    console.log(`REJECTED ${name}`);
+    return;
+  }
+  throw new Error(`contract did not reject ${name}`);
+}
+
+discountContract(discount);
+console.log("PASS baseline");
+
+rejectMutant("rounding mutant", (subtotal, percent) =>
+  subtotal - Math.round((subtotal * percent) / 100));
+rejectMutant("validation mutant", (subtotal, percent) =>
+  subtotal - Math.floor((subtotal * Math.min(percent, 100)) / 100));
+```
+
+```text
+PASS baseline
+REJECTED rounding mutant
+REJECTED validation mutant
+```
+
+这是小规模的<Term id="mutation-testing">变异测试（mutation testing）</Term>。生产级变异工具会系统修改运算符、常量和控制流，再报告测试套件未能拒绝的变体。存活变体不一定代表缺少测试，但会迫使团队明确判断：它究竟是等价行为，还是未覆盖规则。
+
+契约选择 `1_005`，是因为整数会让向下取整与四舍五入得出相同结果。好的测试数据以区分力为选择依据，而不只追求表面上的真实感。全额折扣和无效百分比用例覆盖不同分支，避免用一条巧妙断言代替整个契约。
+
+## 陷阱
+
+### 只测试报告中的成功路径
+
+> [!PITFALL]
+> 生成的回归测试重复成功复现输入，却遗漏相邻边界、失败状态和禁止出现的副作用。智能体可以硬编码或狭窄地特判这项输入，同时破坏周边行为。
+
+**修复方法：**选择用例前先列出合理缺陷。加入能区分它的最小反例，例如阈值邻值、第二个身份、空集合或协作者失败。每项断言都应绑定一项具名风险。
+
+### 照搬实现细节
+
+> [!PITFALL]
+> 测试断言私有辅助函数名称、内部调用顺序或中间对象，但这些都不属于公开契约。安全重构会因此失败，而形状符合预期的错误实现反而可能通过。
+
+**修复方法：**观察稳定的输入、输出和边界副作用。只有在内部细节保护事务性、恒定时间处理或提供方限流等明确要求时才断言它，并在断言旁写明原因。
+
+### 允许同一个智能体削弱交付门
+
+> [!PITFALL]
+> 智能体通过删除断言、把预期输出改成缺陷结果、添加宽泛跳过，或把新测试移出发现范围，让补丁变绿。最终消息提到测试通过，却不提已被改动的保护条件。
+
+**修复方法：**把测试差异和实现差异分开审查。拒绝没有说明的断言改动和新跳过项，检查发现的测试数量，并在最终编辑后独立重跑必要命令。对于敏感行为，应限制任务可以修改哪些测试或策略文件。
+
+### 信任从未变红的测试
+
+> [!PITFALL]
+> 一项新测试在修复前后都通过，因为它调用了错误路径、模拟了被测主体、捕获所有异常，或断言了缺陷下已经成立的值。它看似增加了回归覆盖，实际没有形成约束。
+
+**修复方法：**针对有缺陷的基线或一个刻意加入的最小缺陷运行聚焦测试，并保留预期失败。确认失败来自目标断言，而不是损坏的准备过程或无关导入。
+
+### 把绿色测试套件当成普遍证明
+
+> [!PITFALL]
+> 单元测试全部通过，但真实数据库排序规则、时钟、队列投递、浏览器或提供方协议表现不同。完成声明悄悄超出了测试实际覆盖的环境。
+
+**修复方法：**让测试层级与补丁风险匹配，并标出剩余证据缺口。针对真实边界运行契约测试或集成测试；确定性替身只用于它能忠实模拟的属性；运维和产品判断仍应保留为明确审查项。
+
+### 形成一个不透明的端到端护栏
+
+> [!PITFALL]
+> 一个庞大场景覆盖许多行为，却只以笼统超时或快照差异失败。智能体获得的反馈很弱，会反复修改无关代码，审查者也无法判断哪项契约遭到违反。
+
+**修复方法：**只保留少量端到端检查来验证装配，并在每条规则附近增加聚焦测试。给用例使用领域名称，减少共享夹具状态，让失败输出明确指出输入和预期观察。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+智能体经常生成只重放一个提示词示例的测试，直接在预期值中复制实现公式，或者模拟自己声称要测试的函数。它还可能不断更新快照和断言直到变绿，接受过于宽泛的错误类型，遗漏「失败时不得写入」，或把测试放进运行器无法发现的文件。另一类错误是针对可见用例优化：补丁特判一项具名输入，却让未测试的租户、边界、顺序或重试发生回归。
+
+**让 AI 检查**
+
+- 把每项改变的行为映射到测试名称、断言与执行层，并指出未覆盖的失败路径和副作用路径。
+- 证明每项新回归测试会在有缺陷的基线上，或加入一个刻意缺陷时失败，并引用相关失败行。
+- 报告确切测试命令、工作目录、发现与跳过的数量、退出码、最终差异状态，以及所有未执行的环境边界。
+
+**审查清单**
+
+- 检查测试改动中是否存在削弱的断言、宽松模拟、更新的快照、隐藏跳过项，以及运行器发现范围之外的文件。
+- 根据改动的真实风险，用相邻边界、第二个身份或实例，以及一次协作者失败来挑战补丁。
+- 在最终编辑后重跑聚焦测试和相关测试套件，再把每项完成声明映射到保留的证据或具名人工检查。
+
+**提示词词汇**
+
+使用准确术语：`behavioral contract`（行为契约）、`regression test`（回归测试）、`boundary-value case`（边界值用例）、`negative assertion`（否定断言）、`test double`（测试替身）、`test discovery`（测试发现）、`fault injection`（故障注入）、`mutation testing`（变异测试）、`red-green verification`（红绿验证）和 `independent test run`（独立测试运行）。要求输出风险到测试矩阵和反事实失败证据；「增加更多测试」没有说明测试套件必须拒绝什么。
+
+<Depth level="deep">
+
+## 构建稳健的护栏测试套件
+
+稳健的测试套件约束对外有意义的行为，同时不会冻结偶然结构。它的强度来自互补观察，而不是用例总数。设计时需要明确可接受的变化、禁止出现的结果，以及哪一层能如实观察每项规则。
+
+### 建模可接受的行为集合
+
+可以把每项实现看作针对一组输入和环境产生观察结果。规范定义哪些观察结果集合可以接受，测试则对这个空间采样，并拒绝越界实现。测试无法穷举整个空间，因此选样质量比重复次数更重要。
+
+等价类可以缩小这个空间。如果所有普通正数金额遵循同一规则，就选一个代表值，再加上规则发生变化的位置。只有当状态所有权、权限、时间顺序和协作者结果会改变行为时，才为这些维度增加用例。
+
+这个模型可以解释为何上千个生成示例依然薄弱。如果所有示例都是远高于同一阈值的正整数，它们只占据一个类别，能区分的缺陷很少。一个恰好位于阈值上的值，可能比整组生成数据提供更强约束。
+
+### 建立风险到测试矩阵
+
+允许大型补丁前先写矩阵。每行列出可信失败模式，各列记录观察、层级、夹具和证据命令。矩阵本身也是紧凑的审查产物：缺失单元格会暴露流畅测试代码可能掩盖的假设。
+
+| 失败模式 | 有区分力的用例 | 层级 | 证据 |
+| --- | --- | --- | --- |
+| 边界运算符变化 | 阈值下方、恰好等于和上方 | 单元测试 | 聚焦测试命令 |
+| 租户过滤消失 | 两个租户下相同记录 ID | 组件测试 | 查询与授权断言 |
+| 重试导致重复扣款 | 请求已接受后发生超时 | 集成测试 | 提供方替身与幂等记录 |
+| 迁移丢失旧空值 | 有代表性的迁移前数据行 | 数据库测试 | 正向与回滚检查 |
+| 错误路径发出事件 | 协作者拒绝写入 | 组件测试 | 状态与发件箱保持不变 |
+
+并非每一行都要转化为自动测试。视觉设计判断或生产容量声明可能仍是人工或运维检查。把它们留在矩阵中，可以避免把测试套件的绿色状态误报为这些声明的证据。
+
+### 用不变量连接多个示例
+
+基于示例的测试固定单个观察结果。不变量则连接许多观察：总额永不为负、排序保留输入多重集合、解码已编码的受支持值会得到原值，以及失败命令绝不会记录完成。这些关系可以暴露任何记忆中夹具都未覆盖的缺陷。
+
+基于属性的工具可以生成输入，但生成本身不是目的。应写清属性、限制有效输入域、让随机过程可复现，并保留最小失败示例。没有约束且大多生成无关值的生成器，只会增加运行时间，不会对实现施加有效压力。
+
+难以计算确切结果时，可以使用蜕变检查。加入零值项目不应改变总和；调整彼此独立请求的顺序不应改变各自决定。关系本身必须来自契约，而不是当前实现碰巧表现出的模式。
+
+### 使用协作者，但不要测试幻想协议
+
+测试替身应只模拟当前测试需要的一项边界属性。记录型存储可以证明尝试了哪些写入，拒绝型存储可以暴露回滚行为。它不能静默接受真实提供方会拒绝的无效调用，否则护栏保护的是只存在于测试中的协议。
+
+对于稳定的外部协议，应针对模式、提供方沙箱或已验证本地实现增加<Term id="contract-testing">契约测试</Term>。决策逻辑继续使用单元测试，再用少量集成测试检查序列化、配置和网络语义。这种分层设计既给智能体快速反馈，又不抹除边界处的现实。
+
+如果模拟对象规定了每次内部调用，它就会变得危险。这类测试会在无害重构时失败，并鼓励智能体复刻调用编排，而不是修正行为。应优先观察状态、返回结果、已发布消息，或自有边界上的请求。
+
+### 修改陌生代码前先刻画行为
+
+<Term id="characterization-test">特征测试（characterization test）</Term>会在高风险重构前记录观察到的遗留行为。文档不完整，而当前使用方依赖难以推断的行为时，它很有用。它能证明系统现在做什么，却不能自动证明产品应承诺什么。
+
+应标记意外行为，并决定保留还是修正。如果旧解析器接受畸形记录，特征测试可以在团队调查期间防止意外变化，但要把这种接受行为升级为永久契约，仍需要产品决定。否则，临时安全网会悄悄固化缺陷。
+
+特征测试应保持聚焦。在稳定接缝上记录输出和副作用，随着理解加深，再用具名断言替换宽泛快照。大型快照会让偶然行为显得同等重要，也会诱使智能体整批批准更新。
+
+### 测量测试套件的敏感度
+
+<Term id="mutation-testing">变异测试</Term>估算断言能否发现细小语义变化。工具会创建反转比较、删除条件或改变常量等变体，并对每个变体运行测试。被拒绝的变体证明测试对该改动敏感；存活变体则需要检查。
+
+变体存活可能表示缺少覆盖、断言薄弱、代码不可达，或变换前后等价。因此，变异分数是诊断指标，不是发布目标。追逐分数会为无人负责的行为制造脆弱测试，就像追逐行覆盖率一样。
+
+应在发生改动的决策逻辑、校验、授权和计算附近有选择地使用变异。不要从整个缓慢的代码库开始。围绕高风险补丁设置较小的变异预算，既能给审查者提供具体反事实证据，也能维持可用的反馈循环。
+
+### 保留审计链
+
+可审计护栏会连接需求、测试源码、失败基线、修正差异和最终执行。交付系统需要时应存储机器可读测试报告，但人工摘要必须短到可以检查。没有来源信息的通过结果可能属于另一个修订版本或另一份配置。
+
+证据记录应列出跳过测试和预期失败。「128 项通过」掩盖不了一项相关集成测试被取消选择的事实。零测试运行、解析失败、超时和结果截断只要出乎预期，就应视为未知，而不是成功。
+
+最后，应把证据与结论分开。测试输出只能证明选中的观察在一个环境中符合预期。审查者还要根据改动结合差异检查、威胁建模、性能数据或产品批准。守住这个边界，才能让智能体工作可审计，又不假装测试可以取代判断。
+
+补丁范围变化时，应重新检查风险矩阵。为原始差异选择的护栏，不会自动覆盖新增的依赖、数据路径或权限边界。
+
+</Depth>
+
+<Checkpoint id="ai-era/tests-as-agent-guardrails" />
+
+## 延伸阅读
+
+- [Node.js 文档：测试运行器](https://nodejs.org/docs/latest-v24.x/api/test.html)
+- [Node.js 文档：Assert](https://nodejs.org/docs/latest-v24.x/api/assert.html)
+- [web.dev：学习测试](https://web.dev/learn/testing)
+- [Testing Library：指导原则](https://testing-library.com/docs/guiding-principles/)
+- [Google Testing Blog：慎用变更探测式测试](https://testing.googleblog.com/2015/01/testing-on-toilet-change-detector-tests.html)

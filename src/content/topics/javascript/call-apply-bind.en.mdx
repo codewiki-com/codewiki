@@ -1,0 +1,403 @@
+---
+title: call, apply, and bind
+description: Distinguish call, apply, and bind by timing, argument form, and binding behavior, including callback identity, array-like inputs, and construction.
+track: javascript
+section: functions-scope
+difficulty: intermediate
+tags: [call, apply, bind, this-binding, partial-application]
+prerequisites: [javascript/functions, javascript/this-binding]
+related: [javascript/arrow-functions, javascript/currying-composition, javascript/objects-prototypes, javascript/classes]
+terms: [explicit-this-binding, partial-application, array-like-object, callback-identity]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: javascript/call-apply-bind
+sources:
+  - { title: 'MDN - Function.prototype.call()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/call' }
+  - { title: 'MDN - Function.prototype.apply()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/apply' }
+  - { title: 'MDN - Function.prototype.bind()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind' }
+  - { title: 'MDN - Reflect.apply()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect/apply' }
+  - { title: 'ECMAScript 规范 - Bound Function Exotic Objects', url: 'https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-bound-function-exotic-objects' }
+origin: old/src/content/docs/javascript/call-apply-bind.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `call()` and `apply()` invoke a function immediately with an explicit `this`; `bind()` saves `this` and optional leading arguments in a new function for later use.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `apply()` accepts an array-like object, while spread requires an iterable. Every `bind()` call also creates a distinct function identity, so binding separately during setup and cleanup fails.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Choose `call()`, `apply()`, or `Reflect.apply()` from the argument source. Bind a long-lived callback once, retain it, and test ordinary calls separately from construction.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+`call()`, `apply()`, and `bind()` are methods on `Function.prototype` that control how a callable receives `this` and arguments. The first two invoke the target immediately; the last returns a new function. That timing boundary is the first distinction to make.
+
+An ordinary method call gets its receiver from the value to the left of the dot or brackets: `this` is `account` in `account.close()`. Once the function is assigned, destructured, or passed as a callback, only the function value remains; its former object doesn't follow it. <Term id="explicit-this-binding">Explicit `this` binding</Term> lets the caller provide a receiver without modifying the object.
+
+Use `call()` when the argument count and positions are written at the call site. Use `apply()` when the arguments already live in an array or array-like object. Use `bind()` for later invocation, stable callback identity, or <Term id="partial-application">partial application</Term> that fills leading arguments in advance.
+
+These methods aren't the whole `this` model. Arrows have no `this` of their own, class constructors can't be called as ordinary functions, and strict and non-strict functions treat `null`, `undefined`, and primitive receivers differently. The point of these APIs is to identify what they control and which target-function semantics remain in force.
+
+| Method | Invokes immediately | Argument form | Result |
+| --- | --- | --- | --- |
+| `fn.call(receiver, a, b)` | Yes | Individual arguments | Target's return value |
+| `fn.apply(receiver, args)` | Yes | Array or array-like object | Target's return value |
+| `fn.bind(receiver, a, b)` | No | Optional leading arguments | A new bound function |
+
+All three operations require a callable target. Borrowing `Function.prototype.call` for a number or plain object fails before any receiver rule can make that value callable.
+
+None of them validates whether the receiver has the fields the target expects. That contract still belongs to the target function, so an explicit receiver can be syntactically valid and semantically wrong.
+
+## How it works
+
+For `fn.call(receiver, ...args)`, `call()` first confirms that `fn` is callable, then invokes it with `receiver` as its `this` and the remaining arguments in order. The result or exception comes directly from the target. The operation doesn't permanently attach the target to `receiver`.
+
+For `fn.apply(receiver, args)`, the receiver rule is the same, but the second parameter is first converted to an argument list. It may be an array or an <Term id="array-like-object">array-like object</Term> with a `length` and indexed properties starting at `0`. Passing `null` or `undefined` means no arguments; other non-object values throw `TypeError`.
+
+For `fn.bind(receiver, ...leadingArgs)`, the target doesn't run. The runtime creates a bound function that stores the target, `receiver`, and leading arguments. A later call puts those saved arguments before its call-time arguments; calling the bound function through `call()` or `apply()` can't replace the stored `this`.
+
+Every `bind()` evaluation creates a new function object, even when the target, receiver, and arguments are identical. This <Term id="callback-identity">callback identity</Term> difference affects listener removal, unsubscription, cache keys, and deduplication. When setup has a matching cleanup operation, the bound result itself is a resource you must retain.
+
+### Receiver and arguments are separate dimensions
+
+`thisArg` doesn't become the first ordinary parameter, and an ordinary argument doesn't become `this`. `bind(null, currency)` is a common way to prefill arguments for a function that ignores its receiver. In that case, `null` states explicitly that no receiver is used.
+
+A strict ordinary function receives exactly the `thisArg` supplied by `call()`, `apply()`, or `bind()`. A non-strict ordinary function substitutes `globalThis` for `null` and `undefined` and boxes primitive values. Business logic shouldn't depend on that conversion because modules and class methods use strict semantics.
+
+An arrow ignores the `thisArg` supplied by these APIs because it reads lexical `this` from its creation site. The methods can still invoke an arrow and pass ordinary arguments, and `bind()` can still prefill arguments. Binding doesn't make an arrow constructible.
+
+### `apply()` versus spread
+
+`fn.apply(receiver, values)` and `fn.call(receiver, ...values)` often agree when `values` is an array, but they consume different protocols. `apply()` reads `length` and indexed properties; spread reads `Symbol.iterator`. A value can satisfy only one of those protocols.
+
+`Reflect.apply(fn, receiver, values)` receives the target as an explicit parameter instead of looking up a method through `fn.apply`. It fits proxies, wrappers, and generic invocation utilities, and avoids a target's own property named `apply`. Like `Function.prototype.apply()`, it requires an array-like third argument, but that argument can't be omitted.
+
+## Examples
+
+These four examples move from immediate and deferred invocation to the two argument protocols, stable callback identity, and bound construction. Every shown output was produced by running the corresponding file locally with Node 24.
+
+### Call one function in three modes
+
+The target reads both its receiver and ordinary arguments. `call()` and `apply()` return the string immediately, while `bind()` saves the receiver and first two arguments until the final argument arrives.
+
+<Depth level="quick">
+
+```javascript run title="three_modes.js"
+'use strict';
+
+function price(currency, amount, fee) {
+  return `${this.region} ${currency}${amount + fee}`;
+}
+
+const store = { region: 'EU' };
+
+console.log(price.call(store, 'EUR ', 20, 2));
+console.log(price.apply(store, ['EUR ', 20, 2]));
+
+const addFee = price.bind(store, 'EUR ', 20);
+console.log(addFee(2));
+console.log(addFee === price);
+```
+
+```text
+EU EUR 22
+EU EUR 22
+EU EUR 22
+false
+```
+
+<TryToBreak items={['try to replace the receiver saved by addFee using call()', 'omit the second argument to apply()', 'pass a Symbol as amount']} />
+
+</Depth>
+
+All three calls produce the same business string, but their paths differ. The first two expressions have completed the call. `addFee` is a reusable new function that still expects `fee`, and the last line confirms it isn't the same function object as `price`.
+
+`bind()` can only prefill leading arguments; it can't leave a hole in the middle. If an interface must fix `amount` now and accept `currency` later, reorder the parameters, use a named options object, or write an explicit wrapper.
+
+### Distinguish array-like and iterable inputs
+
+The custom `arrayLike` has indexes and `length` but no iterator; the `Set` has an iterator but no array-style `length`. Together they expose the protocol difference between `apply()` and spread.
+
+```javascript run title="argument_protocols.js"
+'use strict';
+
+function label(first, second) {
+  return `${this.prefix}:${first}|${second}`;
+}
+
+const context = { prefix: 'queue' };
+const arrayLike = { 0: 'fast', 1: 'bulk', length: 2 };
+
+console.log(label.apply(context, arrayLike));
+
+try {
+  console.log(label.call(context, ...arrayLike));
+} catch (error) {
+  console.log(error.name);
+}
+
+const iterable = new Set(['audit', 'mail']);
+console.log(label.apply(context, iterable));
+console.log(label.call(context, ...iterable));
+```
+
+```text
+queue:fast|bulk
+TypeError
+queue:undefined|undefined
+queue:audit|mail
+```
+
+`apply()` can read `arrayLike` by index, but spread can't consume it, so the second call throws `TypeError` before the target runs. The `Set` reverses the outcome: `apply()` sees no `length` and supplies zero arguments, while spread obtains two values from the iterator.
+
+Before mechanically replacing `apply()` with spread, determine whether callers promise an array, an array-like object, or an iterable. When you own the API, accepting a real array usually removes that protocol ambiguity.
+
+### Retain one bound callback
+
+The subscription table adds and removes listeners by function object identity. `Reporter` binds once during construction, so setup and cleanup can use one reference. Binding temporarily during cleanup can't match the existing listener.
+
+```javascript run title="stable_callback.js"
+'use strict';
+
+class TopicBus {
+  #listeners = new Set();
+  on(listener) {
+    this.#listeners.add(listener);
+  }
+  off(listener) {
+    this.#listeners.delete(listener);
+  }
+  emit(value) {
+    for (const listener of this.#listeners) listener(value);
+  }
+  get size() {
+    return this.#listeners.size;
+  }
+}
+
+class Reporter {
+  constructor(label) {
+    this.label = label;
+    this.onValue = this.onValue.bind(this);
+  }
+  onValue(value) {
+    console.log(`${this.label}:${value}`);
+  }
+}
+
+const bus = new TopicBus();
+const reporter = new Reporter('R');
+
+bus.on(reporter.onValue);
+bus.emit('open');
+bus.off(reporter.onValue);
+console.log(bus.size);
+
+bus.on(reporter.onValue);
+bus.off(reporter.onValue.bind(reporter));
+console.log(bus.size);
+```
+
+```text
+R:open
+0
+1
+```
+
+The first `off()` removes the exact reference, so the listener count reaches zero. The second `bind()` creates a wrapper around the already bound function. Its receiver is still `reporter`, but its identity differs, so the original listener remains in the set.
+
+Browser `removeEventListener()`, Node's `EventEmitter.off()`, and many subscription libraries impose the same requirement. You may also need to retain registration options or an unsubscribe function specific to the API; keeping only the target method isn't always enough.
+
+### Construct through a bound function
+
+When the target is constructible, its bound function is constructible too. An ordinary call uses the stored object and a `new` call creates its own receiver, but both receive the prefilled `'eu'` argument.
+
+```javascript run title="bound_constructor.js"
+'use strict';
+
+function Session(region, id) {
+  this.key = `${region}-${id}`;
+}
+
+const fallback = { key: 'unset' };
+const BoundSession = Session.bind(fallback, 'eu');
+
+BoundSession('ops');
+const session = new BoundSession('42');
+
+console.log(fallback.key);
+console.log(session.key);
+console.log(session instanceof Session);
+console.log(session instanceof BoundSession);
+console.log(BoundSession.name);
+console.log(BoundSession.length);
+console.log(Object.hasOwn(BoundSession, 'prototype'));
+```
+
+```text
+eu-ops
+eu-42
+true
+true
+bound Session
+1
+false
+```
+
+`new BoundSession('42')` ignores `fallback` but retains the leading argument. `instanceof` checks `Session.prototype` through the bound target. The bound function has no own `prototype` property, so it can be called with `new` but can't directly serve as the base of `extends`.
+
+This ordinary function demonstrates both call paths; that doesn't mean a public API should support both. Production code usually fixes one form through a `class`, named factory, or explicit documentation.
+
+## Pitfalls
+
+### Chaining class construction with `call()` or `apply()`
+
+> [!PITFALL]
+> `Parent.call(this, value)` is only an ordinary call and doesn't preserve full construction semantics. JavaScript classes can't be called without `new`, and `new.target` differs from a genuine construction path.
+
+**Fix:** use `extends` and `super()` for class inheritance. When metaprogramming genuinely needs to forward construction, use `Reflect.construct()` and separately verify the prototype, explicit object returns, and `new.target`.
+
+### Treating every `apply()` input as spreadable
+
+> [!PITFALL]
+> An array-like object isn't necessarily iterable, and an iterable doesn't necessarily have `length`. Automatically changing `fn.apply(receiver, input)` to `fn.call(receiver, ...input)` can throw or change the argument count.
+
+**Fix:** state the input protocol and normalize at the boundary to a real array. When the argument count may be large, don't expand the whole collection into one function call; use a loop, `reduce()`, or an API that accepts a collection.
+
+### Binding separately during setup and cleanup
+
+> [!PITFALL]
+> `on(this.handle.bind(this))` and a later `off(this.handle.bind(this))` produce two functions. Cleanup can't match the registration and may keep the bound function and its receiver reachable indefinitely.
+
+**Fix:** bind once during owner initialization, store the result in a clearly named field, and reuse that reference in a full setup, emit, cleanup, emit-again test.
+
+### Assuming another bind replaces `this`
+
+> [!PITFALL]
+> Binding an already bound function with `bind(other, extra)` ignores `other`, but appends `extra` after existing leading arguments. An arrow also ignores the new `thisArg`, although it still receives prefilled arguments.
+
+**Fix:** trace the target, first bound receiver, each batch of leading arguments, and call-time arguments separately. Start from the unbound original when you need another receiver.
+
+### Depending on sloppy-mode global substitution
+
+> [!PITFALL]
+> A non-strict function substitutes `globalThis` for a `null` or `undefined` receiver, turning missing context into silent global reads or writes. Modules and class methods use strict semantics, where the same defect commonly becomes a `TypeError`.
+
+**Fix:** test under strict semantics and pass the business object explicitly. When you truly need the global object, write `globalThis`; don't let `call(null)` or `bind(null)` choose it implicitly.
+
+### Treating a simplified implementation as a native replacement
+
+> [!PITFALL]
+> Common hand-written versions temporarily attach the function to its receiver. They convert strict receivers incorrectly, fail on frozen objects or proxies, and may skip cleanup when the target throws; simplified `bind()` versions also miss construction and metadata semantics.
+
+**Fix:** state omitted semantics in interview exercises, and use native methods or `Reflect.apply()` in production. Don't patch `Function.prototype` to ship a custom version, and don't confuse passing a few examples with specification compatibility.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often simplify `client.send(payload)` into `const send = client.send; send(payload)` or `items.map(client.send)`, losing the receiver and forwarding the index and array unexpectedly. They also generate separate `.bind(this)` expressions in subscription and cleanup, making cleanup ineffective. Another migration error replaces `apply()` with spread without checking whether the input is array-like or iterable. Generated polyfills frequently use `context ?? globalThis` and `Object(context)` unconditionally, breaking strict-function semantics.
+
+**Ask your AI to check**
+
+- For every `call()`, `apply()`, and `bind()`, list the target, actual receiver, leading arguments, call-time arguments, and execution time.
+- Find every method extraction, callback handoff, and listener cleanup, then trace whether setup and removal use the same function object.
+- Label the input protocol for every `apply()` or spread call, and verify it with one array-like-only value and one iterable-only value.
+
+**Review checklist**
+
+- Test ordinary strict functions, arrows, bound functions, and construction separately instead of generalizing one result across function kinds.
+- Check the owner and lifetime of each bound function, including repeated registration, emission after cleanup, and retention of a large receiver.
+- Reject hand-written polyfills without a stated boundary; verify exception propagation, non-extensible receivers, function identity, and `new` behavior.
+
+**Prompt vocabulary**
+
+Use the exact terms `explicit this binding`, `receiver`, `array-like object`, `iterable`, `bound function`, `leading arguments`, `partial application`, `callback identity`, and `constructible target`. Ask for a receiver-and-arguments table, a function-identity trace, and an ordinary-call/construction comparison; “fix this” is too vague to define the problem.
+
+<Depth level="deep">
+
+## Bound functions are more than wrappers
+
+The specification defines a bound function as a special function object. It stores three internal pieces of state: `[[BoundTargetFunction]]`, `[[BoundThis]]`, and `[[BoundArguments]]`. An ordinary call concatenates the saved and call-time arguments, then invokes the target with the saved receiver. Those are observable semantics; an engine needn't create a source-visible closure.
+
+Binding again makes the existing bound function the new target. The outer `thisArg` is therefore ignored when it reaches the existing bound layer, while each layer's arguments are still concatenated from inner to outer. That explains how “you can't rebind `this`” and “you can keep partially applying arguments” can both be true.
+
+### `name`, `length`, and own properties
+
+Native `bind()` derives the new function's `name` and `length` from the target. Its name receives a `"bound "` prefix; its length is normally the target's declared parameter count minus the number of bound arguments, with a floor of `0`. These values help diagnosis, but defaults, rest parameters, and multiple binding layers keep them from measuring required business inputs.
+
+A bound function uses the target function object's internal prototype chain, but it doesn't copy the target's own static properties. After setting `Session.kind = 'stateful'`, the result of `Session.bind(...)` doesn't automatically own `kind`. If a public API depends on function-object properties, forward them deliberately or don't hide the target behind a bound result.
+
+A bound function also lacks the own `prototype` property found on an ordinary constructible function. If its target is constructible, it still has internal construction behavior and forwards `new` to the target. But `class Child extends BoundBase {}` throws `TypeError` because the base's `prototype` is invalid.
+
+### Construction and `instanceof`
+
+Constructing a bound function replaces the saved `this` with the new instance while keeping saved arguments at the front. When construction goes directly through the bound function, the target observes its own function as `new.target`; the binding layer is transparent to that value. An object explicitly returned by the target can still replace the automatically created instance.
+
+When a bound function is the right operand of `instanceof`, the check proceeds to its bound target and reads the target's `prototype`. That is why both `session instanceof BoundSession` and `session instanceof Session` are `true` in the example. A custom `Symbol.hasInstance` or proxy can still affect the final behavior, so don't generalize this result to arbitrary wrappers.
+
+## Generic invocation and API design
+
+`call()` is itself a receiver-dependent method: the `this` of `Function.prototype.call` is the function it must invoke. `Function.prototype.call.bind(Array.prototype.slice)` uses two binding layers to make an “uncurried method” utility so callers can write `slice(arrayLike)`. This technique can wrap a compatibility interface, but its name must make clear that the old receiver is now an ordinary argument.
+
+Modern built-ins often offer a more direct alternative; for example, own-property checks can use `Object.hasOwn(object, key)`. A direct API saves readers from tracing two levels of `this`. When no direct form exists, wrap generic invocation once and test its contract with ordinary calls and invalid inputs.
+
+### The boundary of `Reflect.apply()`
+
+`Reflect.apply(target, thisArgument, argumentsList)` fits metaprogramming where the target may itself define an `apply` property and where invocation is handled as data. It explicitly checks that `target` is callable and requires `argumentsList` to be an object. Passing `null`, `undefined`, or a primitive throws `TypeError`.
+
+Unlike `target.apply(receiver, args)`, `Reflect.apply()` doesn't read an overridable `target.apply`. Compared with `Function.prototype.apply.call(target, receiver, args)`, it states the target, receiver, and argument list directly. It doesn't validate domain arguments or make one huge argument list safe.
+
+### Evaluation order and exceptions
+
+Before the target starts, JavaScript has evaluated the target, receiver, and argument expressions. `apply()` and `Reflect.apply()` must also read `length` and indexed properties from the array-like object. Getters, proxy traps, or iterators can therefore cause side effects or throw before the target function begins.
+
+A missing index in a sparse array-like object becomes an `undefined` argument; it isn't skipped. Spread over an iterable instead gets however many values the iterator produces, with no concept of a missing index. When reviewing an invocation wrapper, separate argument collection from target execution.
+
+| Failure point | Target starts | Typical cause |
+| --- | --- | --- |
+| Get or invoke an overridden `target.apply` | No | Non-function property or throwing getter |
+| Collect the call arguments | No | Non-object array-like input, throwing getter, or failed iterator |
+| Target function body | Yes | Parameter validation, domain error, or explicit throw |
+
+`call()`, `apply()`, `bind()`, and `Reflect.apply()` don't swallow exceptions thrown by the target. If a wrapper catches one, its boundary should decide whether to add context and preserve the original with `cause`; it shouldn't turn failure into an apparently successful `undefined`.
+
+### Partial application and interface shape
+
+`bind()` can only prefill a continuous prefix of arguments. It can turn `format(locale, options, value)` into a function that accepts only `value`, provided the parameter order already supports that use. When you need placeholders, named values, or argument reordering, an explicit wrapper is usually easier to maintain.
+
+Partial application and currying aren't synonyms. `bind()` fills zero or more arguments in one step, and its result can accept all remaining arguments in one call. Currying typically transforms a multi-parameter function into a sequence of calls. Leave that convention to a dedicated utility or the related topic when it is actually required.
+
+### Identity, reachability, and cleanup
+
+A bound function keeps its target, bound receiver, and every leading argument reachable. If a long-lived event source retains the bound callback, it may extend the lifetime of an entire service instance, request context, or large configuration object. The problem isn't `bind()` itself; it is a registration with no clear owner or endpoint.
+
+The component that establishes a registration should own cleanup and retain all matching data the API requires. Besides function identity, that may include an event name, capture option, or subscription token. Test by triggering the source again after cleanup and observing no call, rather than relying on garbage collection timing.
+
+### Test invocation wrappers
+
+Don't assert only the return value. Have the target record its actual `this`, argument count, and argument order so tests can expose a receiver confused with the first ordinary argument or an array-like input truncated incorrectly.
+
+Include at least one target error and one argument-collection error. Both should preserve the original exception, while only the first should observe that the target began executing.
+
+A bound callback needs a lifecycle test. Registering twice, emitting once, cleaning up once, and emitting again can expose both duplicated work and a mismatched function identity.
+
+When the bound target is constructible, add a `new` path too. A passing ordinary call doesn't prove that the bound receiver, prototype relationship, and explicit object return are correct during construction.
+
+</Depth>
+
+<Checkpoint id="javascript/call-apply-bind" />
+
+## Further reading
+
+- [MDN: `Function.prototype.call()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/call)
+- [MDN: `Function.prototype.apply()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/apply)
+- [MDN: `Function.prototype.bind()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind)
+- [MDN: `Reflect.apply()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect/apply)
+- [ECMAScript specification: Bound Function Exotic Objects](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-bound-function-exotic-objects)

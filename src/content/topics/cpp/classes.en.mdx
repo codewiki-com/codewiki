@@ -1,0 +1,408 @@
+---
+title: C++ Classes
+description: C++ classes package state and behavior into user-defined types; learn access control, construction, invariants, and compiler-generated special members.
+track: cpp
+section: basics
+difficulty: beginner
+tags: [classes, objects, constructors, invariants]
+prerequisites: [cpp/c-basics, cpp/references]
+related: [cpp/inheritance, cpp/operator-overloading, cpp/raii, cpp/move-semantics, cpp/smart-pointers]
+terms: [class-invariant, access-specifier, member-initializer-list, special-member-function]
+verified: { version: 'C++23', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/classes
+sources:
+  - { title: 'C++ working draft - Classes', url: 'https://eel.is/c++draft/class' }
+  - { title: 'C++ working draft - Constructors', url: 'https://eel.is/c++draft/class.ctor' }
+  - { title: 'C++ working draft - Member access control', url: 'https://eel.is/c++draft/class.access' }
+  - { title: 'cppreference - Classes', url: 'https://en.cppreference.com/w/cpp/language/classes.html' }
+origin: old/src/content/docs/cpp/classes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A class is a user-defined type that puts an object's state, operations, and access boundaries in one definition.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Members are already initialized in declaration order when the constructor body starts; rearranging the initializer list does not change that order.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Make constructors establish invariants, keep constrained state private, and prefer standard-library members that already copy, move, and clean up correctly.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A C++ class is a user-defined type. Its definition lists data members, member functions, nested types, and access rules. An object is one runtime instance of that type. Each object has its own non-static data members and works through the interface supplied by the same set of member functions.
+
+A class keeps a concept's representation beside its valid operations. A thermostat object, for example, can store the current temperature while accepting only settings supported by the device. Callers do not have to remember to repeat validation before every write because the type maintains the rule.
+
+A rule that must hold between an object's observable operations is a <Term id="class-invariant">class invariant</Term>. Constructors establish it, and public member functions preserve it after changing state. `private` does not prove that the code is correct, but it reduces the number of paths that can bypass those checks.
+
+You meet classes in value objects, configuration, resource handles, containers, and service interfaces. A class does not imply an inheritance hierarchy or require virtual functions. Many useful C++ classes contain only a few value-type members and a small set of direct operations.
+
+## How it works
+
+A class definition introduces a type name and declares members between braces. When you call a non-static member function on an object expression, the function operates on that object; inside the function, `this` points to the current object. Writing `width_` normally means the same member access as `this->width_`.
+
+An <Term id="access-specifier">access specifier</Term> controls where a name can be used. `public` members form the caller-visible interface, `private` members are accessible only to members and friends of the class, and `protected` also admits derived classes. Access is checked at compile time; it does not decide whether an object owns a piece of memory.
+
+Members without an explicit access specifier are `private` in a `class`. The same definition written as a `struct` defaults to `public`. Otherwise, both forms can have constructors, member functions, templates, base classes, and access specifiers.
+
+A constructor creates a usable object. It has no return type, and its name is determined by the class type. When an object is created, the compiler selects a viable constructor from the arguments, initializes bases and members first, and only then enters the constructor body.
+
+A <Term id="member-initializer-list">member initializer list</Term> appears between a constructor's parameter list and body. This is where members are initialized; it is not shorthand for assignment. Reference members, `const` members, and members without default constructors all need suitable initialization before the body begins.
+
+Non-static data members are initialized in declaration order inside the class, not the order written in the initializer list. Keeping both orders the same makes dependencies visible and avoids reading a member that is not initialized yet. Those members are destroyed in reverse order.
+
+A trailing `const` qualifies the current object in a member function. For example, `double area() const` can be called on a `const Rectangle` and cannot modify the object's data through ordinary member access. Observer functions that only read state should usually carry this qualifier.
+
+An ordinary object creation follows these steps:
+
+1. The compiler selects a constructor from the object definition and its arguments.
+2. Virtual and direct base classes are initialized in the order required by the language.
+3. Non-static data members are initialized in declaration order.
+4. The constructor body runs checks or work that needs several initialized members.
+5. Code uses the object through its public interface while the object is in scope.
+6. At the end of its lifetime, the destructor body runs before members and bases are destroyed in reverse construction order.
+
+This order lets member objects manage their own lifetimes. An outer object whose members are `std::string`, `std::vector`, or smart pointers usually needs no hand-written cleanup. Compiler-generated operations compose the behavior those members already provide.
+
+## Examples
+
+The next four programs add access control, validation, copying, and lifetime tracing in stages. Each was compiled locally in C++23 mode with `g++` and run; the displayed output is the actual result.
+
+### A minimal value type
+
+`Rectangle` keeps its representation private and exposes only area calculation and scaling. A caller can change the dimensions, but cannot bypass the interface and change just one member directly.
+
+<Depth level="quick">
+
+```cpp title="rectangle.cpp"
+#include <iostream>
+
+class Rectangle {
+public:
+    Rectangle(double width, double height)
+        : width_(width), height_(height) {}
+
+    [[nodiscard]] double area() const {
+        return width_ * height_;
+    }
+
+    void scale(double factor) {
+        width_ *= factor;
+        height_ *= factor;
+    }
+
+private:
+    double width_;
+    double height_;
+};
+
+int main() {
+    Rectangle label{4.0, 2.5};
+    std::cout << "area: " << label.area() << '\n';
+    label.scale(0.5);
+    std::cout << "scaled area: " << label.area() << '\n';
+}
+```
+
+```text
+area: 10
+scaled area: 2.5
+```
+
+</Depth>
+
+The braced values `4.0` and `2.5` select the two-parameter constructor. Its initializer list writes both members before the constructor body runs. `area()` is `const` because computing an area does not need to change the object.
+
+This small example does not reject negative dimensions. If the domain requires positive sizes, both the constructor and `scale()` must validate their input. Making the data private does not create that rule by itself.
+
+### Establishing an invariant during construction
+
+`Thermostat` accepts only 5 through 30 degrees Celsius. Its default constructor delegates to the constructor that takes a temperature, so both creation paths share one validation rule.
+
+```cpp title="thermostat.cpp"
+#include <iostream>
+#include <stdexcept>
+
+class Thermostat {
+public:
+    Thermostat() : Thermostat(20) {}
+
+    explicit Thermostat(int celsius) : celsius_(celsius) {
+        validate(celsius_);
+    }
+
+    void set_temperature(int celsius) {
+        validate(celsius);
+        celsius_ = celsius;
+    }
+
+    [[nodiscard]] int temperature() const { return celsius_; }
+
+private:
+    static void validate(int celsius) {
+        if (celsius < 5 || celsius > 30) {
+            throw std::out_of_range{"temperature must be 5..30"};
+        }
+    }
+
+    int celsius_;
+};
+
+int main() {
+    Thermostat office;
+    Thermostat lab{18};
+    office.set_temperature(22);
+    std::cout << "office: " << office.temperature() << '\n';
+    std::cout << "lab: " << lab.temperature() << '\n';
+
+    try {
+        lab.set_temperature(2);
+    } catch (const std::out_of_range& error) {
+        std::cout << "rejected: " << error.what() << '\n';
+    }
+}
+```
+
+```text
+office: 22
+lab: 18
+rejected: temperature must be 5..30
+```
+
+The one-argument constructor is `explicit`, so an integer cannot silently become a `Thermostat` in a function call. Direct initialization such as `Thermostat lab{18}` still works. `explicit` prevents implicit conversion, not ordinary explicit construction.
+
+`validate()` does not depend on a particular object, so it is a private static member. Both creation and mutation use it to check the same range. An invalid mutation throws before assignment, leaving the old temperature unchanged.
+
+### Composing value semantics from members
+
+`ReadingLog` stores all its state in `std::string` and `std::vector`. The class does not manage a raw resource directly, so it declares no destructor, copy operation, or move operation.
+
+```cpp title="reading_log.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
+
+class ReadingLog {
+public:
+    explicit ReadingLog(std::string owner)
+        : owner_(std::move(owner)) {}
+
+    void add(std::string title) {
+        titles_.push_back(std::move(title));
+    }
+
+    [[nodiscard]] const std::string& owner() const { return owner_; }
+    [[nodiscard]] std::size_t size() const { return titles_.size(); }
+
+private:
+    std::string owner_;
+    std::vector<std::string> titles_;
+};
+
+int main() {
+    ReadingLog original{"Mina"};
+    original.add("The Left Hand of Darkness");
+
+    ReadingLog copy = original;
+    copy.add("Kindred");
+
+    std::cout << original.owner() << ": " << original.size() << '\n';
+    std::cout << copy.owner() << ": " << copy.size() << '\n';
+}
+```
+
+```text
+Mina: 1
+Mina: 2
+```
+
+The compiler-generated copy constructor copies each member. A copied `std::vector` owns separate element storage, so adding a title to `copy` does not change `original`. This design, where members compose the right behavior, is commonly called the Rule of Zero.
+
+`owner()` returns a `const` reference. That avoids copying the string on every observation and stops the caller from changing the name through this interface. The reference also has a lifetime constraint: it remains valid only while the corresponding `ReadingLog` object and its `owner_` member are alive.
+
+### Observing member construction and destruction
+
+`Report` is composed of two `Trace` members. The output directly shows how declaration order determines construction and how destruction reverses that order.
+
+```cpp title="construction_order.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+
+class Trace {
+public:
+    explicit Trace(std::string name) : name_(std::move(name)) {
+        std::cout << "construct " << name_ << '\n';
+    }
+
+    ~Trace() {
+        std::cout << "destroy " << name_ << '\n';
+    }
+
+private:
+    std::string name_;
+};
+
+class Report {
+public:
+    Report() : header_{"header"}, body_{"body"} {
+        std::cout << "report ready\n";
+    }
+
+    ~Report() {
+        std::cout << "report done\n";
+    }
+
+private:
+    Trace header_;
+    Trace body_;
+};
+
+int main() {
+    Report report;
+    std::cout << "using report\n";
+}
+```
+
+```text
+construct header
+construct body
+report ready
+using report
+report done
+destroy body
+destroy header
+```
+
+`header_` is declared before `body_`, so it is constructed first. When `main()` ends, the `Report` destructor body runs before `body_` and then `header_` are destroyed. `Report` does not need to call its member destructors itself.
+
+This tracing type prints lifetime events for teaching. Production classes rarely log from destructors because output can fail, contend on locks, or happen after the logging system has shut down. The useful part here is the language-defined order.
+
+## Pitfalls
+
+### Public representation breaks invariants
+
+> [!PITFALL]
+> Making every data member public, or mechanically generating a setter for each one, lets callers assemble states the class was meant to reject. If a range type exposes separate `set_min()` and `set_max()` calls, an intermediate step can produce `min > max`.
+
+**Fix:** design the interface around domain operations, such as replacing the complete range after validating both arguments. If there is no relationship to protect, a simple `struct` with public data can be more honest than a ring of getters and setters.
+
+### Initializer lists cannot reorder members
+
+> [!PITFALL]
+> The order written in an initializer list does not change the real member initialization order. If an earlier-declared member uses a later-declared member's value, the latter is not initialized yet; reading an uninitialized scalar can cause undefined behavior.
+
+**Fix:** declare the dependency first and the dependent member second, then keep the initializer list in the same order. Enable compiler warnings; `-Wall -Wextra` usually reports when list order differs from declaration order.
+
+### Assignment inside a constructor body
+
+> [!PITFALL]
+> `member = value` in a constructor body is assignment. Before the body starts, `member` was already default-initialized, or the program already failed to compile because a reference, `const` member, or member without a default constructor could not be initialized.
+
+**Fix:** establish initial member values in the member initializer list. Reserve the body for checks or side effects that need several initialized members, and perform checks that may fail before external side effects when practical.
+
+### Accidental implicit conversions
+
+> [!PITFALL]
+> A constructor callable with one argument may become a converting constructor. Generated code often omits `explicit`, so a call that requires a strong type also accepts an integer or string, and overload selection becomes harder to see.
+
+**Fix:** declare such constructors `explicit` unless conversion is an intentional part of the interface. Use braced direct initialization at the call site to state that a new object of the type is wanted.
+
+### Memberwise copying of a raw owning pointer
+
+> [!PITFALL]
+> A compiler-generated copy copies the value of each member. If a raw pointer represents exclusive ownership, two objects receive the same address and may later release it twice; adding only a destructor does not repair copy semantics.
+
+**Fix:** prefer `std::vector`, `std::string`, or a smart pointer to express ownership, and follow the Rule of Zero. When a custom resource owner is necessary, design copying, moving, and destruction as a set; see `cpp/raii`, `cpp/smart-pointers`, and `cpp/move-semantics` for those details.
+
+### Observer functions without `const`
+
+> [!PITFALL]
+> A read-only member function without trailing `const` cannot be called through a `const` object or reference. Generated getters often miss it, forcing callers to discard a qualifier that should remain part of the contract.
+
+**Fix:** add `const` to observers that do not modify logical state, then compile call tests through a `const` reference. If a cache or other implementation detail genuinely changes in an observer, use `mutable` sparingly and never as a way around a public invariant.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate a public setter for every field, splitting relationships that a constructor should preserve. They also assign members in the constructor body, order initializers differently from declarations, or give a raw-pointer owner a destructor without controlling copies. Another concrete tell is a getter that returns a large container by value while also omitting `const`, making the interface restrictive and accidentally expensive.
+
+**Ask your AI to check**
+
+- List the invariants that must hold after every constructor, then explain how each public mutating function preserves them.
+- Trace base and member initialization in declaration order, flagging any expression that depends on a member not initialized yet.
+- Classify all six special member functions as implicit, defaulted, deleted, or custom, and justify each result from the ownership of every member.
+
+**Review checklist**
+
+- Call every construction and mutation path with boundary and invalid values; confirm failure cannot leave an observable partial update.
+- Call all observers through a `const` reference, and check whether any returned reference or view can outlive its object.
+- Copy and move an object, mutate source and destination separately, then use an address sanitizer to check for leaks, dangling access, and double release.
+
+**Prompt vocabulary**
+
+Use exact terms: `class invariant`, `access specifier`, `member initializer list`, `declaration order`, `converting constructor`, `const member function`, `special member function`, and `Rule of Zero`. Ask the model to state object ownership and post-failure state for each operation; "check this class" is too vague to expose initialization-order or implicit-copy bugs.
+
+<Depth level="deep">
+
+## Compiler-generated special member functions
+
+C++ calls the default constructor, copy constructor, move constructor, copy assignment operator, move assignment operator, and destructor <Term id="special-member-function">special member functions</Term>. The compiler implicitly declares some of them when their individual conditions are met, then defines them if needed. "The compiler generates everything" is a poor model because any user declaration can change the conditions for the others.
+
+Once a class declares any constructor, the compiler no longer implicitly declares a default constructor. Write `Type() = default` when no-argument construction is still required. Write `= delete` when an operation must not be available; the intent then appears in the interface and misuse fails at compile time.
+
+A user-declared destructor prevents implicit declaration of the move constructor and move assignment operator, even when that destructor is written `= default`. Declaring either move operation also causes implicit copy operations to be defined as deleted. These interacting rules are why a resource-owning class cannot be designed by adding functions only after compiler errors appear.
+
+The Rule of Zero avoids most of this coupling. Each member manages its own lifetime correctly, and the outer class declares no special member functions. A defaulted copy copies members, a defaulted move moves members, and destruction visits them in reverse order. The resulting semantics depend on the member types, so choosing a member also chooses part of the outer class's copy and ownership contract.
+
+These declarations express common design intentions:
+
+| Design intent | Typical declaration | Result |
+|---|---|---|
+| Ordinary value type | Declare no special member functions | Members determine copy, move, and destruction |
+| Move-only owner | Delete copy; default or implement move | Copying fails at compile time |
+| Object with fixed identity | Delete copy and move | Those operations cannot transfer the object |
+| Value type with custom copying | Review copy, move, and destruction together | Every operation must preserve one invariant |
+
+`= default` does not mean "do nothing." It requests the language-defined memberwise behavior and leaves availability, exception specification, and deletion dependent on members and bases. `= delete` is not limited to copy operations either; any function that should not participate in calls can be deleted.
+
+## Initialization and destruction order
+
+Construction of a complete object handles virtual bases first, then direct bases, then non-static data members in declaration order, and finally the constructor body. An ordinary class without inheritance needs to focus only on member declaration order. Destruction reverses the process, so a later-constructed member is destroyed earlier.
+
+An in-class member initializer can provide a default, such as `int retries_ = 3`. If a constructor names `retries_` in its own initializer list, that value overrides the in-class default for this construction. Shared safe defaults can therefore live beside member declarations instead of being repeated across constructors.
+
+A delegating constructor passes initialization to another constructor of the same class. The target constructor completes before the delegating constructor's body runs, and a delegating initializer cannot also list other members. This is useful when several entry points should share one invariant-building path, as `Thermostat()` does above.
+
+If member construction throws, already-constructed members and bases are destroyed in reverse order. The outer object never finished construction, so its own destructor does not run. This is a practical reason to put resources in RAII members: completed pieces clean themselves up without a constructor manually rolling back every step.
+
+A destructor should release resources owned by its object, but standard-library members already destroy themselves. Calling a member destructor manually, or manually releasing a resource it manages, causes double destruction. An outer class usually writes a destructor only when it directly owns a non-RAII resource or needs an additional lifetime action.
+
+## `class` and `struct`
+
+In C++, `class` and `struct` both define class types. Their main language-level differences are defaults: members and bases are `private` by default in a `class`, and `public` by default in a `struct`. Once access specifiers are explicit, both forms can express the same member and inheritance structures.
+
+By convention, a `struct` often represents a simple record whose members callers may read directly, while a `class` often protects an invariant behind an interface. That is a reader expectation, not a compiler rule. A `struct` with constructors is valid, as is a `class` containing only data members.
+
+Aggregate status is controlled by a separate set of language rules, not just the keyword. Changing `class` to `struct` does not necessarily make a type an aggregate or permit designated initialization. For a specific type, check its constructors, bases, virtual functions, and access control against the C++23 aggregate conditions.
+
+Choose the keyword from the interface intent. A `struct` clearly communicates an open record when callers should combine and modify every field directly. A `class` with a small public interface fits state whose relationships must survive every change. Ownership and lifetime still require separate design either way.
+
+</Depth>
+
+<Checkpoint id="cpp/classes" />
+
+## Further reading
+
+- [C++ working draft: classes](https://eel.is/c++draft/class)
+- [C++ working draft: constructors](https://eel.is/c++draft/class.ctor)
+- [C++ working draft: member access control](https://eel.is/c++draft/class.access)
+- [cppreference: classes](https://en.cppreference.com/w/cpp/language/classes.html)

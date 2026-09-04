@@ -1,0 +1,401 @@
+---
+title: Single-dispatch generic functions
+description: singledispatch selects an implementation by the first argument's runtime type; use registration, inheritance, ABCs, and method dispatch safely.
+track: python
+section: functions-deeper
+difficulty: intermediate
+tags: [singledispatch, generic-functions, dispatch, functools]
+prerequisites: [python/functions, python/decorators]
+related: [python/functools, python/abc, python/inheritance-polymorphism, python/classes-objects]
+terms: [single-dispatch, generic-function, method-resolution-order, abstract-base-class]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: python/singledispatch
+sources:
+  - { title: 'Python functools - singledispatch', url: 'https://docs.python.org/3.14/library/functools.html#functools.singledispatch' }
+  - { title: 'Python functools - singledispatchmethod', url: 'https://docs.python.org/3.14/library/functools.html#functools.singledispatchmethod' }
+  - { title: 'Python abc - Abstract Base Classes', url: 'https://docs.python.org/3.14/library/abc.html' }
+  - { title: 'PEP 443 - Single-dispatch generic functions', url: 'https://peps.python.org/pep-0443/' }
+origin: old/src/content/docs/python/singledispatch.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `@singledispatch` turns a function into a generic function and selects a registered implementation from the first argument's runtime type.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    It doesn't dispatch on a second argument, a return annotation, or container element types; subclasses such as `bool` and abstract base classes also affect matches.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Put the real dispatch object first, register runtime classes only, and verify selection with `dispatch()`, subclass inputs, and unregistered inputs.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="single-dispatch">Single dispatch</Term> selects a function implementation from the runtime type of one designated argument. `functools.singledispatch` uses the first argument; `functools.singledispatchmethod` skips `self` or `cls` and examines the first ordinary argument. Neither considers the types of later arguments.
+
+The decorated function becomes a <Term id="generic-function">generic function</Term>. It retains a default implementation while letting modules register variants for concrete classes or abstract base classes. Callers keep using one public name instead of maintaining a growing chain of `isinstance()` branches.
+
+This mechanism fits operations that belong to a function while new types may arrive from other modules. A serializer, syntax-tree visitor, or debug renderer can keep each type's behavior beside its registered function. Registration doesn't modify the input class or require it to inherit from a business-specific base class.
+
+Single dispatch isn't signature overloading. `typing.overload` describes several call forms to static checkers but still has one runtime implementation; `singledispatch` chooses at runtime but doesn't automatically give static checkers a precise parameter-to-result relationship. Explicit control flow is usually clearer when behavior depends on two values together, a field value, or supported capabilities.
+
+A good dispatch axis is stable and represents the behavioral difference. If a function's first parameter is merely a request context and the actual difference comes from its second parameter, converting it to single dispatch hides the condition. Reshape the API so the processed object comes first, or retain a clear conditional branch.
+
+## How it works
+
+`@singledispatch` first registers the original function for `object`, so any value without a better match reaches it. The default can provide meaningful generic behavior or raise `TypeError` with the actual type name. A fail-closed default suits boundaries where every accepted input type must be explicit.
+
+Registration happens when decorators execute, normally during module import. `generic.register(SomeType)` maps a class to an implementation; without an explicit type, `register` infers it from the implementation's first parameter annotation. When the generic function is called, Python reads `type()` from the first argument and finds the best applicable implementation.
+
+You can understand one call in this order:
+
+1. Evaluate every argument and obtain the runtime class of the first argument.
+2. Check for an exact registration for that class.
+3. Search inheritance relationships and applicable abstract base classes for a more general registration.
+4. Call the selected implementation with every positional and keyword argument unchanged.
+5. Use the default function registered for `object` when no more specific implementation exists.
+
+Dispatch only chooses a function; it neither reshapes arguments nor checks that variant signatures agree. A variant that omits a keyword parameter may import successfully and fail with `TypeError` only when that variant is selected. Every implementation therefore needs to honor the same calling contract.
+
+### Three registration forms
+
+The most direct form is `@render.register(int)`. It is useful when the annotation should express a more precise static type such as `list[int]`. The argument-free `@render.register` reads the first parameter annotation, while the functional form `render.register(int, render_integer)` fits existing functions and dynamic extension points.
+
+Python 3.14 supports registration from an `int | float` or `typing.Union[int, float]` annotation. Registration creates separate entries for `int` and `float`; there is no instantiable union type during a call. Every member of the union must still be a class suitable for runtime dispatch.
+
+| Registration form | Runtime registration | Best fit |
+| --- | --- | --- |
+| `@func.register(int)` | `int` | Name the runtime class explicitly |
+| `@func.register` with `value: int` | `int` | Annotation and dispatch class agree |
+| `@func.register` with `value: int \| float` | `int`, `float` | Several classes share one implementation |
+| `func.register(int, handler)` | `int` | Register an existing callable |
+
+`register()` returns the undecorated implementation function, not the generic function. The same implementation can therefore stack several registration decorators and can be called directly in a unit test. The generic function remains available under its original name.
+
+### Inheritance and abstract base classes
+
+Without an exact registration, the dispatcher uses the <Term id="method-resolution-order">method resolution order (MRO)</Term> to find a registered base class. If only `int` is registered, for example, `bool` uses the integer implementation because `bool` is a subclass of `int`. After an exact `bool` registration is added, the Boolean implementation wins regardless of registration order.
+
+Registering an <Term id="abstract-base-class">abstract base class (ABC)</Term> covers its concrete and virtual subclasses. An implementation for `collections.abc.Mapping` can handle `dict` and mapping classes recognized by that ABC relationship. If `dict` also has a more specific registration, subclasses of `dict` prefer that concrete inheritance path.
+
+Two unrelated ABCs can both recognize the same class as a virtual subclass. If both registrations apply and neither has a more specific relationship, the call raises `RuntimeError` instead of choosing the earlier or later registration. Broad ABC combinations need tests with representative concrete classes.
+
+`dispatch(cls)` returns the implementation currently selected for a class, which makes it useful for assertions and diagnosis. The read-only `registry` mapping lists explicit registrations; it doesn't expand every possible subclass. The result of `dispatch()` answers which path an indirectly matched subclass actually takes.
+
+## Examples
+
+The next three examples cover union annotation registration, inheritance and ABC resolution, and class-method dispatch. Every output shown was produced by running the corresponding file with local `python3`.
+
+### Formatting by the first value
+
+The first example lets integers and floats share one implementation while strings use another. The keyword-only `compact` argument reaches the selected function but doesn't participate in dispatch.
+
+<Depth level="quick">
+
+```python run title="render_values.py"
+from functools import singledispatch
+
+
+@singledispatch
+def render(value, *, compact=False):
+    raise TypeError(f"unsupported type: {type(value).__name__}")
+
+
+@render.register
+def render_number(value: int | float, *, compact=False):
+    return f"{value:g}" if compact else f"{value:.2f}"
+
+
+@render.register
+def render_text(value: str, *, compact=False):
+    normalized = " ".join(value.split())
+    return normalized.lower() if compact else normalized
+
+
+for item in (42, 3.5, "  Priority   Queue "):
+    print(render(item, compact=True))
+
+print(render.dispatch(bool).__name__)
+```
+
+```text
+42
+3.5
+priority queue
+render_number
+```
+
+<TryToBreak items={['pass `True` and observe the `bool`–`int` inheritance relationship', 'pass the unregistered `Decimal("1.5")`', 'try dispatching on the element type of `list[int]`']} />
+
+</Depth>
+
+The union annotation registers `render_number` once for `int` and once for `float`. `bool` has no exact entry, but it reaches the same implementation through inheritance, so the final line prints `render_number`. The default makes other inputs fail explicitly.
+
+This example also shows that later arguments don't change selection. Both `compact=False` and `compact=True` dispatch on `value` first, then pass the keyword argument to the chosen implementation. If one implementation lacks `compact`, the mistake appears only when execution reaches that branch.
+
+### Inspecting inherited matches
+
+This example supplies a general implementation for `Mapping` and a more specific one for `dict`. `AuditDict` inherits from `dict`, while `UserDict` matches through the mapping ABC.
+
+```python run title="resolve_handlers.py"
+from collections import UserDict
+from collections.abc import Mapping
+from functools import singledispatch
+
+
+@singledispatch
+def summarize(value):
+    return f"default:{type(value).__name__}"
+
+
+@summarize.register
+def summarize_mapping(value: Mapping):
+    return f"mapping:{len(value)}"
+
+
+@summarize.register(dict)
+def summarize_dict(value):
+    return f"dict:{','.join(sorted(value))}"
+
+
+class AuditDict(dict):
+    pass
+
+
+values = ({"id": 1}, AuditDict(event="login"), UserDict({"ok": True}), ("x", "y"))
+for value in values:
+    print(summarize(value))
+
+print(summarize.dispatch(AuditDict).__name__)
+print(summarize.dispatch(UserDict).__name__)
+```
+
+```text
+dict:id
+dict:event
+mapping:1
+default:tuple
+summarize_dict
+summarize_mapping
+```
+
+`AuditDict` finds the `dict` implementation through its ordinary MRO, `UserDict` finds the `Mapping` implementation, and the tuple reaches the default. The final calls make selection a testable result through `dispatch()` without depending on the dispatcher's internal cache structure.
+
+Named variant functions make diagnosis and direct testing easier than naming every variant `_`. The underscore convention is valid for otherwise unreferenced registrations, but tracebacks and `dispatch(cls).__name__` then carry less information.
+
+### Dispatching on a class method
+
+`singledispatchmethod` skips the bound `cls` and selects a decoder from the type of `payload`. It must sit outside `@classmethod` so that `Message.decode.register` remains available.
+
+```python run title="decode_message.py"
+from functools import singledispatchmethod
+
+
+class Message:
+    def __init__(self, text):
+        self.text = text
+
+    @singledispatchmethod
+    @classmethod
+    def decode(cls, payload):
+        raise TypeError(f"unsupported payload: {type(payload).__name__}")
+
+    @decode.register
+    @classmethod
+    def decode_bytes(cls, payload: bytes):
+        return cls(payload.decode("utf-8"))
+
+    @decode.register
+    @classmethod
+    def decode_mapping(cls, payload: dict):
+        return cls(payload["text"])
+
+
+for payload in (b"queued", {"text": "sent"}):
+    message = Message.decode(payload)
+    print(type(message).__name__, message.text)
+```
+
+```text
+Message queued
+Message sent
+```
+
+Each variant also retains `@classmethod`, so the selected function receives the class whether access starts from the class or an instance. For a normal instance method, use the same normal-method shape on registered implementations and put the dispatched argument after `self`.
+
+Decorator order is an observable API requirement, not a style preference. Putting `@classmethod` outside hides the `register` attribute exposed by `singledispatchmethod`, so later registrations in the class body can't use this form.
+
+## Pitfalls
+
+### Putting the dispatch object in the wrong position
+
+> [!PITFALL]
+> A `save(context, value)` function decorated with `@singledispatch` dispatches on `context`, not `value`. Generated code often preserves that signature while registering variants for the type of `value`, sending every call down the wrong path.
+
+**Fix:** Make the behavior-defining object the first argument, such as `save(value, *, context)`. If the API order can't change, use an explicit conditional, an object method, or another clearly named entry point.
+
+### Registering parameterized generics
+
+> [!PITFALL]
+> `list[int]` and `dict[str, Value]` carry static type information, but they aren't classes that `singledispatch` can use for `isinstance()`-style runtime selection. Passing them to `register` raises `TypeError` during registration.
+
+**Fix:** Register `list` or `dict` explicitly, then validate elements inside the selected implementation. If integer lists and string lists require different algorithms, single dispatch can't express that contract by itself.
+
+### Making the default too permissive
+
+> [!PITFALL]
+> A default that blindly calls `str(value)` or returns its input makes a missing registration look successful. A new type can silently receive an incomplete serialization result instead of exposing the support gap in tests.
+
+**Fix:** Raise `TypeError` with the type name at a closed conversion boundary. Keep a permissive default only when the business contract defines a truly generic fallback, and test an unregistered class.
+
+### Ignoring subclasses and overlapping ABCs
+
+> [!PITFALL]
+> `bool` matches `int`, strings match some collection abstractions, and one class can be a virtual subclass of several unrelated ABCs. Tests containing only exact registered types miss wrong selections and ambiguity errors.
+
+**Fix:** Build a selection matrix for built-in subclasses, custom subclasses, virtual subclasses, and unregistered types. When broad ABCs overlap, add a more specific registration or narrow the dispatch boundary instead of relying on registration order.
+
+### Hiding import-time registration
+
+> [!PITFALL]
+> A plugin's top-level `@generic.register` runs only after that plugin module is imported. Automatic imports in development don't prove that a test process, CLI entry point, or production worker loads the same registry.
+
+**Fix:** Define an explicit, repeatable plugin startup step and assert critical `dispatch()` results afterward. Re-registering an exact type changes global generic-function behavior, so define a conflict policy and deterministic import order too.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models produce `@handler.register(list[Order])` as if it were a valid runtime registration, or assume `handler(records, format)` examines both arguments. They also overlook that `bool` inherits from `int`, so a handler registered for integer amounts unexpectedly accepts flags. In generated plugin code, registrations can live in a module that no startup path imports; in generated class methods, `@classmethod` may wrap `@singledispatchmethod`, making `.register` unavailable in the class body.
+
+**Ask your AI to check**
+
+- List the actual dispatch position for every generic function and identify a runtime class for every registration instead of merely repeating annotations.
+- For each sample call, show `type(first_arg)`, exact registrations, MRO candidates, ABC candidates, and the final `dispatch()` result.
+- Check plugin import paths, duplicate type registrations, and variant signatures, then identify registry differences between startup environments.
+
+**Review checklist**
+
+- Exercise the default and inherited paths with an unregistered type, a subclass, `bool`, and a representative virtual subclass.
+- Confirm that no `list[T]`, field value, or second argument is being treated as a runtime dispatch condition.
+- Compare keyword parameters, exceptions, and return contracts across variants, and verify `singledispatchmethod` decorator order.
+
+**Prompt vocabulary**
+
+Use the exact terms `single dispatch`（单分派）, `generic function`（泛型函数）, `dispatch type`（分派类型）, `registered implementation`（已注册实现）, `method resolution order`（方法解析顺序）, `abstract base class`（抽象基类）, `virtual subclass`（虚拟子类）, and `dispatch ambiguity`（分派歧义）. Ask for a dispatch matrix and registration timeline; “implement function overloading” doesn't say which runtime value is inspected.
+
+<Depth level="deep">
+
+## The registry is an extension boundary
+
+`singledispatch` locates the extension point on the generic function object rather than on input classes. The module owning the function defines the operation's semantics, while other modules can register implementations when they possess the function and a runtime class. This openness suits plugins, but it also makes the registry shared in-process state.
+
+Registration normally occurs during import. If a module isn't on the real startup path, its decorators never execute; if two modules register different implementations for the same exact type, the later registration replaces that entry. Automatic plugin discovery needs deterministic loading and startup-time conflict reporting.
+
+`registry` is a read-only mapping view of explicit type-to-function entries, including the original default under `object`. Read-only access prevents callers from editing the dictionary directly, but code holding the generic function can still call `register()`. Registry inspection is therefore diagnostic; it doesn't mean the registration set has been frozen.
+
+Functional registration makes extensions explicit. After `serializer.register(Payload, encode_payload)`, the return value is still `encode_payload`, so a plugin can retain and test that function directly. The identity of the generic entry point doesn't change, and existing callers don't need to rebind a name.
+
+Prefer testing a complete registration set at the module boundary that creates the generic function. There is no public API to unregister one old entry after a test mutates a global generic function. Create a local generic function for isolated tests or load a plugin combination in a one-shot process instead of letting test order leak through the registry.
+
+## Resolution rules and ambiguity
+
+Exact registrations are easiest to predict. When an argument's runtime class appears in `registry`, that implementation wins immediately. The dispatcher considers ordinary bases and relevant ABCs only when there is no exact entry.
+
+Ordinary inheritance gives an ordered relationship through the class MRO. A registered base closer to the actual class wins over a more distant base, so `AuditDict` selects `dict` over `object`. This isn't a “last registration wins” rule.
+
+ABCs can introduce virtual subclass relationships that don't appear in the ordinary base tuple. `Mapping.register(CustomMap)` can add one explicitly, while some `collections.abc` classes recognize structure through `__subclasshook__`. As the dispatcher combines these relationships, applicability doesn't guarantee one uniquely best candidate.
+
+If two unrelated ABCs match and neither is a subclass of the other, selection has no provable priority. Python exposes that ambiguity with `RuntimeError`. A registration for the concrete class or a shared, more specific base can make the choice deterministic again.
+
+Before registering a broad ABC, list both the concrete classes it currently matches and the extension range you intend. An ABC registration reduces duplicate implementations but widens the behavior surface. If the handler depends on methods the ABC contract doesn't guarantee, dispatch can succeed and the function body can still fail.
+
+## Type annotations and runtime boundaries
+
+When `register` has no explicit type argument, an annotation acts as registration configuration. The decorator reads the first parameter annotation to create runtime entries, but ordinary calls don't thereby validate other parameters or results. Review the annotation's static meaning separately from the registration side effect.
+
+A union annotation is a registration convenience, not multiple dispatch. `value: int | float` points two runtime classes at one function; a union on the second parameter, the return type, or a `TypeVar` doesn't add dispatch dimensions. Container element types also play no part at the call boundary.
+
+Variants may use more specific first-parameter annotations, but the generic function still owns the public calling contract. A static checker may not derive “this input class produces that result type” from the runtime registry. You can add `@overload` declarations when callers rely on that relationship, but a real runtime implementation remains necessary and declarations must not drift from registrations.
+
+Variant signatures require deliberate compatibility. If the generic function accepts `verbose=False` and one implementation drops it, `generic(value, verbose=True)` fails only when that type is selected. A signature test can inspect explicit registered functions, but inheritance selection and business results still require behavior tests.
+
+Return values need a shared, explainable contract too. Letting variants arbitrarily return a string, mapping, or `None` pushes complexity into every caller. Single dispatch selects an implementation; it doesn't normalize the result model.
+
+## Method descriptors and decorator stacking
+
+`singledispatchmethod` is a descriptor designed for method binding. A normal instance method skips `self`, a class method skips `cls`, and dispatch then uses the first ordinary argument. A static method has no implicit receiver, so its first parameter is itself the dispatch object.
+
+When combined with `classmethod`, `staticmethod`, or `abstractmethod`, `singledispatchmethod` must be outermost so `.register` remains exposed while the class body is evaluated. Each registered variant should use a descriptor decorator consistent with the primary method. Mixing normal-method and class-method shapes makes argument binding hard to predict.
+
+For an instance method, state belongs to `self` while the next argument's type chooses the implementation. That fits an interface where one service object processes several message types. If behavior belongs more naturally to the message itself, an ordinary virtual method or protocol can be more direct and easier for static checkers to understand.
+
+Be explicit about registration ownership across inheritance. Calling a visible `.register` through an inheriting class may modify a dispatcher shared by other users, not only that subclass. When each subclass needs an independent extension table, prove the isolation requirement in tests and consider explicit composition or separate generic functions.
+
+## Testing the dispatch contract
+
+Every registered implementation should have direct unit tests because `register()` returns the unwrapped function. Direct tests cover that variant's input validation, result, and exceptions, but they don't prove the generic entry point selects it. You need both layers.
+
+Dispatch tests should call the public entry point with an exact type, ordinary subclass, relevant virtual subclass, and unregistered class. For each representative type, also asserting the function identity from `generic.dispatch(Type)` makes a selection-rule failure distinct from a function-body failure.
+
+For a multi-argument function, hold the first argument fixed and vary the second to prove the second doesn't affect selection. Then vary the first while keeping the rest unchanged. This small matrix directly catches implementations or tests that mistake single dispatch for multiple dispatch.
+
+A plugin system needs one registration-inventory test through the same startup entry point as production. Assert handler identity for important types and ensure types that forbid conflicts have only the expected implementation. Testing decorator syntax inside the plugin module doesn't prove the application process imports it.
+
+Failure paths are part of the contract too. Test whether the default rejects unknown types, whether a more specific registration resolves an ABC ambiguity, and whether every variant accepts common keyword parameters. Don't inspect private caches or internal names from the `functools` source to verify public behavior.
+
+## API evolution and compatibility
+
+Adding a registration changes runtime behavior at existing call sites even when the generic function's signature never changes. A class that used to reach the default may begin matching a new base-class implementation after an upgrade. Registry changes are therefore API behavior changes, not merely internal refactoring.
+
+Changes to a class hierarchy can alter selection too. Adding a registered base to an existing class, or making it a virtual subclass of an ABC, can move calls from the default to a specialized implementation. When reviewing type-model changes, search for generic functions that consume the type instead of checking only methods on the class.
+
+Union annotation registration also depends on the target runtime. Python 3.11 added `typing.Union` annotation support to `register()`; a library targeting older versions should stack separate concrete-type registrations. This topic targets Python 3.14 and doesn't imply that its newer syntax works on every earlier version.
+
+### Changes that alter selection
+
+| Change | Possible effect | Regression test |
+| --- | --- | --- |
+| Add an exact registration for an existing type | Default or base implementation stops running | Assert handler identity and result for that type |
+| Register a broad ABC | Several virtual subclasses begin matching | Cover representative concrete classes and ambiguity |
+| Change a class's bases | The best registered MRO candidate may change | Cover subclass paths before and after the change |
+| Reorder plugin imports | The final implementation for a duplicate changes | Check the registry inventory after startup |
+
+Compatibility tests shouldn't compare only `registry.keys()`. Two versions can have the same explicit keys while hierarchy or virtual-subclass changes make them select different functions for one concrete class. Assert critical `dispatch(ConcreteType)` results as well.
+
+If the default rejects unknown input, a new registration expands the accepted set; if the default supplies a generic result, a new registration may alter the result shape or exception behavior. Both changes belong in release notes and the type contract. An unchanged call name doesn't make them automatically compatible.
+
+### Public inspection surface
+
+A generic function exposes `register`, `dispatch`, and `registry`, and its `__wrapped__` attribute points to the original default function. These interfaces are enough to inspect registrations and test selection. Private cache layout and invalidation policy are implementation details that application code shouldn't depend on.
+
+`registry[SomeType]` works only for an explicitly registered key; use `dispatch(SomeType)` to resolve an indirectly matched subclass. Confusing them mixes up two separate questions: what was registered and what will be selected.
+
+Diagnostic output should record the qualified name of the input type and selected function instead of dumping the whole registry. That identifies selection without writing extensive plugin details to logs. Production logging must still avoid sensitive fields from the input object.
+
+When these public checks run as startup diagnostics, avoid calling handlers that have side effects. `dispatch()` returns a function without executing it, so it can verify critical mappings. Keep business behavior in tests that use controlled sample values.
+
+## Choosing a simpler mechanism
+
+When there are only two or three type branches and one module owns every behavior, a clear `isinstance()` chain may be easier to read. The value of `singledispatch` comes from independent registration and open extension, not from removing any arbitrary handful of conditional lines.
+
+When behavior naturally belongs to an object, a base-class method or protocol usually keeps capability beside the object. Single dispatch is a better fit when you can't modify input classes or when the same type participates in several independent operations. Both kinds of polymorphism can coexist, but don't build competing rules for the same choice.
+
+When selection depends on a data value, `match`, a mapping, or an ordinary conditional is more accurate. Choosing a parser for the same `str` type from a format version or media type isn't a type distinction. Wrapping values in artificial string subclasses only obscures the data contract.
+
+When selection genuinely depends on two types, first ask whether the operation can become a method of one object. If multiple dispatch remains necessary, use a design or library that explicitly supports it and verify its resolution rules separately. Don't hide a second type registry inside `singledispatch` variants.
+
+</Depth>
+
+<Checkpoint id="python/singledispatch" />
+
+## Further reading
+
+- [Python `functools.singledispatch` documentation](https://docs.python.org/3.14/library/functools.html#functools.singledispatch)
+- [Python `functools.singledispatchmethod` documentation](https://docs.python.org/3.14/library/functools.html#functools.singledispatchmethod)
+- [Python `abc` module documentation](https://docs.python.org/3.14/library/abc.html)
+- [PEP 443: Single-dispatch generic functions](https://peps.python.org/pep-0443/)

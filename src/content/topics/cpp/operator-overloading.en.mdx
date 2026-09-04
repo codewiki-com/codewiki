@@ -1,0 +1,405 @@
+---
+title: C++ operator overloading
+description: Operator overloading gives user-defined types natural C++ syntax; learn lookup, return types, and comparison contracts without semantic surprises.
+track: cpp
+section: basics
+difficulty: intermediate
+tags: [operators, operator-overloading, overload-resolution, value-semantics]
+prerequisites: [cpp/classes, cpp/references]
+related: [cpp/function-objects, cpp/concepts, cpp/move-semantics, cpp/templates]
+terms: [operator-overloading, operator-function, overload-resolution, hidden-friend, argument-dependent-lookup, three-way-comparison, value-semantics]
+verified: { version: 'C++23', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/operator-overloading
+sources:
+  - { title: 'C++23 draft - Overloaded operators', url: 'https://timsong-cpp.github.io/cppwp/n4950/over.oper' }
+  - { title: 'C++23 draft - Operators in expressions', url: 'https://timsong-cpp.github.io/cppwp/n4950/over.match.oper' }
+  - { title: 'C++23 draft - Defaulted comparison operators', url: 'https://timsong-cpp.github.io/cppwp/n4950/class.compare.default' }
+  - { title: 'C++ Core Guidelines - Rules for overloading', url: 'https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Ro-rules' }
+origin: old/src/content/docs/cpp/operator-overloading.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="operator-overloading">Operator overloading</Term> defines how an existing operator handles class or enumeration objects, giving value types syntax that matches their domain meaning.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    The compiler checks candidates, conversions, and return types, but it can't guarantee that `+` leaves its left operand alone, comparisons agree, or an overloaded `&&` short-circuits.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Write the semantic contract first, then choose a member, non-member, or hidden friend. Test symmetric calls, boundary values, and algebraic properties.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Operator overloading declares an <Term id="operator-function">operator function</Term> for an existing C++ operator. When at least one expression operand has class or enumeration type, the compiler may choose that function instead of a built-in operation. Expressions such as `total + tax`, `version < candidate`, and `scores[index]` can then state domain operations directly.
+
+This is an interface feature. If a distance, amount, or complex number has <Term id="value-semantics">value semantics</Term>, spelling addition as `add(left, right)` throws away the familiar structure of arithmetic. Iterators, smart handles, and function objects similarly use `*`, `->`, or `()` to take part in generic interfaces.
+
+Symbols don't rescue a weak design. If the relationship between two operands has no accepted meaning, `merge_with_policy()` is usually clearer than a strained overload of `|`. Readers also expect `+` to produce a new value, `+=` to change the left side, and `==` to agree with ordering; breaking those conventions needs an unusually good reason.
+
+An overload can't create a new symbol or alter precedence, grouping, or operand count. `.`, `.*`, `::`, and `?:` can't be overloaded, while `sizeof`, `typeid`, and `alignof` aren't operator-function names either. The language still controls syntax; the type author controls only the behavior after a function is selected.
+
+You'll meet overloaded operators in numeric classes, containers, iterators, smart pointers, stream output, comparisons, and callable objects. Assignment and resource ownership belong to special-member design, while the call operator belongs to function-object design. This topic explains how they enter the same operator machinery and leaves their full designs to the related topics.
+
+## How it works
+
+You can roughly read `left + right` as `left.operator+(right)` or `operator+(left, right)`, but the compiler doesn't try those spellings in a fixed order. It builds candidate sets and runs <Term id="overload-resolution">overload resolution</Term>, comparing viability and conversion sequences before selecting one unique best function.
+
+The sets can include member candidates, non-member candidates found through ordinary and argument-dependent lookup, built-in candidates, and the rewritten candidates used by C++20 comparisons. If no operand has class or enumeration type, only built-in operations are considered. Declaring `operator+(int, int)` can't replace integer addition.
+
+A member function treats the left operand as its implicit object. A non-member writes both operands as parameters, which usually fits a symmetric binary operation better. `operator=`, `operator[]`, `operator()`, and `operator->` must be members. To support `std::cout << value`, however, `operator<<` must be a non-member because you can't add a member to the left-hand `std::ostream` type.
+
+`friend` isn't required for a non-member operator; it merely grants access to private members. A friend operator defined inside a class definition is still a non-member, usually found only through <Term id="argument-dependent-lookup">argument-dependent lookup (ADL)</Term>. This <Term id="hidden-friend">hidden friend</Term> keeps the operation beside its associated type without exposing another broadly visible name to ordinary unqualified lookup.
+
+The member form affects conversion symmetry. For `value + 2`, a member `value.operator+(2)` can convert the right argument. But the left side of `2 + value` isn't an object of the class, so that same member doesn't become callable. If a mixed operation should work both ways, provide the appropriate non-member overloads and decide whether converting constructors should be `explicit`; don't rely on accidental conversions.
+
+Common return types come from semantics, not a syntactic requirement:
+
+| Operation | Usual result | Contract |
+| --- | --- | --- |
+| Binary arithmetic `+`, `-` | `T` | Return a new value without changing the operands |
+| Compound assignment `+=`, `-=` | `T&` | Change the left operand and return `*this` |
+| Prefix `++value` | `T&` | Return the current object after changing it |
+| Postfix `value++` | `T`, with a dummy `int` parameter | Return the value from before the change |
+| Subscript `[]` | `T&` and `const T&` | Support writable and read-only objects respectively |
+| Stream output `<<` | `std::ostream&` | Return the original stream for chaining |
+
+Member operators that don't change observable state should normally be `const`. Compound assignment can also be the single implementation source for binary arithmetic: copy the left value, then apply `+=` to that copy. This keeps two addition implementations from drifting apart.
+
+## Examples
+
+These four examples cover value operations, mixed operands, subscript references, and explicit conversion in that order. Every output below came from GCC 13.3 with `-std=c++23`, with address and undefined-behavior sanitizers enabled.
+
+### Building addition from compound assignment
+
+`Distance::operator+=` changes the current object and returns a reference. The hidden `operator+` takes its left-side copy by value and reuses `+=`, so `+` leaves the original `route` unchanged.
+
+<Depth level="quick">
+
+```cpp
+#include <iostream>
+
+class Distance {
+    int metres_;
+
+public:
+    explicit constexpr Distance(int metres) : metres_(metres) {}
+
+    constexpr Distance& operator+=(const Distance& other) {
+        metres_ += other.metres_;
+        return *this;
+    }
+
+    friend constexpr Distance operator+(Distance left, const Distance& right) {
+        left += right;
+        return left;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Distance& distance) {
+        return out << distance.metres_ << " m";
+    }
+};
+
+int main() {
+    Distance route{120};
+    const Distance detour{35};
+
+    std::cout << "route + detour: " << route + detour << '\n';
+    route += detour;
+    std::cout << "route after +=: " << route << '\n';
+}
+```
+
+```text
+route + detour: 155 m
+route after +=: 155 m
+```
+
+</Depth>
+
+The constructor is `explicit`, so a bare integer doesn't quietly become a `Distance`. Callers must name the unit type instead of accidentally treating seconds or another integer as metres. `constexpr` also lets the same arithmetic participate in constant evaluation when its inputs permit it.
+
+The hidden friend could access `metres_`, but it still composes behavior through the public `+=`. If addition later needs an overflow check or invariant maintenance, there is one mutation path to update.
+
+### Supporting both operand orders deliberately
+
+Scalar multiplication usually has a mathematical meaning in either order. Two non-member overloads put both `amount * 2` and `2 * amount` in the interface, with the second implementation delegating to the first.
+
+```cpp
+#include <iostream>
+
+class Money {
+    long cents_;
+
+public:
+    explicit constexpr Money(long cents) : cents_(cents) {}
+
+    friend constexpr Money operator*(Money amount, int multiplier) {
+        return Money{amount.cents_ * multiplier};
+    }
+
+    friend constexpr Money operator*(int multiplier, Money amount) {
+        return amount * multiplier;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Money& amount) {
+        return out << amount.cents_ << " cents";
+    }
+};
+
+int main() {
+    const Money price{1299};
+
+    std::cout << "price * 2: " << price * 2 << '\n';
+    std::cout << "3 * price: " << 3 * price << '\n';
+}
+```
+
+```text
+price * 2: 2598 cents
+3 * price: 3897 cents
+```
+
+This interface doesn't accept `double` and pretend rounding is solved. A production money type also needs policies for overflow, currency, and decimal scale. Adding more overloads before those rules exist only makes an ambiguous interface larger.
+
+Both functions take `Money` by value, which is cheap for this one-integer type. For a larger type, a common design takes the left object to be modified by value, accepts the other operand by `const&`, and reuses `*=`.
+
+### Providing writable and read-only subscripts
+
+The non-`const` subscript returns `int&`, so `scores[0] = 10` changes an element. Its `const` overload returns `const int&`, letting read-only callers use the same syntax without gaining a path to mutate the object.
+
+```cpp
+#include <array>
+#include <cstddef>
+#include <iostream>
+
+class Scores {
+    std::array<int, 3> values_;
+
+public:
+    explicit Scores(std::array<int, 3> values) : values_(values) {}
+
+    int& operator[](std::size_t index) {
+        return values_[index];
+    }
+
+    const int& operator[](std::size_t index) const {
+        return values_[index];
+    }
+};
+
+void print_first(const Scores& scores) {
+    std::cout << "first score: " << scores[0] << '\n';
+}
+
+int main() {
+    Scores scores{{7, 8, 9}};
+    print_first(scores);
+    scores[0] = 10;
+    print_first(scores);
+}
+```
+
+```text
+first score: 7
+first score: 10
+```
+
+This `operator[]` follows the unchecked contract of `std::array::operator[]`; an out-of-range index has undefined behavior. If a type promises bounds checking, check and throw in the operator or provide a separate `at()` like standard containers do. The name and documentation must tell callers which contract they get.
+
+A value-returning subscript can make reads appear correct while preventing assignment. Supplying only the non-`const` overload instead makes an ordinary reader taking `const Scores&` fail to compile. Both omissions are common when generated code is exercised through only one call site.
+
+### Keeping boolean conversion explicit
+
+`explicit operator bool()` permits the object in `if` and other boolean contexts while keeping it out of accidental integer arithmetic. The stream operator returns the stream it received, so later output can remain in the same chain.
+
+```cpp
+#include <iostream>
+#include <string_view>
+
+class Subscription {
+    std::string_view name_;
+    bool active_;
+
+public:
+    Subscription(std::string_view name, bool active) : name_(name), active_(active) {}
+
+    explicit operator bool() const noexcept {
+        return active_;
+    }
+
+    friend std::ostream& operator<<(std::ostream& out, const Subscription& plan) {
+        return out << plan.name_;
+    }
+};
+
+int main() {
+    const Subscription pro{"pro", true};
+    const Subscription trial{"trial", false};
+
+    if (pro) {
+        std::cout << pro << " can sync\n";
+    }
+    std::cout << trial << " can sync: " << std::boolalpha
+              << static_cast<bool>(trial) << '\n';
+}
+```
+
+```text
+pro can sync
+trial can sync: false
+```
+
+A contextual conversion considers this explicit function, so `if (pro)` is valid. To store the result in a `bool`, the caller writes `static_cast<bool>(trial)`. This shape works for an "engaged/empty" or "valid/invalid" state; it shouldn't replace a named query when the object has several states.
+
+The sample's `std::string_view` doesn't own its characters. Its names come from string literals here, so their lifetimes are long enough. If the constructor receives a temporary string, correct operator functions still can't repair the dangling view; the type needs a separate ownership contract.
+
+## Pitfalls
+
+### Letting `+` mutate the left operand
+
+> [!PITFALL]
+> To avoid writing a copy, generated code sometimes makes `operator+` change `*this`. Then `a + b` changes `a`, violating the usual arithmetic and value-semantics contract, and evaluating the same expression twice can produce different results.
+
+**Fix:** let `+=` perform mutation and return `T&`; let `+` work on a left-side copy and return it by value. After `result = a + b`, test that `a` and `b` kept their values. Also check that the address returned by `a += b` is `&a`.
+
+### Returning a dangling reference or the wrong category
+
+> [!PITFALL]
+> A binary operator that returns a reference to a local result leaves a dangling reference as soon as the function ends. A compound assignment returning by value may compile, but `(a += b) += c` then mutates a temporary copy instead of continuing to mutate `a`.
+
+**Fix:** return new values by value, current-object mutations by `T&`, and stream operations by `std::ostream&`. Don't make a by-value result `const`; that adds no ownership guarantee and can interfere with later moves or overload selection.
+
+### Making a symmetric operation member-only
+
+> [!PITFALL]
+> A member `Quantity::operator*(double)` can support `quantity * 2.0`, but it can't automatically support `2.0 * quantity`. Models often see the first call compile and claim the interface is commutative.
+
+**Fix:** use non-members or hidden friends for genuinely symmetric binary operations, then compile both operand orders. Keep constructors `explicit` when a conversion could lose a unit, precision, or range, and declare only the mixed combinations the domain actually permits.
+
+### Defaulting comparisons over the wrong fields
+
+> [!PITFALL]
+> A defaulted `operator<=>` compares base subobjects and non-static data members in declaration order. If the object also stores a cache, database surrogate key, or debug counter, defaulting can turn implementation state into value identity. A floating member can also produce a partial order with `unordered` results.
+
+**Fix:** list the fields that define equality and order before deciding to write `= default`. Test equal objects, objects differing only in cache state, boundary values, and NaN. If the type is used in ordered containers, verify that its comparison satisfies their strict-weak-order contract.
+
+### Expecting overloaded `&&` or `||` to short-circuit
+
+> [!PITFALL]
+> An overloaded `operator&&` or `operator||` is a function call whose arguments both need evaluation. Code that relies on the right side not running to avoid a null dereference, expensive work, or a side effect breaks when the operand type introduces an overload.
+
+**Fix:** don't use these overloads as control-flow guards. Prefer a named function, an ordinary `if`, or built-in boolean operators over explicit boolean queries. Test with a side effect on the right when evaluation behavior matters.
+
+### Filling the candidate set with implicit conversions
+
+> [!PITFALL]
+> Several single-argument constructors plus several conversion operators give one expression multiple plausible routes. Adding an overload later can make an old call ambiguous or silently select a different function.
+
+**Fix:** make converting constructors and conversion functions `explicit` by default, relaxing that only for conversions that are genuinely lossless and natural in the domain. Ask the compiler for the concrete candidates and keep compile-time tests for mixed-type expressions that should remain invalid.
+
+### Omitting constness or a bounds contract from subscripts
+
+> [!PITFALL]
+> A lone `operator[]` often has one of two holes: returning by value makes the element unwritable, while a non-`const` member leaves read-only objects unreadable. Another failure is implementing unchecked access while documentation promises an out-of-range exception.
+
+**Fix:** when container semantics call for it, provide matching reference-returning `const` and non-`const` overloads and choose checked or unchecked access explicitly. Compile writable, read-only, and out-of-range tests. If there is also an `at()`, verify that the two entry points really have different contracts.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models tend to complete an operator set from its syntax before settling its meaning. Common results include a member `operator+` that mutates `*this`; a claim that `scalar * value` works after testing only `value * scalar`; a value-returning subscript or one without a `const` overload; six hand-written comparisons where `a == b` and `a < b` can both be true; a defaulted `<=>` that includes a cache field; and overloaded `&&` used to guard a right-side access that must not run. Another frequent patch is adding broad implicit conversions until a compile error disappears, replacing the original bug with ambiguity or quiet precision loss.
+
+**Ask your AI to check**
+
+- List the member, non-member, built-in, and rewritten candidates for the expression, including each argument conversion and the selected function.
+- Write a contract table for every operator covering operand mutation, return category, equality and ordering fields, exceptions, and boundary behavior.
+- Compile both operand orders, calls on `const` objects, chained calls, and implicit conversions that are supposed to fail, then show the actual diagnostics.
+
+**Review checklist**
+
+- Check that the symbol's meaning matches the domain and that `+`, `+=`, `==`, and ordering don't split into conflicting semantics.
+- Check value and reference lifetimes, member `const` qualification, and whether ADL can find each intended hidden friend.
+- Exercise boundary values, mixed types, NaN, out-of-range indexes, and a logical right operand with a side effect.
+
+**Prompt vocabulary**
+
+Use the exact terms `operator function`, `member operator`, `non-member operator`, `hidden friend`, `argument-dependent lookup`, `overload resolution`, `rewritten candidate`, `implicit conversion sequence`, `three-way comparison`, `comparison category`, and `short-circuit evaluation`. Ask for the candidate set and semantic contract; "implement the usual operators" is too vague and tends to produce a set of functions that compile but contradict one another.
+
+<Depth level="deep">
+
+## Candidate lookup and hidden friends
+
+When an operator expression enters overload resolution, the compiler builds several candidate groups from the operand types. Member candidates come from the left operand's class scope; non-member candidates come from ordinary unqualified lookup and ADL; built-in candidates represent language operations; relational and equality operators may also gain rewritten candidates from C++20 onward. Ordinary overload resolution still chooses the one best viable function.
+
+ADL inspects namespaces and classes associated with argument types. Although ordinary unqualified lookup can't see a hidden friend everywhere, ADL adds it when an object of its class participates in the call. This is a useful fit for symmetric operations: the function stays next to the class definition, can access its private representation, and gives both explicit parameters the same conversion treatment.
+
+Hidden doesn't mean private. A call with the associated type can find the function, and the function remains subject to normal language rules beyond access. Stuffing unrelated friends into a class doesn't improve encapsulation. The useful property is that operations meaningful only for the type stay on its associated lookup path.
+
+Conversion sequences decide which candidates are viable and which is better. Standard conversions generally rank above user-defined conversions, and one argument's implicit conversion sequence contains at most one user-defined conversion. For mixed arithmetic, write down the source-to-parameter path for each side instead of deciding that something "looks convertible."
+
+The implicit object parameter of a member operator doesn't use a user-defined conversion to turn an arbitrary left value into the class. That rule explains much of the left/right asymmetry; it isn't a compiler quirk. Once a symmetric operation becomes a non-member, both sides are ordinary explicit parameters and receive genuinely symmetric conversion consideration.
+
+An ordinary namespace-scope function can do the same job, so hidden friends aren't mandatory style. If the function should also be called by name, or the operation belongs jointly to several types, a namespace-scope declaration can be easier to discover. Choose based on operation ownership and lookup, not because `friend` sounds modern.
+
+## The C++23 comparison model
+
+The <Term id="three-way-comparison">three-way comparison</Term> operator `<=>` describes less, equal, greater, and potentially unordered outcomes in one operation. C++20 rewritten candidates let `<`, `>`, `<=`, and `>=` use `<=>`, while `!=` can be rewritten from `==`. This removes much of the duplication that makes hand-written relations drift apart.
+
+With `auto operator<=>(const T&) const = default;` inside a class, the compiler compares base subobjects and non-static data members in declaration order. If the class doesn't explicitly declare any member or friend named `operator==`, that defaulted three-way comparison also implicitly declares a defaulted `operator==`. There is no need to copy the field list mechanically for equality.
+
+Defaulting doesn't guarantee a usable function. If a subobject lacks the required comparison, the generated function can be defined as deleted; reference members and variant members carry further restrictions. An `auto` result combines the subobjects' comparison categories, so adding a floating member can weaken a strong order to a partial order.
+
+| Comparison category | Typical semantics | Review focus |
+| --- | --- | --- |
+| `std::strong_ordering` | Equal values are substitutable, as with integers | `==` must agree with equivalence |
+| `std::weak_ordering` | Sortable equivalence classes, such as case-insensitive text | Equivalent objects needn't be identical |
+| `std::partial_ordering` | Values may be unordered, as with floating-point NaN | Callers must handle `unordered` |
+
+A hand-written `<=>` should return the category its domain relation supports, not claim `strong_ordering` mechanically. Case-insensitive text may place distinct spellings in one ordering-equivalence class, while floating-point NaN can be unordered with every value. Overstating the category promises generic code properties that don't exist.
+
+Design equality identity and ordering equivalence together. Ordered associative containers derive key equivalence from their comparison and needn't call `operator==`. If the two relations use different fields, lookup, deduplication, and direct comparison can disagree over the same objects. Tests should change each candidate field one at a time.
+
+## Syntax, evaluation, and limits
+
+Overloading happens after parsing, so `a + b * c` is always grouped according to `*` precedence first. You can't turn binary `+` into a ternary operation or declare a symbol of your own. Use a named function or domain-specific builder when an expression needs a different structure.
+
+Don't casually interchange operator notation with an explicit function call when evaluation details matter. The operands of `a @ b` follow the sequencing prescribed for the corresponding built-in operator, while explicit `operator@(a, b)` is an ordinary function call. An interface that relies on subtle sequencing is hard to review; extract side-effecting subexpressions into named statements first.
+
+Overloaded `&&` and `||` don't provide built-in logical short-circuiting. Both operands must become call arguments, so the right side is evaluated. Template code accepting a type that may overload these symbols can't treat them as control-flow guards either.
+
+Overloading comma or unary address-of similarly overturns assumptions in low-level code. Generic libraries use dedicated techniques to bypass an overloaded address-of, and an overloaded comma is rarely clearer than a named operation. Being allowed to declare one doesn't make its interface cost worthwhile.
+
+A conversion function uses the `operator Type()` form and has no ordinary return type. Outside specified contexts such as boolean conditions, `explicit` prevents implicit use. For ownership handles, units, and range-limited values, explicit conversion usually keeps information visible at the call site where it can be reviewed.
+
+C++23 lets `operator[]` accept several subscript arguments and allows `operator[]` and `operator()` to be static members, but both remain member-only operators. This doesn't add multidimensional bounds checking to an old interface. Each dimension's range and the returned reference lifetime still need an explicit contract.
+
+## Verifying the semantic contract
+
+Successful compilation proves only that a candidate is usable. Save both operands, run a binary operation, and check whether the originals stayed unchanged as promised; then test compound assignment and prefix and postfix forms separately. For an operation returning a reference, compare addresses so a copy or unrelated object can't slip through.
+
+Compile both `a @ b` and `b @ a` for symmetric operations, using distinct types to cover allowed and forbidden conversions. Invalid expressions deserve tests too: a `requires` expression or type trait can confirm they remain invalid. That stops a later constructor from widening the interface silently.
+
+Comparison tests need more than a handful of expected outcomes. Check reflexivity, antisymmetric relationships, transitivity, and agreement between `==` and ordering equivalence. Types with floating members need NaN, positive and negative zero, and infinities. Concept checks can verify the syntactic shape, but they can't prove these runtime laws.
+
+Test subscript and dereference operations on `const` and non-`const` objects, at both ends of the valid range, and after reference invalidation. If an operator returns a proxy, exercise assignment, reading, and lifetime instead of assuming it behaves exactly like a real `T&`. A proxy is a separate interface decision and belongs in the type's documentation.
+
+A stream test should place the object between preceding and following text, proving that the function returns the original stream and permits chaining. If it changes precision, numeric base, or fill characters, check that it restores caller formatting. Simple output is safest when it honors the stream state it receives instead of imposing global formatting.
+
+Generated-code review can turn these cases into a matrix: operand types, left/right order, object constness, expected candidate, mutation, result category, and failure mode. Empty cells in that matrix matter more than repeated happy-path examples because operator bugs tend to hide in the call shape the model never generated.
+
+</Depth>
+
+<Checkpoint id="cpp/operator-overloading" />
+
+## Further reading
+
+- [C++23 draft: overloaded operators](https://timsong-cpp.github.io/cppwp/n4950/over.oper)
+- [C++23 draft: operator candidates in expressions](https://timsong-cpp.github.io/cppwp/n4950/over.match.oper)
+- [C++23 draft: defaulted comparison operators](https://timsong-cpp.github.io/cppwp/n4950/class.compare.default)
+- [C++ Core Guidelines: operator overloading rules](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Ro-rules)

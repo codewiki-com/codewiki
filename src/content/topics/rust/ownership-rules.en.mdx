@@ -1,0 +1,404 @@
+---
+title: Rust ownership rules
+description: Track moves, copies, borrows, partial moves, and drops so each Rust value has one clear owner at every program point.
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [ownership, move-semantics, copy, clone, partial-move]
+prerequisites: [rust/ownership]
+related: [rust/borrowing-rules, rust/lifetime-annotations, rust/box-rc-arc, rust/closures]
+terms: [ownership, move-semantics, borrowing, raii, partial-move]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/ownership-rules
+sources:
+  - { title: 'The Rust Programming Language — What Is Ownership?', url: 'https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html' }
+  - { title: 'The Rust Programming Language — References and Borrowing', url: 'https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html' }
+  - { title: 'The Rust Reference — Destructors', url: 'https://doc.rust-lang.org/reference/destructors.html' }
+  - { title: 'Rust standard library — Copy', url: 'https://doc.rust-lang.org/std/marker/trait.Copy.html' }
+  - { title: 'Rust standard library — Clone', url: 'https://doc.rust-lang.org/std/clone/trait.Clone.html' }
+origin: old/src/content/docs/rust/ownership-rules.en.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Rust's <Term id="ownership">ownership</Term> rules track which place is responsible for a value, when that responsibility moves, and when destruction runs.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Assignment and by-value calls move non-`Copy` values. A later read may fail even when no heap data visibly moved, and extracting one field can leave a struct only partly usable.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Mark each operation as take, read, or mutate. Use `T`, `&T`, or `&mut T` to match that contract, and clone only when the program truly needs another value.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Rust assigns every value to an owning place: a local binding, a struct field, a collection slot, or another location capable of holding a value. That owner is responsible for keeping the value valid and, on an ordinary scope exit, running its destruction. The compiler tracks this responsibility without a garbage collector or a runtime owner flag.
+
+Three rules provide the working model. Each value has an owner, only one place owns an ordinary value at a time, and the value is dropped when that owner leaves scope. Shared-ownership types such as `Rc<T>` do not break the model; they make the owning value a counted handle whose API decides when the inner value ends.
+
+For a type that does not implement `Copy`, assignment or a by-value function call normally transfers ownership. This is <Term id="move-semantics">move semantics</Term>. The source place becomes uninitialized from the compiler's point of view, so using it again is rejected unless every control-flow path first assigns it a new value.
+
+<Term id="borrowing">Borrowing</Term> grants temporary access without changing the owner. A shared reference `&T` permits reading, while `&mut T` permits exclusive mutation for its valid region. The detailed aliasing and lifetime rules have their own topics; here, references matter because they let an API avoid an ownership transfer.
+
+You meet these rules whenever you assign a `String`, pass a domain object to a helper, iterate a collection, destructure a value, or release a guard. Reading Rust code becomes much easier once you stop asking where the bytes are and ask which place may use the value next.
+
+## How it works
+
+Ownership analysis operates on places and program points. In `let next = current;`, both names are places. If the value is non-`Copy`, `next` becomes initialized and `current` becomes moved; no runtime test is added to check this on a later access.
+
+A move describes permission and responsibility, not a required machine-level copy. Moving a `String` transfers its pointer, length, and capacity as a value; it does not clone the UTF-8 buffer. The compiler may remove even that small physical transfer during optimization while preserving the same rule that the old place cannot be read.
+
+The same transfer occurs through several forms:
+
+1. Assignment moves a non-`Copy` right-hand value into the destination.
+2. A by-value argument moves the value into the parameter.
+3. A by-value return moves the result into the caller's destination.
+4. Collection insertion moves the element into the collection.
+5. A consuming pattern can move the fields it binds by value.
+
+The source can be reinitialized later. After `let mut name = String::from("old"); let saved = name;`, assigning a fresh `String` to `name` makes that place usable again. The new assignment does not recover the moved value; `saved` still owns the original.
+
+### Copy and Clone answer different questions
+
+`Copy` is a marker trait for values that Rust may duplicate implicitly. Integers, booleans, shared references, and structs made entirely from suitable `Copy` fields are common examples. A type with a destructor cannot implement `Copy`, because silent duplication would conflict with unique cleanup responsibility.
+
+`Clone` is an explicit operation whose meaning belongs to the type. Cloning a `String` allocates an independent buffer, while cloning an `Rc<T>` creates another owning handle to the same allocation. Seeing `.clone()` tells you that duplication was requested, but not its cost or whether the result shares state.
+
+| Expression | Non-`Copy` value | `Copy` value | Source afterward |
+| --- | --- | --- | --- |
+| `let b = a;` | Move | Implicit copy | Invalid after a move; valid after a copy |
+| `consume(a)` | Move into parameter | Implicit copy into parameter | Depends on `Copy` |
+| `inspect(&a)` | Shared borrow | Shared borrow | Still owns the value |
+| `a.clone()` | Explicit clone | Explicit clone | Still owns the value |
+| `drop(a)` | Move into `drop` | Copies, then drops the copy | Depends on `Copy` |
+
+Do not infer `Copy` from stack or heap placement. A shared reference is `Copy` even when it points into a heap allocation, and a fixed-size value can be non-`Copy` because it owns a resource or defines `Drop`. The trait implementation is the contract.
+
+### Borrowing keeps responsibility with the caller
+
+A parameter of type `T` receives ownership and may retain, transfer, or destroy the value. A parameter of type `&T` can read temporarily, and `&mut T` can mutate temporarily while the caller remains the owner. Picking the narrowest accurate form makes call sites honest about what happens next.
+
+String APIs show the distinction clearly. A helper that only reads text usually accepts `&str`, not `String` or `&String`. A component that stores the text after the call needs an owned `String` or a lifetime relationship that proves its borrow remains valid.
+
+A borrow must end before an incompatible move or mutation, but modern Rust derives the active region from actual uses rather than only from closing braces. If a shared reference's last use has passed, a later mutable borrow in the same block can be valid. This is why diagnostics point to both the earlier borrow and the later use that keeps it active.
+
+### Drop closes the ownership path
+
+When an initialized owner leaves its drop scope, Rust runs its destructor and then destroys the values it owns. This connection between a value's scope and its resource cleanup is <Term id="raii">Resource Acquisition Is Initialization (RAII)</Term>. It applies to heap buffers, files, sockets, lock guards, and ordinary fields.
+
+The `std::mem::drop` function is not privileged syntax. It takes a value by value and returns nothing, so ownership ends inside that call. Calling `drop(&guard)` drops only a copied reference and leaves the guard itself alive, which is a common source of lock-lifetime bugs.
+
+## Examples
+
+These four examples build from a complete move to copies, temporary borrows, and field extraction. Each program was compiled and run locally with Rust 1.98.0; the following text blocks are its stdout.
+
+### Move into a function and return
+
+`dispatch` takes a `Parcel`, changes it, and returns it. The binding is shadowed at the call site so the domain name stays useful, but the second binding owns the returned value rather than reviving the first one.
+
+<Depth level="quick">
+
+```rust title="transfer.rs"
+#[derive(Debug)]
+struct Parcel {
+    id: u32,
+    state: String,
+}
+
+fn dispatch(mut parcel: Parcel) -> Parcel {
+    parcel.state = String::from("dispatched");
+    parcel
+}
+
+fn main() {
+    let parcel = Parcel {
+        id: 17,
+        state: String::from("packed"),
+    };
+
+    let parcel = dispatch(parcel);
+    println!("parcel {}: {}", parcel.id, parcel.state);
+}
+```
+
+```text
+parcel 17: dispatched
+```
+
+<TryToBreak items={['remove the return value from dispatch', 'print the first binding after the call', 'change the parameter to &mut Parcel']} />
+
+</Depth>
+
+Taking and returning ownership is useful when the operation represents a state transition or must retain the value temporarily. If the only goal is an in-place update during the call, `&mut Parcel` avoids handing responsibility away and back.
+
+### Compare implicit Copy with explicit Clone
+
+`Window` can implement `Copy` because both fields do. `Route` contains a `String`, so its derived `Clone` must be invoked explicitly; the cloned route receives its own string buffer.
+
+```rust title="copy_clone.rs"
+#[derive(Copy, Clone)]
+struct Window {
+    start: u8,
+    end: u8,
+}
+
+#[derive(Clone)]
+struct Route {
+    name: String,
+    window: Window,
+}
+
+fn main() {
+    let morning = Window { start: 8, end: 10 };
+    let copied = morning;
+
+    let original = Route {
+        name: String::from("north"),
+        window: morning,
+    };
+    let mut rerouted = original.clone();
+    rerouted.name.push_str("-express");
+
+    println!(
+        "windows: {}-{} {}-{}",
+        morning.start, morning.end, copied.start, copied.end
+    );
+    println!(
+        "original: {} {}-{}",
+        original.name, original.window.start, original.window.end
+    );
+    println!(
+        "rerouted: {} {}-{}",
+        rerouted.name, rerouted.window.start, rerouted.window.end
+    );
+}
+```
+
+```text
+windows: 8-10 8-10
+original: north 8-10
+rerouted: north-express 8-10
+```
+
+Both `morning` and `copied` remain valid because the assignment copied a `Window`. Mutating `rerouted.name` leaves `original.name` unchanged because the derived `Route::clone` clones each field, including the owned string data.
+
+### Borrow for reading and mutation
+
+`label` needs only shared access, and `reserve` needs exclusive mutable access. Neither function retains the inventory, so ownership stays in `main` across both calls.
+
+```rust title="borrow.rs"
+#[derive(Debug)]
+struct Inventory {
+    warehouse: String,
+    units: u32,
+}
+
+fn label(inventory: &Inventory) -> String {
+    format!("{}:{}", inventory.warehouse, inventory.units)
+}
+
+fn reserve(inventory: &mut Inventory, units: u32) -> bool {
+    if units > inventory.units {
+        return false;
+    }
+    inventory.units -= units;
+    true
+}
+
+fn main() {
+    let mut inventory = Inventory {
+        warehouse: String::from("CDG"),
+        units: 5,
+    };
+
+    println!("before: {}", label(&inventory));
+    println!("reserved: {}", reserve(&mut inventory, 2));
+    println!("after: {}", label(&inventory));
+}
+```
+
+```text
+before: CDG:5
+reserved: true
+after: CDG:3
+```
+
+The shared borrow used by the first `println!` ends after its last use, so the mutable borrow can begin on the next line. Returning an owned `String` from `label` is a separate design decision: `format!` creates new text rather than exposing a view into the inventory.
+
+### Move one field and take another safely
+
+Moving `first.address` is a <Term id="partial-move">partial move</Term>. The complete `first` can no longer be used, but its untouched `Copy` field remains available. `Option::take` provides a different extraction pattern by replacing the field with `None`.
+
+```rust title="partial_move.rs"
+#[derive(Debug)]
+struct Delivery {
+    address: String,
+    attempts: u8,
+    note: Option<String>,
+}
+
+fn main() {
+    let first = Delivery {
+        address: String::from("12 Rue Ada"),
+        attempts: 1,
+        note: None,
+    };
+
+    let address = first.address;
+    println!("send {address} after {} attempt", first.attempts);
+
+    let mut second = Delivery {
+        address: String::from("8 Rust Lane"),
+        attempts: 2,
+        note: Some(String::from("side door")),
+    };
+
+    let note = second.note.take();
+    println!("note: {note:?}");
+    println!("remaining: {second:?}");
+}
+```
+
+```text
+send 12 Rue Ada after 1 attempt
+note: Some("side door")
+remaining: Delivery { address: "8 Rust Lane", attempts: 2, note: None }
+```
+
+The first extraction leaves no replacement for `address`, so only remaining fields may be addressed separately. The second delivery stays a complete valid value because `take()` leaves a valid `Option::None` behind; this pattern is especially useful when the surrounding type implements `Drop`.
+
+## Pitfalls
+
+### Treating every assignment as a move
+
+> [!PITFALL]
+> Saying “assignment transfers ownership” misses the `Copy` case. It also encourages explanations based on heap allocation, even though storage location does not decide whether the source remains valid.
+
+**Fix:** Check the concrete type's `Copy` implementation. If it is `Copy`, assignment duplicates the value implicitly; otherwise, trace a move unless the expression borrows or clones explicitly.
+
+### Adding clone at the error line
+
+> [!PITFALL]
+> Generated code often reacts to `borrow of moved value` by cloning immediately before the move. That can duplicate a large buffer, create another reference-counted owner, or hide that the callee only needed read access.
+
+**Fix:** Inspect the first move and the callee's contract. Borrow for a temporary read, move when the caller is finished, return ownership when responsibility comes back, and retain `clone()` only when two values or handles are part of the design.
+
+### Taking ownership for a read-only helper
+
+> [!PITFALL]
+> A signature such as `fn length(text: String) -> usize` forces the caller to lose or clone its string even though the implementation only reads it. Changing the call site alone cannot repair the exaggerated ownership contract.
+
+**Fix:** Accept `&str` for ordinary text reads and `&T` for other read-only values. Use `T` when the function stores, transfers, transforms, or deliberately destroys the input.
+
+### Using a whole value after a partial move
+
+> [!PITFALL]
+> Pattern matching, struct update syntax, and direct field access can move one non-`Copy` field. Logging the whole struct afterward still fails, even if several untouched fields remain individually usable.
+
+**Fix:** Match on a reference when observation is enough. If extraction is required, consume and destructure the whole value, or put the field behind `Option<T>` and use `take()` so the container remains complete.
+
+### Dropping a reference instead of a guard
+
+> [!PITFALL]
+> `drop(&guard)` looks explicit but consumes only a copied reference. The lock, file, or transaction guard remains owned by its binding and continues to live until that binding ends.
+
+**Fix:** Pass the owned guard to `drop(guard)` or place it in a narrow block. Compile with warnings enabled: Rust warns that calling `drop` on a reference does nothing to the referenced value.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models commonly insert `.clone()` at every E0382 diagnostic instead of changing an unnecessary by-value parameter. They also generate `.into_iter()` for a collection that later code still needs, destructure a `String` field and then log the complete struct, or write `drop(&guard)` before an awaited operation while the lock remains held. Another recurring mistake is to describe any pointer-shaped type as cheap to copy; cloning `String`, `Rc<T>`, and a custom handle has three different ownership meanings.
+
+**Ask your AI to check**
+
+- Produce a table for each non-`Copy` value with its initialization, moves, borrows, clones, reinitializations, and final drop.
+- For every `T`, `&T`, and `&mut T` parameter, state whether the implementation retains, reads, or mutates the argument and flag mismatches.
+- For every `.clone()`, `.into_iter()`, field pattern, and explicit `drop`, name the owner before and after the expression.
+
+**Review checklist**
+
+- Follow the first move rather than editing only the later “use of moved value” line.
+- Test absent branches, early returns, and partial matches so every later use sees an initialized place.
+- Confirm that guards and resource owners end before blocking, awaiting, or shutdown boundaries that require release.
+
+**Prompt vocabulary**
+
+Use the exact terms `owning place`, `move semantics`, `Copy trait`, `explicit clone`, `shared borrow`, `mutable borrow`, `partial move`, `reinitialization`, `drop scope`, and `destructor`. Ask for an owner timeline and clone inventory; “make the borrow checker happy” does not specify the intended responsibility.
+
+<Depth level="deep">
+
+## Initialization state belongs to a place
+
+The compiler does not attach a permanent “moved” label to an object or variable name. It tracks whether a place is initialized at each program point. A move makes the source place uninitialized, while an assignment of a fresh value can initialize that same place again.
+
+Control flow makes this precise. If one branch moves a value and another does not, code after the join may use it only when the compiler can prove a valid state for every path that reaches that use. Moving in a condition and hoping a runtime fact will make the later access safe is not enough unless the type analysis can express that fact.
+
+Method receivers expose the same rules. A method taking `self` consumes the receiver, `&self` borrows it for reading, and `&mut self` borrows it exclusively for mutation. When generated code unexpectedly loses an object after a method call, inspect the receiver type before adding a clone.
+
+Index expressions and dereferences describe places too, but safe code cannot always move directly out through borrowed access. For example, indexing a borrowed vector yields access to an element without giving permission to remove its owned `String`. Collection methods such as `remove`, `pop`, and `swap_remove` encode valid ways to transfer an element out while leaving the collection initialized.
+
+Closures can capture a place by borrow or by value, and `move` requests by-value capture. That does not mean every captured value becomes non-reusable inside the closure: `Copy` captures are copied, while owned non-`Copy` captures move. The closure topic covers how the body determines `Fn`, `FnMut`, and `FnOnce` behavior.
+
+## Partial moves preserve only proven fields
+
+A struct is made of distinct field places. Moving one non-`Copy` field does not erase untouched fields, so they can still be read or moved individually. What disappears is the ability to use the struct as one complete value.
+
+Patterns choose between moving, copying, and borrowing field by field. Binding a `String` by value moves it; binding an integer that is `Copy` copies it; using `ref` or matching a reference creates a borrow. Match ergonomics can add borrows from the scrutinee context, so inspect the type of each binding rather than guessing from the spelling alone.
+
+Struct update syntax follows the same field rules. In `Record { id: new_id, ..old }`, fields supplied explicitly come from the new expressions, `Copy` fields from `old` are copied, and remaining non-`Copy` fields are moved. The old value may therefore be partially moved even though the syntax looks like construction.
+
+Types implementing `Drop` restrict moving fields out because the destructor receives `&mut self` and may rely on the complete type invariant. Rust rejects a partial extraction that would later hand the destructor an incomplete value. Consuming the whole value in a method or replacing a field with `Option::take` preserves a state the destructor can handle.
+
+This restriction is a design clue. If callers routinely need to extract one resource before the wrapper ends, expose a consuming method such as `into_inner(self)` or store an explicitly empty state. Reaching for unsafe code to bypass one field-move error takes responsibility away from the compiler and usually obscures the intended lifecycle.
+
+## Destruction follows scopes and ownership paths
+
+Local bindings normally drop in reverse declaration order, while struct fields drop in declaration order after the type's own `Drop::drop` returns. Code should not create hidden correctness dependencies between unrelated field destructors. If cleanup order is part of the contract, make it visible in the owning type.
+
+Early `return`, `break`, and the `?` operator still leave scopes normally, so initialized locals on those paths are destroyed. With unwinding panics, Rust also drops live stack values while unwinding. Abort, `std::process::exit`, and leaked ownership paths do not promise that cleanup.
+
+Reference counting changes the final boundary without making it vague. Cloning `Rc<T>` or `Arc<T>` creates another strong owner, and the inner value ends when the last strong owner ends. A cycle of strong owners can therefore retain values indefinitely; `Weak` marks a link that may observe without keeping the target alive.
+
+An explicit `drop(value)` is useful when the release point matters, especially for a lock guard. A narrow block often communicates the same boundary more clearly and prevents accidental later access. Required commits, flushes, and network acknowledgments should use explicit fallible methods rather than relying on a destructor that cannot report failure normally.
+
+Use this trace when a diagnostic feels remote from its cause:
+
+1. Find the last point where the place is definitely initialized.
+2. Mark the first by-value assignment, argument, receiver, return, pattern, or collection insertion.
+3. Decide whether the failing operation needs ownership, shared access, or mutable access.
+4. Change the signature or operation order to express that need.
+5. Recheck clones and drop points after the code compiles.
+
+Compiler suggestions are local repairs, not domain specifications. The compiler can show that borrowing or cloning is possible, but it cannot decide whether a credential should be duplicated, whether a queue item should be consumed, or whether a handle must be released before an await. Those are ownership decisions the API must state.
+
+## Ownership repairs change contracts
+
+Several edits can make the same diagnostic disappear, but they do not mean the same thing. Borrowing preserves the current owner, moving ends its use at the source, cloning creates another value according to `Clone`, and shared ownership changes the lifecycle to depend on several handles.
+
+| Repair | Responsibility after the call | Question to answer |
+| --- | --- | --- |
+| Pass `&value` | Caller remains owner | Does the callee only read temporarily? |
+| Pass `&mut value` | Caller remains owner after exclusive access | Does the callee mutate without retaining? |
+| Pass `value` | Callee receives ownership | Is the caller finished with this value? |
+| Pass `value.clone()` | Caller and callee each receive a value or handle | Does the domain require duplication or sharing? |
+
+Changing `T` to `&T` may move the problem into stored state if the callee genuinely needs to retain the input. Adding `Arc<T>` may keep the value alive, but it also changes the ownership graph and does not by itself make mutation safe. A repair is correct only when its new contract matches the data's intended lifetime.
+
+Tests should exercise that contract, not merely prove that the code compiles. Use a value after a borrowing call, verify that a consuming call prevents accidental reuse at the API level, and check whether two clones mutate independently or share inner state as designed.
+
+</Depth>
+
+<Checkpoint id="rust/ownership-rules" />
+
+## Further reading
+
+- [The Rust Programming Language: What Is Ownership?](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html)
+- [The Rust Programming Language: References and Borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html)
+- [The Rust Reference: Destructors](https://doc.rust-lang.org/reference/destructors.html)
+- [Rust standard library: `Copy`](https://doc.rust-lang.org/std/marker/trait.Copy.html)
+- [Rust standard library: `Clone`](https://doc.rust-lang.org/std/clone/trait.Clone.html)

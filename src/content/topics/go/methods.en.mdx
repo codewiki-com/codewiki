@@ -1,0 +1,409 @@
+---
+title: Go Methods
+description: Go methods attach behavior to defined types; receiver semantics, method sets, method values, and promotion determine correct APIs and state changes.
+track: go
+section: types-interfaces
+difficulty: intermediate
+tags: [methods, receivers, method-sets, embedding]
+prerequisites: [go/fundamentals, go/structs]
+related: [go/interfaces, go/generics, go/reflect]
+terms: [receiver, method-set, field-promotion]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/methods
+sources:
+  - { title: 'The Go Programming Language Specification - Method declarations', url: 'https://go.dev/ref/spec#Method_declarations' }
+  - { title: 'The Go Programming Language Specification - Method sets', url: 'https://go.dev/ref/spec#Method_sets' }
+  - { title: 'Effective Go - Pointers vs. Values', url: 'https://go.dev/doc/effective_go#pointers_vs_values' }
+  - { title: 'Go Wiki - Code Review Comments: Receiver Type', url: 'https://go.dev/wiki/CodeReviewComments#receiver-type' }
+  - { title: 'Go 1.27 Release Notes', url: 'https://go.dev/doc/go1.27' }
+origin: old/src/content/docs/go/methods.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A method is a function with a receiver parameter. It attaches behavior to a type defined in the current package and participates in interface satisfaction.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    The fact that `value.M()` compiles doesn't prove that the value type has `M`; the compiler may implicitly take the address of an addressable value.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Choose the receiver from copy, mutation, and identity semantics, then verify the method sets and interface assignments of both `T` and `*T`.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A method is a function with a special receiver parameter. The <Term id="receiver">receiver</Term> appears between `func` and the method name and determines the associated type; callers select it with `value.Method()`. Go has no classes, but methods let a named type expose data and behavior as a coherent API.
+
+Methods aren't limited to structs. A named type with an integer, string, slice, or another underlying representation can have methods as long as its receiver base type is a non-pointer, non-interface type defined in the current package. This restriction leaves control of a type's methods with the package that defines the type.
+
+An ordinary function lists every input in its parameter list. A method puts one input in the receiver position. That distinction affects name lookup, method values, method expressions, and interface implementation, but it doesn't introduce inheritance, constructors, or dynamic overriding. Mapping Go methods directly onto a traditional class model leads to incorrect assumptions about embedding and promotion.
+
+Methods allow several types to reuse short names such as `String`, `Read`, or `ServeHTTP` without type prefixes in the package namespace. More importantly, interfaces use method sets to determine satisfaction implicitly. You'll encounter methods on domain values, mutable services, standard-library interface implementations, embedded components, and generic types.
+
+## How it works
+
+### Receivers define the copy boundary
+
+A value receiver is written `(v T)`. At a call, the receiver is copied into the method parameter under ordinary assignment rules; assigning to one of its fields changes only the copy. The operation is a field-by-field copy, not a recursive deep copy, so slices, maps, pointers, or interfaces in the copy may still reach shared mutable data.
+
+A pointer receiver is written `(p *T)`. The method receives a pointer to the value, so it can modify that value and let several calls share one identity. Use a pointer receiver when a method must mutate its receiver, when copying a lock-bearing value is invalid, or when the type represents a mutable object with identity.
+
+Read-only behavior doesn't automatically require a value receiver, and a large struct doesn't automatically require a pointer receiver. Decide first whether copying preserves the intended semantics, then consider consistency and measured cost. If some methods on a type require pointer receivers, using pointer receivers for the rest usually keeps its method sets and caller expectations stable.
+
+| Declaration | What the method body receives | Can directly replace caller fields | Typical semantics |
+|---|---|---|---|
+| `func (v T) M()` | A shallow copy of `T` | No | Small values, immutable-style operations |
+| `func (p *T) M()` | A pointer to `T` | Yes | Mutation, identity, non-copyable state |
+
+### Method calls have an addressability convenience
+
+If `x` is addressable and the method set of `*T` contains `M`, `x.M()` is shorthand for `(&x).M()`. Local variables are usually addressable, so a value variable can often call a pointer-receiver method directly. This convenience doesn't add `M` to the method set of `T`.
+
+Map elements are generally not addressable because a map implementation may move its entries. If `users` has `User` elements and `Rename` has only a `*User` receiver, `users[id].Rename(...)` can't rely on implicit address-taking. Retrieve, modify, and store the value, or make the elements `*User` when that matches the ownership model.
+
+Selectors provide a convenience in the other direction too: a `*T` can call a value-receiver method of `T`, taking a copy of the pointed-to value for the call. If the pointer is `nil`, no `T` value can be produced, so the call panics before the method body starts. Only a pointer-receiver method gets a chance to interpret `nil` as an explicit state.
+
+### Method sets determine interface satisfaction
+
+A <Term id="method-set">method set</Term> is the set of methods associated with a type for operations such as interface checking. For a defined non-pointer, non-interface type `T`, the basic rule is short: the method set of `T` contains methods declared with receiver `T`, while the method set of `*T` contains methods declared with either receiver `T` or `*T`.
+
+| Static type | Declarations in its method set |
+|---|---|
+| `T` | `func (T) M(...)` |
+| `*T` | `func (T) M(...)` and `func (*T) M(...)` |
+
+Consequently, when a required method has a pointer receiver, `*T` usually satisfies the interface and `T` doesn't. Interface assignment doesn't apply the implicit address-taking rule from `x.M()`: an interface stores a copy of a value, which need not have an original variable whose address can be taken. The compile-time assertion `var _ Interface = (*T)(nil)` records the choice and catches later signature drift.
+
+The receiver's name isn't part of a method signature, so keep it short and consistent. Interface satisfaction requires an exact match of the method name, parameter types, and result types; parameters that merely look compatible aren't covariant or adapted automatically. The detailed design of interface contracts belongs in `go/interfaces`; method sets connect that design to concrete types.
+
+### Method values save their receiver
+
+The expression `x.M` is a method value. Evaluating it calculates and saves the receiver, producing a function value that no longer takes that receiver explicitly. A value receiver saves the value at that moment; a pointer receiver saves the calculated pointer, so later changes made through that pointer remain visible.
+
+The expression `T.M` or `(*T).M` is a method expression. It doesn't bind a particular receiver; instead, it produces a function whose first ordinary parameter is the receiver. Method expressions work well for adapting callbacks or applying one operation to several values, while method values hand one particular object's operation to other code.
+
+Because a method value evaluates its receiver when it is created, the distinction matters in method calls used with `defer` and `go`. Generated code that assumes the receiver will be looked up later may observe an old value copy; code that saved a pointer may instead observe later mutation. A review should make the saved value or pointer explicit.
+
+### Embedding can promote methods
+
+When a struct embeds a field, a method reachable by a unique path can be selected through the outer value's shorter selector. This is <Term id="field-promotion">promotion</Term>. Promotion doesn't copy the method or turn the outer type into the inner type; the full path, such as `service.Logger.SetPrefix(...)`, remains available.
+
+If the outer type declares a method with the same name, the short selector chooses the outer method. If several embedded paths at the same shallowest depth provide the name, the short selector is ambiguous and the full path is required. Promotion affects the outer method set, so it can also make the outer type satisfy an interface.
+
+## Examples
+
+### Value and pointer receivers
+
+The first example puts observation and mutation on one type. `Rename` changes its value-receiver copy, so the name stays unchanged; `Add` modifies the caller through a pointer.
+
+<Depth level="quick">
+
+```go title="receivers.go"
+package main
+
+import "fmt"
+
+type Counter struct {
+	Name  string
+	Total int
+}
+
+func (c Counter) Rename(name string) {
+	c.Name = name
+}
+
+func (c *Counter) Add(delta int) {
+	c.Total += delta
+}
+
+func (c Counter) Snapshot() string {
+	return fmt.Sprintf("%s=%d", c.Name, c.Total)
+}
+
+func main() {
+	counter := Counter{Name: "orders", Total: 10}
+	counter.Rename("archived")
+	counter.Add(5)
+	fmt.Println(counter.Snapshot())
+
+	copied := counter
+	copied.Add(2)
+	fmt.Println(counter.Snapshot())
+	fmt.Println(copied.Snapshot())
+}
+```
+
+```text
+orders=15
+orders=15
+orders=17
+```
+
+</Depth>
+
+`counter` is an addressable local variable, so `counter.Add(5)` takes its address implicitly. After assigning it to `copied`, the two are independent plain values. Taking the address of and modifying `copied` doesn't lead back to the original `counter`.
+
+This type has no slice, map, or pointer fields, so copying the struct creates fully independent state. If those fields are added, reason about aliasing one field at a time; the phrase value receiver doesn't imply a deep copy.
+
+### Call ability and interface ability
+
+The second example separates an addressable call from a method set. Both `User` and `*User` have the value-receiver method `String`, but only `*User` has the pointer-receiver method `Rename`.
+
+```go title="method_sets.go"
+package main
+
+import "fmt"
+
+type Renamer interface {
+	Rename(string)
+}
+
+type User struct {
+	Name string
+}
+
+func (u User) String() string {
+	return u.Name
+}
+
+func (u *User) Rename(name string) {
+	u.Name = name
+}
+
+var _ fmt.Stringer = User{}
+var _ fmt.Stringer = (*User)(nil)
+var _ Renamer = (*User)(nil)
+
+func main() {
+	user := User{Name: "Mina"}
+	user.Rename("Lin")
+	fmt.Println(user)
+
+	var named fmt.Stringer = user
+	var renamer Renamer = &user
+	renamer.Rename("Ari")
+	fmt.Println(named, user)
+}
+```
+
+```text
+Lin
+Lin Ari
+```
+
+`user.Rename("Lin")` compiles because `user` is addressable. In contrast, `var _ Renamer = User{}` would fail to compile, so the example asserts `Renamer` only for `*User`.
+
+The interface value assigned to `named` saves a copy of `user` at that point, and the later rename doesn't change it. `renamer` stores `&user`, so its call changes the original variable. The final line shows the old copy `Lin` beside the current value `Ari`.
+
+### Method values and method expressions
+
+The third example makes receiver evaluation timing observable. `preview` binds a value receiver, `deposit` binds a pointer receiver, and `calculate` requires its caller to supply the receiver explicitly.
+
+```go title="method_values.go"
+package main
+
+import "fmt"
+
+type Account struct {
+	Balance int
+}
+
+func (a Account) BalanceAfter(delta int) int {
+	return a.Balance + delta
+}
+
+func (a *Account) Deposit(amount int) {
+	a.Balance += amount
+}
+
+func main() {
+	account := Account{Balance: 100}
+	preview := account.BalanceAfter
+	deposit := account.Deposit
+	calculate := Account.BalanceAfter
+
+	account.Balance = 200
+	fmt.Println(preview(10))
+
+	deposit(25)
+	fmt.Println(calculate(account, 10))
+	fmt.Println(account.Balance)
+}
+```
+
+```text
+110
+235
+225
+```
+
+`preview` saved an `Account` copy while the balance was `100`, so its result is `110`. `deposit` saved a pointer to the original account and changes its current balance from `200` to `225`.
+
+The method expression `Account.BalanceAfter` saved no account. The call `calculate(account, 10)` explicitly supplies the current value and therefore produces `235`, while its value receiver leaves `account.Balance` unchanged.
+
+### Promotion and shadowing of embedded methods
+
+The last example embeds `*Logger`. `SetPrefix` is promoted to `Service`, while the outer `Label` shadows the promoted method of the same name; an explicit path still selects the inner method.
+
+```go title="promotion.go"
+package main
+
+import "fmt"
+
+type Logger struct {
+	Prefix string
+}
+
+func (l Logger) Label() string {
+	return "logger:" + l.Prefix
+}
+
+func (l *Logger) SetPrefix(prefix string) {
+	l.Prefix = prefix
+}
+
+type Service struct {
+	*Logger
+	Name string
+}
+
+func (s Service) Label() string {
+	return "service:" + s.Name
+}
+
+type PrefixSetter interface {
+	SetPrefix(string)
+}
+
+var _ PrefixSetter = Service{}
+
+func main() {
+	service := Service{Logger: &Logger{Prefix: "dev"}, Name: "api"}
+	fmt.Println(service.Label())
+	fmt.Println(service.Logger.Label())
+
+	var setter PrefixSetter = service
+	setter.SetPrefix("prod")
+	fmt.Println(service.Logger.Label())
+}
+```
+
+```text
+service:api
+logger:dev
+logger:prod
+```
+
+When `*Logger` is embedded, its value- and pointer-receiver methods are promoted into the method sets of both `Service` and `*Service`. The compile-time assertion for `Service{}` therefore succeeds.
+
+Copying `service` into the interface also copies the embedded pointer, not the `Logger` target. The copy inside the interface and the original variable still point to the same `Logger`, so the explicit path reads `prod` after the call through `setter`.
+
+## Pitfalls
+
+### A mutator gets a value receiver
+
+> [!PITFALL]
+> Generated or refactored code gives a mutating method a value receiver. The method returns normally but changes only a copy; if fields contain slices or maps, some mutations may still leak into shared storage, making the behavior even less consistent.
+
+**Fix:** use a pointer receiver for mutation, identity, or non-copyable state, and assert post-call state. For a value receiver with reference-like fields, document aliasing and ownership field by field; clone the required levels explicitly when the result must be a snapshot.
+
+### A successful call is mistaken for interface satisfaction
+
+> [!PITFALL]
+> After `x.M()` compiles, code assumes that `T` satisfies an interface requiring `M`. If `M` has a `*T` receiver, addressability helped only that call by taking an address; the method set of `T` didn't change.
+
+**Fix:** place either `var _ I = T{}` or `var _ I = (*T)(nil)` near the contract for every relationship that must hold. Compile the actual map-element, interface-return, and generic-call shapes too, because they don't necessarily have the addressability of a local variable.
+
+### A receiver copies a lock or internal pointer
+
+> [!PITFALL]
+> A value receiver on a type containing `sync.Mutex` or another field that must not be copied after first use copies the lock on every call. Locking the copy doesn't protect the original object, and `go vet` commonly reports such receivers or by-value transfers as `copylocks`.
+
+**Fix:** use these types only through pointers after construction, keep all their receivers as pointers, and run `go vet ./...` plus `go test -race ./...`. Don't copy the synchronization state with a value receiver merely because a particular method currently reads data.
+
+### Nil-receiver behavior is assumed
+
+> [!PITFALL]
+> A pointer-receiver method can receive `nil`, but that doesn't make the call safe. Dereferencing a field in the body panics; calling a value-receiver method through a nil `*T` can panic on the implicit dereference before the body starts.
+
+**Fix:** handle `nil` at the start of a pointer-receiver method only when the API defines that meaning, and test the path. Otherwise reject `nil` at construction or call boundaries instead of adding defensive-looking checks that conceal an invalid state.
+
+### Promotion is treated as inheritance
+
+> [!PITFALL]
+> After an embedded type's method is promoted, generated code assumes the outer type is a subtype or that an inner method dynamically calls an outer “override.” Promotion is only a selector and method-set rule; it doesn't provide that dynamic dispatch.
+
+**Fix:** when outer coordination is required, make the outer method call the embedded field explicitly or express the dependency as an interface. Test the short selector and full path when names collide, and add assertions for `T` and `*T` when interface satisfaction depends on promotion.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often translate “this method doesn't mutate” mechanically into a value receiver, overlooking locks, pointers, slices, and changes to interface satisfaction. They infer that `T` fits an interface because `x.M()` compiles, or treat embedding as inheritance with overriding. Another subtle failure creates a value-receiver method value, mutates the original object, and expects the callback to read the new state.
+
+**Ask your AI to check**
+
+- List every method's receiver type and explain which fields are copied and which underlying objects remain shared.
+- Prove separately which interfaces `T` and `*T` satisfy, compiling the assertions used by the real call sites.
+- Trace when every method value saves its receiver and whether it saves a value copy or a pointer.
+
+**Review checklist**
+
+- Run post-call state tests for every mutator, plus aliasing tests for slice, map, and pointer fields.
+- Run `go vet ./...` and `go test -race ./...`, then inspect lock-bearing types for by-value copies.
+- Expand every promoted method to its full selector path and check ambiguity, nil embedded pointers, and interface method sets.
+
+**Prompt vocabulary**
+
+Use `value receiver`, `pointer receiver`, `method set`, `addressable value`, `implicit address-taking`, `method value`, `method expression`, and `promoted method`. Ask for a “receiver-copy and interface-satisfaction matrix”; a vague request to “check the Go methods” is less likely to expose these failures.
+
+<Depth level="deep">
+
+## Method declaration boundaries
+
+A method's receiver base type must be a type defined in the current package, and it must not be a pointer or interface type. The receiver declaration itself may use `T` or `*T`, but it can't add methods to another package's type, an alias that denotes such an external type, or an already defined pointer type. To extend an external type, define a new local type or write an ordinary function that accepts the external value.
+
+Adding methods to a newly defined local type doesn't import the methods of its underlying type. For example, a new type whose underlying type comes from the standard library starts with its own method set. An alias preserves the identity of its target, but an alias declaration isn't an extension mechanism that bypasses the current-package rule.
+
+One receiver base type can't declare two methods with the same name even if one receiver is `T` and the other is `*T`. Both would occur in the method set of `*T`, so the name must be unique for the base type. The receiver parameter's local name doesn't affect uniqueness or interface matching.
+
+A method on a generic type declares identifiers corresponding to the base type's parameters in its receiver specification, using the constraints from the base declaration. Go 1.27 also lets a concrete method declare its own type parameters after the method name; it must be instantiated explicitly or implicitly before use. Interface methods can't declare type parameters, and generic methods can't implement interface methods.
+
+## The promoted-method matrix
+
+When `S` embeds a `T` field, both `S` and `*S` receive the value-receiver methods of `T`, but only `*S` receives the pointer-receiver methods of `*T`. This asymmetry is distinct from a convenient call on an addressable field because this section concerns the outer type's actual method set for interface checking.
+
+When `S` embeds a `*T` field, the method sets of both `S` and `*S` contain the promoted methods declared on `T` or `*T`. That is why the earlier `Service` satisfies `PrefixSetter` as a value. Its zero value still contains a nil `*Logger`, however, so interface satisfaction doesn't prove that a runtime call is safe.
+
+| Field embedded in `S` | Methods promoted to `S` | Methods promoted to `*S` |
+|---|---|---|
+| `T` | Methods with receiver `T` | Methods with receiver `T` or `*T` |
+| `*T` | Methods with receiver `T` or `*T` | Methods with receiver `T` or `*T` |
+
+Promotion requires a unique selector path. If two embedded fields provide a same-named method at the same shallowest depth, `s.M` is ambiguous; a same-named candidate on a deeper path doesn't beat a shallower one. Writing `s.Left.M()` or `s.Right.M()` resolves the selector but doesn't automatically decide which contract the outer type should expose.
+
+Promotion isn't virtual-method dispatch either. A promoted call still uses the embedded field as its real receiver, and selectors inside that method are resolved from the inner receiver's static type. If an outer policy must participate, orchestrate it in an outer method or inject replaceable behavior through an interface field.
+
+## Method-value evaluation details
+
+A method-value expression immediately evaluates and saves its receiver. Selecting a value-receiver method copies `T` under assignment rules, although its slice headers, map values, and pointers may still share targets. Selecting a pointer-receiver method saves a pointer; when the selector starts from an addressable value, implicit address-taking occurs as the method value is created.
+
+A method expression saves no concrete receiver, so its function type gains a first receiver parameter. `T.M` can select only a method in the method set of `T`; write `(*T).M` for a pointer-receiver method. Before assigning a method expression to a callback, verify the required function signature and decide whether pointer semantics should be exposed.
+
+A deferred method call evaluates and saves its receiver and ordinary arguments when the `defer` statement executes, not when the surrounding function returns. A method call launched with `go` also evaluates the function value and arguments first in the current goroutine. When snapshots, loop variables, or temporary pointers matter, explicit local variables make the save point easier to review.
+
+</Depth>
+
+<Checkpoint id="go/methods" />
+
+## Further reading
+
+- [Go language specification: method declarations](https://go.dev/ref/spec#Method_declarations)
+- [Go language specification: method sets](https://go.dev/ref/spec#Method_sets)
+- [Effective Go: pointers vs. values](https://go.dev/doc/effective_go#pointers_vs_values)
+- [Go Wiki code review comments: receiver type](https://go.dev/wiki/CodeReviewComments#receiver-type)
+- [Go 1.27 release notes](https://go.dev/doc/go1.27)

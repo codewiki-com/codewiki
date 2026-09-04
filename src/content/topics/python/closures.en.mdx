@@ -1,275 +1,392 @@
 ---
 title: Closures
-description: Functions that carry their birthplace with them, and the one trap that catches everybody once.
+description: Closures let functions retain access to enclosing bindings; understand cells, nonlocal, and late binding to keep state and callbacks correct.
 track: python
 section: functions-deeper
 difficulty: intermediate
-tags: [closures, scope, nonlocal]
-prerequisites: [python/functions, python/scope-legb]
-related: [python/decorators, python/functools]
+tags: [closures, scope, nonlocal, late-binding]
+prerequisites: [python/functions, python/scope-namespaces]
+related: [python/decorators, python/functools, python/classes-objects]
 terms: [free-variable, enclosing-scope, late-binding, cell]
-verified: { version: 'Python 3.14', date: 2026-09-03 }
-reviewed: 2026-09-03
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
 status: reviewed
 aligned: true
 quiz: python/closures
 sources:
+  - { title: 'Python language reference - Naming and binding', url: 'https://docs.python.org/3.14/reference/executionmodel.html#naming-and-binding' }
+  - { title: 'Python language reference - The nonlocal statement', url: 'https://docs.python.org/3.14/reference/simple_stmts.html#the-nonlocal-statement' }
+  - { title: 'Python data model - User-defined functions', url: 'https://docs.python.org/3.14/reference/datamodel.html#user-defined-functions' }
+  - { title: 'Python inspect - getclosurevars', url: 'https://docs.python.org/3.14/library/inspect.html#inspect.getclosurevars' }
+  - { title: 'Python programming FAQ - Lambdas in loops', url: 'https://docs.python.org/3.14/faq/programming.html#why-do-lambdas-defined-in-a-loop-with-different-values-all-return-the-same-result' }
   - { title: 'PEP 3104 - Access to Names in Outer Scopes', url: 'https://peps.python.org/pep-3104/' }
+origin: old/src/content/docs/python/closures.zh.md
 ---
 
 <TLDR>
   <TLDRCell label="what">
-    A closure is a function that keeps access to bindings from an enclosing function after that function returns.
+    A closure is a function associated with enclosing lexical bindings; it can read or update them even after the call that defined it has returned.
   </TLDRCell>
   <TLDRCell label="trap">
-    Closures capture variables, not frozen values, so callbacks created in a loop can all observe the loop's final value.
+    A closure retains variable bindings, not values frozen when the function is created, so callbacks built in a loop may all read the final iteration value.
   </TLDRCell>
   <TLDRCell label="fix">
-    Use `nonlocal` when the closure must rebind captured state, and bind each loop value explicitly when creating callbacks.
+    Use `nonlocal` to rebind enclosing state; when each callback needs an independent value or state, bind an argument at creation or call a factory per iteration.
   </TLDRCell>
 </TLDR>
 
-## What a closure is
+## What it is and why it exists
 
-A closure is a function paired with access to bindings from the lexical environment where the function was defined. In Python, the function is usually an inner function returned by an outer function. The outer call can finish, but any bindings needed by the inner function remain available.
+A closure is a function object together with access to the enclosing bindings it needs from its definition site. In Python, the usual shape is an outer function that creates and returns an inner function. The outer call can return while the inner function keeps using bindings created by that particular call.
 
-A name used inside a function but bound outside it is a <Term id="free-variable">free variable</Term>. The function scope that supplies that binding is its <Term id="enclosing-scope">enclosing scope</Term>. Together, the function's code and those retained bindings form the closure.
+A name used by an inner function but not bound in its own code block is a <Term id="free-variable">free variable</Term>. The lexical scope that supplies the binding is an <Term id="enclosing-scope">enclosing scope</Term>. The function's code and access to those bindings provide the complete context needed when it runs.
 
-Python has closures because lexical scope should keep working when functions are passed around like other objects. Without that rule, returning a nested function would discard the context that gives its free names meaning. Closures let a small function carry configuration or private state without exposing either as a module global. You meet them in decorators, callback factories, event handlers, validators, and functions passed to APIs such as `sorted()`.
+Closures let lexical scope keep working when a function is passed around as a value. They suit callbacks that carry a small amount of configuration or a narrow function interface over state, without a module global. You encounter them in function factories, decorators, validators, event handlers, and key functions passed to `sorted()`.
 
-Not every nested function is a closure. If an inner function uses only its parameters, local names, and globals, it has no enclosing function binding to retain.
+Returning the inner function isn't a semantic requirement for a closure; it merely makes the closure's lifetime easy to observe. A nested function that refers to an enclosing function binding is still a closure when called before the outer call returns. Conversely, a nested function that uses only parameters, locals, and globals has `None` in `__closure__`.
 
-## How name capture works
+A closure fits one main operation and a small amount of plainly named state. If callers need several public operations, validation rules, a serializable representation, or inheritance, a class usually states the contract more directly. Choose from the interface and ownership model, not a blanket claim about speed or memory.
 
-Python resolves names lexically: the source-code nesting of functions determines which scope can provide a name. When the compiler sees an inner function refer to a name bound in an outer function, it arranges shared storage for that binding.
+## How it works
 
-Calling the outer function creates the binding for that particular call. Creating the inner function connects it to that binding. Returning the inner function does not copy the current object out of the binding. It preserves a route back to the binding itself. That distinction explains both useful stateful closures and the late-binding trap.
+Python resolves names from source-code nesting, not from whichever function called the current one. When the compiler finds inner code that refers to a name bound in an outer function, it classifies that name as free in the inner code and arranges shared storage. A same-named local elsewhere on the call stack doesn't affect that choice.
 
-The lifecycle is:
+Each execution of the outer function creates bindings for that call. Creating the inner function gives the function object a route to the bindings it needs; returning the function doesn't copy their current objects into a snapshot. A later call reads the objects those bindings refer to at that time, so rebinding changes what the closure subsequently sees.
 
-1. The outer function call creates its local bindings.
-2. The inner function is created and closes over the free bindings it uses.
-3. The outer call returns, but captured bindings stay reachable through the inner function.
-4. A later inner call reads or updates those same bindings.
+You can follow closure creation and use in this order:
 
-Ordinary name lookup is enough when a closure only reads a captured binding. Assignment needs an extra declaration because any name assigned in a function is local to that function unless declared otherwise. `nonlocal` tells Python that assignment targets an existing binding in the nearest enclosing function scope. It neither creates a new binding nor refers to a module global.
+1. Call the outer function and create local bindings for that invocation.
+2. Execute the inner function definition and connect the enclosing bindings it actually uses.
+3. Pass the inner function out of the outer call, or use it within that call.
+4. After the outer call ends, bindings still referenced by the closure remain alive.
+5. Call the closure and read or update those same bindings.
 
-## A counter that keeps state
+A closure doesn't automatically retain the outer function's entire local namespace. Only bindings that the inner code actually uses as free variables need to remain. One such binding can still refer to a large mutable object or object graph, so "only one captured name" says little about retained data size.
 
-Each call to `make_counter()` creates a new `count` binding. The returned `tick` function reads and rebinds that binding.
+### Reading, mutation, and rebinding
+
+Reading a free variable needs no declaration. Mutating the mutable object referenced by a free variable also needs no declaration because the binding itself doesn't change. `nonlocal` is needed when the inner function makes the name refer to another object.
+
+| Inner operation | What happens | Needs `nonlocal` |
+| --- | --- | --- |
+| `return count` | Reads an enclosing binding | No |
+| `items.append(value)` | Mutates the bound list | No |
+| `count += 1` | Reads and then rebinds the name | Yes |
+| `items = []` | Rebinds the name to a new list | Yes |
+
+`count += 1` is easy to misread. Integers can't be mutated in place, so the statement reads the old integer, computes a new one, and assigns it to `count`. Any assignment in the function body makes `count` local there by default; without `nonlocal count`, reading that not-yet-assigned local raises `UnboundLocalError`.
+
+### The target of `nonlocal`
+
+`nonlocal name` targets the nearest enclosing function scope where the name is already bound. It doesn't create an outer binding and can't target the module-global scope. If the compiler finds no suitable binding, it raises `SyntaxError` before the code runs.
+
+`global` and `nonlocal` solve different problems. `global` directs assignment to the module namespace. Mechanically replacing `nonlocal` with `global` in generated code turns state owned by one factory invocation into state shared across the module.
+
+Several functions created by the same outer invocation can share a binding; functions created by separate invocations usually get separate bindings. "Built by the same factory" therefore doesn't mean shared state. The relevant questions are which invocation created each function and which binding it uses.
+
+## Examples
+
+These four examples begin with read-only configuration, then add mutable state, shared operations, and loop-created callbacks. Every shown output comes from running the corresponding file with local `python3`.
+
+### Carrying read-only configuration
+
+The label factory configures a prefix once and returns a function that takes only an order number. It only reads `prefix`, so it doesn't need `nonlocal`.
 
 <Depth level="quick">
 
-```python run title="make_counter.py"
-def make_counter():
-    count = 0
+```python run title="label_factory.py"
+def make_labeler(prefix):
+    def label(order_id):
+        return f"{prefix}-{order_id:04d}"
 
-    def tick():
-        nonlocal count
-        count += 1
-        return count
-
-    return tick
+    return label
 
 
-tick = make_counter()
-print(tick(), tick(), tick())
-print(tick.__closure__[0].cell_contents)
+invoice_label = make_labeler("INV")
+return_label = make_labeler("RET")
 
-fresh_tick = make_counter()
-print(fresh_tick())
+print(invoice_label(7))
+print(return_label(7))
+print(invoice_label.__code__.co_freevars)
+print(invoice_label.__closure__[0].cell_contents)
 ```
 
 ```text
-1 2 3
-3
-1
+INV-0007
+RET-0007
+('prefix',)
+INV
 ```
 
 <TryToBreak items={['an empty list', 'a negative count']} />
 
 </Depth>
 
-The first line calls one closure three times, so the shared `count` binding advances from `0` to `3`. The second line inspects that binding through the function's `__closure__` tuple and sees the same `3`. Indexing `__closure__` directly is useful for learning and diagnostics, but application logic should not depend on a cell's position.
+The two `make_labeler()` calls create separate `prefix` bindings, so the label functions don't affect each other. `co_freevars` names the free variables, and cells at the matching positions in `__closure__` hold their bindings. Positional inspection is useful for diagnosis, not as an application interface.
 
-The last line comes from a second outer-function call. It starts at `1` because `fresh_tick` closes over a different `count` binding. The two functions share code behavior, not state.
+The string object happens to be immutable, but the closure hasn't copied it. The function still reaches `"INV"` through its own binding. If another closure later rebinds that same name, a reader sharing the binding sees the new object.
 
-This pattern gives state a narrow interface: callers can advance the counter but cannot assign `count` directly. That privacy is a convention produced by scope, not an access-control boundary. Code with a reference to the function can still inspect its closure, as the example does.
+### Keeping state with `nonlocal`
 
-## Closures as configured functions
+The counter must make `count` refer to a new integer, so `record()` declares `nonlocal count`. Each factory invocation produces an independent count.
 
-A closure does not need mutable state. It can retain configuration that every later call should use.
+```python run title="attempt_counter.py"
+def make_attempt_counter(start=0):
+    count = start
 
-```python run title="currency_converter.py"
-def make_converter(rate):
-    def convert(amount):
-        return amount * rate
+    def record():
+        nonlocal count
+        count += 1
+        return count
 
-    return convert
+    return record
 
 
-eur_to_usd = make_converter(1.17)
-gbp_to_usd = make_converter(1.34)
+email_attempt = make_attempt_counter()
+sms_attempt = make_attempt_counter(10)
 
-print(f"{eur_to_usd(20):.2f}")
-print(f"{gbp_to_usd(20):.2f}")
+print(f"email: {email_attempt()}, {email_attempt()}")
+print(f"sms: {sms_attempt()}")
+print(f"email: {email_attempt()}")
 ```
 
 ```text
-23.40
-26.80
+email: 1, 2
+sms: 11
+email: 3
 ```
 
-Here `rate` is read but never rebound, so `nonlocal` is unnecessary. Each converter still owns a separate binding because each comes from a separate call to `make_converter()`. The returned functions have the same call shape but different configuration.
+Interleaving the calls shows that the counters don't leak state. Assigning `email_attempt` to another name wouldn't create a new counter because both names would still refer to one function object. Call the factory again when you need independent state.
 
-This is useful when an API expects a function and you want to prepare that function once. A small callable class may be clearer when the state needs several operations, validation, or an explicit public representation. Use a closure when the behavior is naturally one operation and the captured context stays easy to name.
+This interface lets a caller advance the count but not directly set `count` to an arbitrary value. That is encapsulation by scope, not a security boundary. Code that inspects the function object can still see the cell contents.
 
-## Late binding: the trap
+### Sharing one cell between operations
 
-<Term id="late-binding">Late binding</Term> means a free name is looked up when the closure runs, not when the function object is created. That rule matters when several closures share a binding whose value changes before any closure is called.
+One `make_quota()` call returns two functions. `reserve()` rebinds `remaining`, while `available()` reads it; both functions connect to the same cell.
 
-> [!PITFALL]
-> A function created in a loop does not automatically save that iteration's loop-variable value. All the functions can close over the same loop binding.
+```python run title="shared_quota.py"
+def make_quota(limit):
+    remaining = limit
 
-The classic example returns three readers but calls them only after the loop has finished.
+    def reserve(units):
+        nonlocal remaining
+        if units <= 0:
+            raise ValueError("units must be positive")
+        if units > remaining:
+            return False
+        remaining -= units
+        return True
 
-```python run title="late_binding.py"
-def make_readers():
-    readers = []
+    def available():
+        return remaining
 
-    for index in range(3):
-        # Every lambda closes over the same loop binding.
-        readers.append(lambda: index)
-
-    return readers
-
-
-readers = make_readers()
-values = [read() for read in readers]
-print(values)
-```
-
-```text
-[2, 2, 2]
-```
-
-The loop assigns `0`, `1`, and `2` to one local name named `index`. The three lambdas share its cell. By the time they run, the loop has left `index` bound to `2`. They therefore perform three lookups of the same current value.
-
-**Fix:** bind the current value while each function is created. A default argument is evaluated at function creation time, so it gives each lambda its own parameter value.
-
-```python run title="bound_callbacks.py"
-def make_readers():
-    readers = []
-
-    for index in range(3):
-        # The default freezes this iteration's value.
-        readers.append(lambda index=index: index)
-
-    return readers
+    return reserve, available
 
 
-readers = make_readers()
-values = [read() for read in readers]
-print(values)
+reserve, available = make_quota(5)
+print(reserve(2), available())
+print(reserve(4), available())
+print(reserve(3), available())
 ```
 
 ```text
-[0, 1, 2]
+True 3
+False 3
+True 0
 ```
 
-This `index=index` spelling uses two different roles for the same name. The right-hand `index` is read from the loop scope when the lambda is created. The left-hand `index` is a parameter local to that lambda when it is later called.
+The failed second reservation leaves `remaining` unchanged, and `available()` observes that shared state. If more operations accumulate, a positional group of anonymous functions becomes hard to read. A class with `reserve()` and `available()` methods is usually clearer at that point.
 
-`functools.partial()` is another explicit fix when you already have a named function and want to bind some arguments. It avoids a wrapper lambda, but it creates a partial object rather than a closure over the bound arguments.
+A shared cell doesn't provide synchronization. If threads or async tasks can interleave the check and deduction, `if units > remaining` followed by `remaining -= units` isn't one business-atomic operation. Add synchronization suited to the execution model or give the state one owner.
 
-### Rebinding without `nonlocal`
+### Comparing late binding with creation-time binding
+
+Both lists in the loop create three lambdas. The first group refers directly to the loop variable; the second stores the current object as a default argument.
+
+```python run title="loop_handlers.py"
+def make_handlers(queue_names):
+    late_handlers = []
+    bound_handlers = []
+
+    for queue_name in queue_names:
+        # These functions share the loop variable's cell.
+        late_handlers.append(lambda: queue_name)
+        # The default saves the current object when the function is created.
+        bound_handlers.append(lambda queue_name=queue_name: queue_name)
+
+    return late_handlers, bound_handlers
+
+
+late, bound = make_handlers(["fast", "bulk", "slow"])
+
+print([handler() for handler in late])
+print([handler() for handler in bound])
+print(late[0].__closure__[0] is late[1].__closure__[0])
+print(bound[0].__closure__)
+```
+
+```text
+['slow', 'slow', 'slow']
+['fast', 'bulk', 'slow']
+True
+None
+```
+
+The first group doesn't read `queue_name` until after the loop, when the shared cell points to `"slow"`. This is the <Term id="late-binding">late-binding</Term> trap. A list comprehension has its own scope, but closures created within one comprehension and called later still share that comprehension variable.
+
+On the second line, the left `queue_name` is the lambda's local parameter and the right name is evaluated when the lambda definition runs. The saved object lives in the function defaults rather than a closure cell, so `__closure__` is `None`. When callers shouldn't be able to override that parameter, a one-call helper factory is often clearer.
+
+## Pitfalls
+
+### Describing a closure as a value snapshot
 
 > [!PITFALL]
-> Reading an enclosing name works automatically, but assigning to that name makes it local throughout the inner function unless you declare it `nonlocal`.
+> "A closure saves the variable's value at that moment" predicts the wrong result for rebinding and loop-created callbacks. A closure normally retains access to a binding rather than freezing an object when the function is created.
 
-An inner statement such as `count += 1` both reads and assigns `count`. Without `nonlocal count`, Python treats `count` as a local name and the read happens before that local name has a value. The call then raises `UnboundLocalError`.
+**Fix:** map each free name to its binding and mark when function creation and invocation occur. If you need a snapshot, express that decision with a default argument, a helper factory, or an explicit copy, and state whether the copy is shallow or deep.
 
-**Fix:** put `nonlocal count` near the top of the inner function when shared enclosing state is intentional. Use `global` only when the binding genuinely belongs to the module; it does not mean “outside this function.” If the state change is hard to spot, return a new value or use an object with an explicit method instead.
-
-### Sharing one closure by accident
+### Omitting or misusing `nonlocal`
 
 > [!PITFALL]
-> Registering the same stateful closure in several places makes every caller operate on the same captured binding.
+> Assignment to a name inside the inner function makes that name local throughout the function's code block by default. Even an assignment in a branch that never runs affects compile-time classification.
 
-Assigning `tick` to another name does not clone its cells. Appending the same `tick` object to two handler lists also does not give each list an independent counter.
+**Fix:** put `nonlocal` near the start of the inner function when it truly rebinds enclosing function state. Don't add it mechanically for reads or in-place mutation, and use `global` only for module-owned state. For `UnboundLocalError`, inspect every assignment in the function, not just the reported line.
 
-**Fix:** call the factory once per independent consumer, and test the consumers in an interleaved order. If shared state is intended, name the factory or variable so that ownership is visible. For example, `shared_request_counter` communicates more than `callback`.
-
-### Capturing an object with a longer lifetime
+### Placing the factory call at the wrong lifetime
 
 > [!PITFALL]
-> A live closure keeps its captured objects reachable, which can retain a service, cache, or request object longer than its useful lifetime.
+> Calling a stateful factory once outside a loop and registering the same result for several consumers makes them share cells unexpectedly. Calling the factory again for every event has the opposite bug: persistent state keeps resetting.
 
-The closure need not mention the whole outer frame. Only bindings that its code actually uses become free variables, but one captured binding may itself refer to a large object graph.
+**Fix:** decide whether state belongs to the application, queue, request, or individual callback, then place the factory call at that lifetime boundary. Interleave calls to two instances that should be independent and repeatedly call one instance that should preserve state.
 
-**Fix:** capture the small immutable value the function needs, not a broad context object used only to obtain that value. Remove long-lived callbacks when their owner is done with them. Use a context manager when the lifetime of a file, socket, or transaction must be explicit.
-
-### Depending on closure tuple positions
+### Hiding late binding inside a loop
 
 > [!PITFALL]
-> `function.__closure__[0]` is not a meaningful name. Adding or removing a free variable can change which cell occupies that position.
+> Late binding isn't limited to `lambda`. A nested `def`, callback registration, task completion handler, or comprehension can make several functions share the final iteration binding.
 
-The counter example can use index zero only because `count` is its sole free variable. **Fix:** keep closure inspection in diagnostic code and pair `function.__code__.co_freevars` with `function.__closure__` by position. Production behavior should use the function's public call interface instead of mutating cell contents.
+**Fix:** call all generated functions after the loop and assert each result. A default argument works when you only need to fix one value. When each callback also needs independent mutable state, call a named factory once per iteration.
+
+### Retaining an object for too long
+
+> [!PITFALL]
+> A long-lived registered closure keeps the bindings it uses reachable. If a binding points to a request context, cache, service container, or large dataset, those objects may outlive the actual work.
+
+**Fix:** extract the small value the callback needs instead of capturing a broad context for one field. Unregister the callback when its owner finishes. Files, sockets, and transactions need explicit context management rather than waiting for a closure to be collected.
+
+### Depending on `__closure__` positions
+
+> [!PITFALL]
+> `function.__closure__[0]` has no stable business meaning. Adding another free variable can change the name-to-cell positions, and a function with no free variables has `None` instead of a tuple.
+
+**Fix:** for diagnosis, pair `function.__code__.co_freevars` with `function.__closure__` by position or use `inspect.getclosurevars()` to classify bindings. Production code should read and change state through the public function interface, not treat cell layout as a protocol.
 
 ## In the AI era
 
 **What generated code gets wrong here**
 
-Generated callback factories often hide late binding inside a lambda or nested `def`, especially when the function is created in a loop. Models also add `nonlocal` mechanically, even when the code only reads a name, or replace it with `global` and silently change state ownership. Another common failure is to create one factory result outside a loop when each consumer needs independent state.
+Models often generate `lambda: client.fetch(item)` or a nested `def` inside a loop, then enqueue the callbacks for later; tests that invoke them immediately miss that all callbacks eventually use the final `item`. A model may also move one counter factory outside a loop to "avoid allocations," making tenants share retry counts, or use `global` to fix `UnboundLocalError`, widening request state into process state. Another failure is capturing a whole request or client object without producing an unsubscribe or cleanup path.
 
 **Ask your AI to check**
 
-- Identify every free variable in each nested function and state when its binding is read.
-- Trace whether callbacks created in loops share a cell or bind an iteration value independently.
-- Verify that every `nonlocal` assignment targets the intended enclosing function call rather than module state.
+- List every free variable in each nested function and identify the exact outer invocation that owns its binding.
+- Give a create-loop-finish-call timeline for loop-created callbacks and state which functions share a cell.
+- Trace each `nonlocal`, `global`, and in-place mutation, including state ownership, lifetime, and concurrent access.
 
 **Review checklist**
 
-- Call loop-created functions after the loop and compare their results with the intended per-iteration values.
-- Interleave calls to supposedly independent closures and check that their state does not leak across consumers.
-- Inspect the lifetime and ownership of every mutable object retained by a long-lived callback.
+- Invoke callbacks after the loop and verify per-iteration binding with at least two distinct inputs.
+- Interleave two factory results that should be independent, then repeatedly call one result that should retain state.
+- Inspect objects captured by long-lived callbacks, their unregister path, and whether shared state needs synchronization.
 
 **Prompt vocabulary**
 
-Use the exact terms `closure`, `free variable`, `enclosing scope`, `late binding`, `cell`, `nonlocal rebinding`, and `bind by default argument`. Ask for a binding-and-call timeline when timing matters; “explain the lambda” is too vague to expose shared cells.
+Use the exact terms `closure`, `free variable`, `enclosing scope`, `late binding`, `cell`, `rebinding`, `nonlocal declaration`, and `default-argument binding`. Ask for a binding ownership table and a creation/invocation timeline; "explain this lambda" is too vague to expose shared state.
 
 <Depth level="deep">
 
-## How CPython stores cells
+## Bindings, function objects, and cells
 
-CPython implements a captured binding with a <Term id="cell">cell object</Term>. The cell is a small container that holds a reference to the object currently bound to the captured name. The outer and inner code use the cell as shared storage rather than keeping unrelated local slots. This is why rebinding through `nonlocal` is visible on the next closure call. It also explains why saying that a closure “copies a value” is misleading.
+At the language level, the important guarantees are lexical name resolution and continued access to enclosing bindings. CPython implements that shared storage with a <Term id="cell">cell object</Term>. Other Python implementations must preserve observable semantics, but they needn't use exactly the same bytecode or object layout.
 
-### Cell variables and free variables
+### Compile-time name classification
 
-A name can have different roles in the two code objects produced for nested functions. In `make_counter`, `count` is local to the outer function and referenced by the inner function. The outer code therefore treats it as a cell variable. For `tick`, the same name is a free variable supplied by an enclosing scope.
+Before a function runs, the compiler classifies names as local, free, cell, or global. An outer function local that inner code references appears in the outer code object's `co_cellvars`. For the inner code object, the same name appears in `co_freevars`.
 
-The outer code object's `co_cellvars` identifies local names that need cells. The inner code object's `co_freevars` identifies names whose cells must come from outside that code object. These attributes describe compile-time name classification. They do not contain the counter's changing runtime value.
+Classification applies to the whole code block rather than changing along execution paths. Any assignment inside an inner function makes the target local by default unless a `global` or `nonlocal` declaration changes the classification. Moving the assignment into `if False:` therefore doesn't make an earlier read fall back to the outer binding.
 
-### `__closure__` and cell identity
+| Observation point | Attribute | What it represents |
+| --- | --- | --- |
+| Outer code object | `co_cellvars` | Outer locals also referenced by inner code |
+| Inner code object | `co_freevars` | Names that enclosing scopes must supply |
+| Inner function object | `__closure__` | Cells corresponding by position to `co_freevars` |
+| Diagnostic helper | `inspect.getclosurevars()` | Resolved nonlocals, globals, builtins, and unbound names |
 
-A function object's `__closure__` attribute is either `None` or a tuple of cells. Those cells correspond by position to the names in `function.__code__.co_freevars`. For `tick`, `co_freevars` contains `count`, and the corresponding cell's `cell_contents` changes after every call.
+A code object describes compiled behavior and may be shared by function objects from several factory calls. `__closure__` belongs to a function object and connects it to cells created by a particular execution. Don't mistake a shared code object for shared runtime state.
 
-Two functions created during the same outer call can share a cell when they refer to the same outer binding. Two functions created by separate outer calls receive different cells, even when their code objects are reused. That identity distinction is the source of the separate counters seen earlier.
+### Cell identity and sharing
 
-Defaults solve the loop trap differently. In `lambda index=index: index`, the bound value is stored as a function default and `index` is a local parameter, not a free variable. The resulting lambda does not need a closure cell for that parameter.
+A cell is a small container for the current object reference. When `nonlocal` rebinds a captured name, the reference inside the cell changes, and every other closure sharing that cell sees the new object on its next read. When code calls `append()` on a captured list, the cell still refers to the same list, but the list's contents change.
 
-### What `nonlocal` changes
+One outer invocation can create several functions that share a cell, which is why `reserve()` and `available()` see one quota. Calling the factory again creates a new outer binding and a new cell, isolating the new quota from the old one. Comparing cell identity can test this relationship, but it shouldn't drive application behavior.
 
-The compiler determines a function's local, free, cell, and global names before the function runs. An assignment normally classifies its target as local to the current function. `nonlocal count` changes that classification so reads and writes use a cell from the nearest enclosing function scope where `count` is already bound.
+`__closure__` is either `None` or a tuple of cells. Reading `cell_contents` can help locate leaked state. Directly changing cell contents couples application code to internals and bypasses validation and invariants that the factory's interface was meant to enforce.
 
-The declaration must refer to an existing enclosing function binding. It cannot target the module scope, and it cannot create a new outer binding. If no matching binding exists, Python raises `SyntaxError` while compiling the code. This compile-time classification is why an unreachable assignment can still make an earlier read local and trigger `UnboundLocalError` when that path executes.
+### Default arguments aren't captured cells
 
-### What `dis` shows
+A default expression is evaluated when its `def` or lambda expression executes, and the result is stored in the function's defaults. In `lambda item=item: item`, the left `item` is a local parameter, so the body doesn't need to read that name from an outer scope. The idiom solves a timing problem; it doesn't alter Python's closure rules.
 
-The `dis` module exposes the bytecode instructions generated by CPython. Exact instruction sequences are implementation and version details, so use them to explain a specific runtime rather than as a portable Python contract.
+A default also stores an object reference rather than automatically copying a mutable object. If a loop variable points to a dictionary that is later mutated, each default may hold the dictionary selected in its iteration while calls still observe that dictionary's newer contents. Make an explicit copy before binding when the contract requires a content snapshot, and choose the required copy depth.
 
-In CPython 3.14, the outer counter code uses `MAKE_CELL` for captured storage and `LOAD_CLOSURE` while building the inner function's closure tuple. The inner code begins with `COPY_FREE_VARS` and accesses `count` through dereference instructions. `LOAD_DEREF` reads the object referenced by a cell. `STORE_DEREF` changes the object referenced by that cell after `count += 1` computes the new integer. The ordinary local-variable instructions use fast-local slots instead.
+`functools.partial()` can bind arguments to an existing callable in advance. It returns a partial object, not a Python closure that stores those arguments as free variables. Choose among a default argument, helper factory, and `partial()` according to the desired signature and readability instead of describing them as one mechanism.
 
-Seeing `LOAD_DEREF` rather than a local or global load confirms that a name is resolved through closure storage in that CPython build. Disassembly is most useful when generated code has several nested scopes and the source no longer makes ownership obvious. Start with `co_freevars` and the source-level scope rules; use bytecode as confirmation, not as the application interface.
+### Multiple nesting levels and class scope
+
+With several nested functions, `nonlocal` selects the nearest enclosing function binding with the same name. It can't skip that binding to name a farther one, and there is no syntax for selecting a nesting level. If several levels carry same-named state, renaming is often clearer than relying on implicit depth.
+
+An ordinary class namespace isn't an enclosing function scope for method bodies. If a class body assigns `rate = 0.2`, a method's bare `rate` doesn't capture it like a nested function would. Access the class attribute through `self.rate`, `type(self).rate`, or the class name. Calling both class and function bodies "outer scopes" hides this difference.
+
+A function defined inside a method can capture that method's local names, including `self`. As a result, a returned callback may keep the whole instance reachable. When it only needs one immutable instance field, first extract that field into a meaningful local name and then decide whether to capture it.
+
+### Diagnosing shared state
+
+When closure state looks wrong, start with source and call lifetimes, then inspect runtime objects. These checks usually locate the problem:
+
+1. Use `co_freevars` to list the free names the inner function actually reads.
+2. Pair those names by position with cells in `__closure__`.
+3. Check whether two functions reference the same cell, not only whether their `cell_contents` compare equal.
+4. Use `inspect.getclosurevars()` to separate nonlocal, global, builtin, and unbound names.
+
+Equal contents don't prove shared state. Two independent counters can both start at integer `0` while owning different cells; a shared cell can point to different objects at different times. Ownership depends on cell identity and the factory invocation boundary.
+
+### Lifetime and execution model
+
+A closure keeps a captured binding alive at least until the last function referring to it becomes unreachable, but exact collection timing still depends on the Python implementation and reference graph. Don't make correctness depend on finalization timing. Resources that must close promptly need explicit closing, a context manager, or a defined unregister operation.
+
+Closure state has no special concurrency guarantee. Threads, tasks, signal handlers, or reentrant callbacks that reach the same closure can still interleave a check followed by an update. The remedies are the same as for other shared mutable state: narrow ownership, serialize access, or use synchronization designed for the execution model.
+
+Standard `pickle` locates ordinary functions by a qualified name in a module, and nested local functions usually can't be imported that way. When work must go to a process pool or cross a process boundary, don't assume a closure is naturally serializable. A top-level function with explicit data arguments is usually more reliable.
+
+### Metadata and wrapper behavior
+
+A closure returned by a decorator is a new function object. Without `functools.wraps()`, its `__name__`, documentation, annotations, and `__wrapped__` link describe the wrapper rather than the wrapped function. That can confuse tracebacks, API documentation, and tools that inspect signatures.
+
+`wraps()` copies selected metadata and exposes the wrapped callable for introspection; it doesn't change which values the wrapper closes over. It also doesn't isolate state, add synchronization, or make a local wrapper serializable. Those remain separate design decisions.
+
+Type annotations can describe the returned callable's signature, but ordinary Python execution doesn't enforce them. For a decorator that preserves an arbitrary callable signature, static typing may need `ParamSpec`; the runtime closure mechanics are unchanged.
+
+### Testing the lifetime contract
+
+Most closure tests should use the public callable rather than `__closure__`. Exercise a sequence of calls and assert the returned values or visible side effects. That keeps the test valid if the implementation later changes from a closure to a class.
+
+A late-binding test must defer invocation until after the loop or registration phase. An immediate call inside the loop observes the current value and can make broken code look correct. Use distinct iteration values so a duplicated final value can't hide.
+
+State-isolation tests need at least two factory results. Interleave their calls, then verify that each sequence advances independently. For a deliberately shared pair of operations, test both views after every mutation.
+
+### Closure or class
+
+A closure is convenient when the interface has one main call, little state, and no need for public inspection. It also lets a configured function go directly to an API that expects a callable. Well-named factories and returned functions should reveal who owns the state and how many times the factory must be called.
+
+A class fits multiple operations, explicit attributes, protocol implementations, serialization, and state-transition tests. Packing five or six closures into a dictionary or positional tuple usually means you're manually imitating an object interface. Switching to a class then makes the structure match the public contract.
 
 </Depth>
 
@@ -277,8 +394,9 @@ Seeing `LOAD_DEREF` rather than a local or global load confirms that a name is r
 
 ## Further reading
 
-- [Python language reference: naming and binding](https://docs.python.org/3/reference/executionmodel.html#naming-and-binding)
-- [Python language reference: the `nonlocal` statement](https://docs.python.org/3/reference/simple_stmts.html#the-nonlocal-statement)
-- [Python data model: function `__closure__`](https://docs.python.org/3/reference/datamodel.html#index-33)
-- [Python `dis` module](https://docs.python.org/3/library/dis.html)
+- [Python language reference: naming and binding](https://docs.python.org/3.14/reference/executionmodel.html#naming-and-binding)
+- [Python language reference: the `nonlocal` statement](https://docs.python.org/3.14/reference/simple_stmts.html#the-nonlocal-statement)
+- [Python data model: user-defined functions](https://docs.python.org/3.14/reference/datamodel.html#user-defined-functions)
+- [Python `inspect.getclosurevars()`](https://docs.python.org/3.14/library/inspect.html#inspect.getclosurevars)
+- [Python programming FAQ: lambdas in loops](https://docs.python.org/3.14/faq/programming.html#why-do-lambdas-defined-in-a-loop-with-different-values-all-return-the-same-result)
 - [PEP 3104: Access to Names in Outer Scopes](https://peps.python.org/pep-3104/)

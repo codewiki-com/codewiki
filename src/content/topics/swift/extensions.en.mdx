@@ -1,0 +1,402 @@
+---
+title: Swift Extensions
+description: Add computed properties, methods, and conformances to existing Swift types without confusing dispatch, storage, or module ownership.
+track: swift
+section: optionals-protocols
+difficulty: intermediate
+tags: [extensions, protocols, conditional-conformance]
+prerequisites: [swift/fundamentals, swift/structs-classes, swift/protocols]
+related: [swift/generics, swift/protocols-generics, swift/property-wrappers, swift/codable]
+terms: [swift-extension, conditional-conformance, retroactive-conformance, static-dispatch]
+verified: { version: 'Swift 6.3.3', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: swift/extensions
+sources:
+  - { title: 'The Swift Programming Language - Extensions', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/extensions/' }
+  - { title: 'The Swift Programming Language - Protocols', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/protocols/' }
+  - { title: 'The Swift Programming Language - Generics', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/generics/' }
+  - { title: 'Swift Evolution SE-0143 - Conditional Conformances', url: 'https://github.com/swiftlang/swift-evolution/blob/main/proposals/0143-conditional-conformances.md' }
+  - { title: 'Swift Evolution SE-0364 - Warning for Retroactive Conformances', url: 'https://github.com/swiftlang/swift-evolution/blob/main/proposals/0364-retroactive-conformance-warning.md' }
+  - { title: 'Swift 6.3 Released', url: 'https://www.swift.org/blog/swift-6.3-released/' }
+origin: old/src/content/docs/swift/extensions.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="swift-extension">Swift extension</Term> adds computed properties, methods, initializers, subscripts, nested types, or conformances outside the original type declaration.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Extensions can't add stored properties or override existing members; a protocol-extension method that isn't a requirement also won't dynamically select a concrete type's same-named implementation.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Declare polymorphic members as protocol requirements, constrain extensions precisely with `where`, and prefer owning either the extended type or the adopted protocol.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A Swift extension adds functionality outside a type's original declaration. It can extend a class, structure, enumeration, or protocol, including a type from the standard library or a dependency. At call sites, an extension declaration's members act like members of that type rather than utility functions on a separate wrapper.
+
+Extensions solve two distinct problems. For a type you maintain, they split implementation by responsibility, such as keeping protocol conformance separate from core state. For a type whose source you can't change, they can add operations suited to your module or make the type conform to a protocol your module defines.
+
+An extension can add these declarations:
+
+- Computed instance and type properties.
+- Instance and type methods, including `mutating` methods on value types.
+- Initializers, subscripts, and nested types.
+- Protocol conformances and implementations that satisfy their requirements.
+
+An extension doesn't reopen the type's storage layout. It can't add stored properties or property observers, and it can't add a deinitializer, override existing behavior, or add a superclass to a class. A class extension can add only convenience initializers, not designated initializers.
+
+When behavior needs new state, invariants, or a separate identity, a wrapper type is usually a better fit. Use an extension to compute from the receiver's existing state or to organize existing capabilities behind a clearer interface. It isn't a back door around the type's design boundaries.
+
+## How it works
+
+You declare an extension with `extension TypeName`. During type checking, the compiler includes visible extension members in member lookup, even though the type and extension may live in different files or modules. A caller must import the module that declares the extension before those members are visible in that source file.
+
+Extension members follow ordinary access control. An extension in the same file as the original type can access that type's `private` members; moving it to another file removes that access. An access modifier on the extension supplies a default for members without their own modifier, but it can't exceed the original declaration's visibility.
+
+A constrained extension ties member availability to type requirements. `extension Array where Element == String` adds members only to string arrays, while `Element: Hashable` accepts any element type that satisfies that protocol. A <Term id="conditional-conformance">conditional conformance</Term> or conditional member doesn't probe its condition at runtime; the compiler proves the constraint at each call site.
+
+Protocol extensions have two member categories with different dispatch rules. If a member is a protocol requirement, an extension can provide its default implementation, and a concrete implementation can become the protocol witness used by calls. If a member exists only in the extension, a call through a protocol-typed value selects the extension implementation from the static type; a same-named method on the concrete type isn't an override.
+
+A protocol conformance is a process-wide relationship, not a local alias. An extension that makes another module's type conform to another module's protocol creates a <Term id="retroactive-conformance">retroactive conformance</Term>. Swift 6 warns because either upstream module could later add the same conformance; `@retroactive` only acknowledges that risk and doesn't remove it.
+
+## Examples
+
+These three independent programs demonstrate ordinary members, conditional capabilities, and protocol-extension dispatch in sequence. Each uses only the Swift standard library and can be saved and run as a standalone file.
+
+### Computing from and mutating existing state
+
+`Temperature` keeps Celsius as its only storage. The extension computes Fahrenheit from that state and updates it through a `mutating` method, while the collection extension uses the receiver's existing `indices` to provide a safe subscript.
+
+<Depth level="quick">
+
+```swift
+struct Temperature {
+    var celsius: Double
+}
+
+extension Temperature {
+    var fahrenheit: Double {
+        celsius * 9 / 5 + 32
+    }
+
+    mutating func clamp(to range: ClosedRange<Double>) {
+        celsius = min(max(celsius, range.lowerBound), range.upperBound)
+    }
+}
+
+extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+var reading = Temperature(celsius: 150)
+reading.clamp(to: -40...40)
+print(reading.celsius, reading.fahrenheit)
+
+let sensors = ["north", "south", "west"]
+print(sensors[safe: 1] ?? "missing")
+print(sensors[safe: 9] ?? "missing")
+```
+
+```text
+40.0 104.0
+south
+missing
+```
+
+</Depth>
+
+The computed property adds no field to each instance; `fahrenheit` is evaluated from `celsius` on every access. `clamp` must be `mutating` because it changes a structure's `self`. The generic subscript uses the collection's own `Index`, so it isn't limited to arrays indexed by `Int`.
+
+A safe subscript isn't a replacement for every out-of-bounds error. In some APIs, an invalid index proves the caller broke an invariant, and returning `nil` would only hide the defect. Return an optional this way only when “the position may not exist” is part of the contract.
+
+### Expressing capabilities with constrained extensions
+
+Every `Batch` can report whether it's empty. It gains `contains` and `Equatable` only when its elements support equality, so the call site needs no runtime cast.
+
+```swift
+struct Batch<Element> {
+    let values: [Element]
+}
+
+extension Batch {
+    enum State {
+        case empty
+        case ready
+    }
+
+    var state: State {
+        values.isEmpty ? .empty : .ready
+    }
+}
+
+extension Batch where Element: Equatable {
+    func contains(_ candidate: Element) -> Bool {
+        values.contains(candidate)
+    }
+}
+
+extension Batch: Equatable where Element: Equatable {}
+
+let first = Batch(values: ["A-1", "B-2"])
+let second = Batch(values: ["A-1", "B-2"])
+print(first.contains("B-2"))
+print(first == second)
+
+switch first.state {
+case .empty: print("empty")
+case .ready: print("ready")
+}
+```
+
+```text
+true
+true
+ready
+```
+
+Empty-state reporting doesn't depend on an `Element` capability, so it belongs in the unconstrained extension. `contains` needs equality, and the constraint appears only on the extension that supplies it. The `Equatable` conformance has the same condition, so `Batch<NonEquatable>` remains usable but can't be compared.
+
+The nested `State` name belongs to the `Batch` namespace, but it doesn't capture an outer generic argument. If a nested type must store an `Element`, express that through its own storage or generic declaration instead of assuming an outer instance exists.
+
+### Separating requirements from extension members
+
+`render()` is a protocol requirement, while `debugLabel()` is added only by the extension. After `Audit` declares same-named implementations for both, calls through a protocol type behave differently.
+
+```swift
+protocol Reportable {
+    var title: String { get }
+    func render() -> String
+}
+
+extension Reportable {
+    func render() -> String {
+        "Default: \(title)"
+    }
+
+    func debugLabel() -> String {
+        "[report] \(title)"
+    }
+}
+
+struct Audit: Reportable {
+    let title: String
+
+    func render() -> String {
+        "Audit: \(title)"
+    }
+
+    func debugLabel() -> String {
+        "[audit] \(title)"
+    }
+}
+
+let concrete = Audit(title: "Access")
+let erased: any Reportable = concrete
+print(erased.render())
+print(concrete.debugLabel())
+print(erased.debugLabel())
+```
+
+```text
+Audit: Access
+[audit] Access
+[report] Access
+```
+
+`erased.render()` uses `Audit`'s implementation because `render` is a requirement and the conformance records its witness. `concrete.debugLabel()` finds `Audit`'s member from the concrete static type. The static type for `erased.debugLabel()` is only `any Reportable`, so it selects the protocol-extension member.
+
+If callers need every conforming type to customize `debugLabel()`, declare it in the protocol and keep the default implementation in the extension. Merely writing a same-named method on the concrete type doesn't turn an extension member into a requirement.
+
+### Adding an initializer and nested type
+
+An extension initializer must still complete all of the original type's initialization rules. This one calls the structure's existing memberwise initializer, while the nested enum only describes a shape computed from existing storage.
+
+```swift
+struct Rectangle {
+    let width: Int
+    let height: Int
+}
+
+extension Rectangle {
+    enum Shape {
+        case square
+        case oblong
+    }
+
+    init(square side: Int) {
+        self.init(width: side, height: side)
+    }
+
+    var shape: Shape {
+        width == height ? .square : .oblong
+    }
+}
+
+extension Rectangle: CustomStringConvertible {
+    var description: String {
+        "\(width)x\(height)"
+    }
+}
+
+let tile = Rectangle(square: 4)
+let banner = Rectangle(width: 8, height: 3)
+print(tile)
+print(banner)
+
+switch tile.shape {
+case .square: print("square")
+case .oblong: print("oblong")
+}
+```
+
+```text
+4x4
+8x3
+square
+```
+
+Putting the custom initializer in an extension preserves the structure's existing memberwise initializer for use here and at call sites. Moving that initializer into the original structure declaration changes the compiler's memberwise-initializer synthesis rules, so this isn't merely a formatting decision.
+
+Keeping `CustomStringConvertible` conformance in a separate extension makes the boundary between core storage and the formatting contract visible. The conformance remains part of the type's identity; placing its declaration in another source block doesn't make it an optional feature.
+
+## Pitfalls
+
+### Disguising storage as a computed property
+
+> [!PITFALL]
+> Generated code sometimes puts an initialized property in an extension or uses a global dictionary keyed by object identity as an “attached field.” The first doesn't compile; the second creates lifetime, synchronization, and identity-reuse problems.
+
+**Fix:** Put state in the original type when it belongs to that type's invariant. If the original type can't change, create a wrapper that owns the state. Consider a platform-specific associated-storage mechanism only when interoperability already defines ownership and cleanup precisely.
+
+### Treating a same-named method as an override
+
+> [!PITFALL]
+> A new method in a class extension can't be overridden by a subclass, and an extra protocol-extension member doesn't gain dynamic dispatch because a concrete type declares the same name. The result can change with the variable's static type.
+
+**Fix:** Put an override point in the original class declaration when a class hierarchy needs one. For protocol polymorphism, declare the member as a requirement and provide its default in the extension; test both concrete and `any Protocol` call paths.
+
+### Applying constraints too broadly
+
+> [!PITFALL]
+> Adding `Element: Equatable` to an entire generic type just to support one equality-based method also blocks unrelated features for every other element type.
+
+**Fix:** Put each constraint on the narrowest member or extension that needs it. Keep unconditional capabilities in the base declaration, and separate capabilities that depend on hashing, ordering, or concurrency safety into their own constrained extensions.
+
+### Polluting a shared namespace
+
+> [!PITFALL]
+> Broadly named members on common types such as `String` or `Array` can collide with another module or a future standard-library release. A call that was unambiguous can become ambiguous when the import set changes.
+
+**Fix:** Public libraries should prefer extending types or protocols they own. When an external type truly needs an extension, choose domain-specific names and the narrowest access level; a namespaced wrapper works well for a family of application-specific operations.
+
+### Declaring retroactive conformances casually
+
+> [!PITFALL]
+> When the current module owns neither the type nor the protocol, adding a conformance occupies a globally unique type-protocol pair. An upstream conformance added later can make different modules assume incompatible semantics for the same operation.
+
+**Fix:** Prefer a wrapper type or a narrow protocol owned by the current module. If a retroactive conformance is unavoidable, use `@retroactive` to acknowledge responsibility, document its semantics and migration plan, and check for duplicate conformances on dependency upgrades.
+
+### Assuming a moved extension has identical semantics
+
+> [!PITFALL]
+> Moving an extension to another file can remove access to the original type's `private` members and can break synthesized conformances that depend on same-file rules. Source placement affects visibility and what the compiler can generate.
+
+**Fix:** Audit private access and synthesized conformances before moving an extension. Keep implementation-aware extensions in the same file; when separation is necessary, write the implementation explicitly or widen access cautiously and only for real module-level callers.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often import “extension” rules from another language: they add stored properties in an extension, write `override` for a class-extension method, or claim a concrete same-named method always replaces a protocol-extension member. They also pile constraints onto a whole type, add generic names to standard-library types, or silence a conformance warning with `@retroactive` without analyzing the conflict.
+
+**Ask your AI to check**
+
+- List the state and constraints each extension member needs; identify declarations that incorrectly require new storage and constraints that can be narrowed.
+- For every protocol-extension method, state whether it's a requirement and derive which implementation runs through a concrete value, a generic parameter, and an `any Protocol` value.
+- Identify the module that owns the type and the protocol; if the current module owns neither, explain the retroactive-conformance conflict and migration path.
+
+**Review checklist**
+
+- Compile every extension and test empty collections, boundary indexes, and type combinations that don't satisfy conditional constraints.
+- Search public members and conformances on external types; check naming collisions, access levels, and upstream evolution risk.
+- Exercise both concrete and protocol-typed values for polymorphic behavior, confirming that static dispatch doesn't change the result.
+
+**Prompt vocabulary**
+
+Use the exact terms `Swift extension`, `computed property`, `constrained extension`, `conditional conformance`, `protocol requirement`, `default implementation`, `static dispatch`, `protocol witness`, and `retroactive conformance`. Require the model to name the static type and module ownership; “use extensions to clean this up” is too vague.
+
+<Depth level="deep">
+
+## Dispatch follows declaration placement and static type
+
+An ordinary extension member on a concrete type participates in overload resolution at compile time. It's a member of the type, but that doesn't make it a class virtual method: an extension can't replace an existing member or make its own new class member an override point. When inheritance polymorphism is required, the entry point must be designed into the original class declaration.
+
+A protocol requirement creates another call path. When a type conforms, the compiler chooses a witness for that requirement; a default implementation can itself become the witness. After a value is erased to `any Protocol`, the call can still use the conformance information to reach that selected witness instead of considering only the protocol-extension source.
+
+An extra extension member has no matching protocol requirement and therefore no witness slot for each conforming type to fill. When the receiver's static type is only the protocol, the compiler can guarantee only the extension implementation. A same-named member on the concrete type is a separate candidate selected only when the static type exposes it, which causes the different labels in the third example.
+
+A generic function such as `func emit<T: Reportable>(_ value: T)` preserves a concrete type parameter, but its body still type-checks extension-only members against its visible constraints. Don't reduce “generics preserve type information” to “all same-named members dispatch dynamically”; whether the member is a requirement remains the decisive contract.
+
+<Term id="static-dispatch">Static dispatch</Term> describes selecting a call target from compile-time information. It isn't an automatic performance promise and shouldn't justify omitting a protocol requirement. This topic makes no speed claim without a reproducible benchmark and optimization configuration.
+
+## Conditional extensions and conformances
+
+A conditional extension restricts its member set with same-type requirements, protocol constraints, or a `where` clause. The compiler permits a call only when the current generic environment proves the condition, so failure normally means the member isn't available in that context rather than a runtime `false` result.
+
+A conditional conformance applies the same idea to a protocol relationship. For example, `Batch` is `Equatable` only when its `Element` is `Equatable`. These relationships compose: when an array's element is itself comparable through conditional conformance, the outer array can satisfy the corresponding constraint too.
+
+Conditional members and conformances aren't runtime capability-probing APIs. If an input type becomes known only at runtime, model it with an existential, enum, or explicit type erasure and define the failure behavior. Don't expect a `where` clause to replace dynamic modeling.
+
+A constraint should express the smallest capability an implementation really uses. Hash-based deduplication normally needs `Hashable`, while a linear scan needs only `Equatable`. Choosing the constraint also chooses complexity and ordering semantics, not merely the shortest declaration.
+
+The same generic type can't acquire two competing conformances to one protocol under overlapping conditions. A conformance must remain coherent and uniquely determined for every possible argument. Use distinct wrapper types when semantics differ so that the type name carries that distinction.
+
+## Module ownership and evolution
+
+Conforming a type you own to an external protocol is normally safe because the type's owner can publish its canonical conformance. Conforming an external type to a protocol you own also preserves control over the protocol semantics. If the current module owns neither, neither upstream owner can see that you have occupied the relationship.
+
+Swift 6's retroactive-conformance warning makes that evolution risk visible. `extension ExternalType: @retroactive ExternalProtocol` silences the warning, but it doesn't create a namespace or make the conformance local to the current file. It's a declaration of responsibility, not an isolation mechanism.
+
+A wrapper type has a new nominal identity, so it can safely own protocol conformances, store additional state, and define independent invariants. The cost is explicit wrapping and unwrapping at call boundaries. For a public library, that small cost is usually easier to maintain than a global conformance conflict.
+
+An extension that only adds members, rather than an external protocol conformance, doesn't create the same runtime conformance conflict, but it still has source-level naming risk. Module names participate in symbol identity but don't guarantee that importing two same-named extension members leaves a call unambiguous. Public APIs should still use domain-specific names and keep their surface area restrained.
+
+Initializers in extensions also respect module boundaries. An initializer that extends another module's structure must delegate to an initializer from the defining module before accessing `self`. A class extension can add only convenience initializers, which ultimately delegate to a designated initializer and preserve the original class's initialization rules.
+
+## Initializer and synthesis boundaries
+
+A structure extension in the same file can call a visible memberwise initializer. Writing a custom initializer in an extension also preserves the memberwise initializer supplied to the original declaration; moving the same initializer into that declaration can suppress synthesis. Treat placement as API design when callers depend on the memberwise initializer.
+
+When extending a structure from another module, a new initializer can't begin by assigning the external type's stored properties individually. It must first call an initializer exposed by the defining module before it can use `self`. That rule leaves the defining module in control of initialization invariants and future storage layout.
+
+Classes have stricter rules. Designated initializers and deinitializers must remain in the original class declaration; an extension can add only convenience initializers. A convenience initializer eventually delegates to a designated initializer, so the extension can't bypass superclass initialization or leave an instance partly initialized.
+
+Compiler-synthesized conformances also care about placement. Put extensions that request synthesized `Equatable`, `Hashable`, and similar conformances in the same file as the original type so the compiler can inspect its storage and generate the implementation. If reorganizing files causes an error, don't suppress it with a fake empty implementation; move the conformance or write the correct implementation explicitly.
+
+Together, these restrictions preserve one boundary: an extension can add interface and conformance, but the original type still controls storage, initialization, and core invariants. If one of those three must change, edit the original type or introduce a wrapper instead of stacking on another extension.
+
+Test extensions by compiling from a real client module, not only from inside their defining module. `internal` members visible to in-module tests can otherwise hide access-control failures that external callers encounter.
+
+For public extensions, keep a minimal test target that imports only the published module. It verifies that members are actually exported, conditional constraints appear in the interface, and a new conformance doesn't make dependency code ambiguous.
+
+Source organization may change, but public semantics must remain stable. Recompile that client after moving an extension, changing imports, or upgrading a dependency; it exposes boundary regressions more reliably than inspecting the declaration file alone.
+
+</Depth>
+
+<Checkpoint id="swift/extensions" />
+
+## Further reading
+
+- [The Swift Programming Language: Extensions](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/extensions/)
+- [The Swift Programming Language: Protocols](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/protocols/)
+- [The Swift Programming Language: Generics](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/generics/)
+- [Swift Evolution SE-0143: Conditional Conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0143-conditional-conformances.md)
+- [Swift Evolution SE-0364: Warning for Retroactive Conformances](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0364-retroactive-conformance-warning.md)
+- [Swift 6.3 release notes](https://www.swift.org/blog/swift-6.3-released/)

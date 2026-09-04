@@ -1,0 +1,450 @@
+---
+title: Python decorators
+description: Decorators replace function or class bindings at definition time; preserve contracts across wrapping, stacking, metadata, typing, and async code.
+track: python
+section: functions-deeper
+difficulty: intermediate
+tags: [decorators, wrapper, functools, callable]
+prerequisites: [python/functions, python/args-kwargs, python/closures]
+related: [python/functools, python/lru-cache, python/descriptors, python/type-hints]
+terms: [decorator, decorator-factory, first-class-function, function-signature, closure]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: python/decorators
+sources:
+  - { title: 'Python glossary - Decorator', url: 'https://docs.python.org/3.14/glossary.html#term-decorator' }
+  - { title: 'Python language reference - Function definitions', url: 'https://docs.python.org/3.14/reference/compound_stmts.html#function-definitions' }
+  - { title: 'Python functools - wraps', url: 'https://docs.python.org/3.14/library/functools.html#functools.wraps' }
+  - { title: 'Python inspect - signature', url: 'https://docs.python.org/3.14/library/inspect.html#inspect.signature' }
+  - { title: 'Python typing - ParamSpec', url: 'https://docs.python.org/3.14/library/typing.html#typing.ParamSpec' }
+  - { title: 'Python descriptor guide - Functions and methods', url: 'https://docs.python.org/3.14/howto/descriptor.html#functions-and-methods' }
+origin: old/src/content/docs/python/decorators.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="decorator">decorator</Term> is a callable that receives a newly defined function or class and has its return value rebound to the original name.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Decoration happens at definition time and calls happen later. Confusing those phases causes mistakes in stacking order, shared state, async behavior, and method binding.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    State the input and return contract, use `functools.wraps()` for function wrappers, and separately test decoration, normal calls, exceptions, and async calls.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A Python decorator transforms one callable into another object. The usual function decorator receives a function and returns a wrapper that adds behavior around a call; a class can also be the input. When `@trace` appears above a `def`, the name ultimately refers to the value returned by `trace()`, which needn't be the original function.
+
+The mechanism depends on <Term id="first-class-function">first-class functions</Term>: a function can be passed as an argument and returned as a result. A wrapper is often also a <Term id="closure">closure</Term> that reaches the original function and configuration through enclosing bindings. A decorator itself may be a function, a class, or another callable object.
+
+Decorators fit narrow rules that many functions must follow, such as call recording, authorization checks, retry entry points, or registration declarations. They keep the rule in one implementation while leaving each decorated function's business body intact. If a rule changes return types, swallows exceptions, or depends on hidden global state, the `@` syntax hides consequential behavior; an explicit function call or object composition is clearer.
+
+You meet decorators in standard-library tools including `@property`, `@classmethod`, `@staticmethod`, `@functools.cache`, and `@functools.singledispatch`. Web routing, test fixtures, and command registration often use the same syntax, but each framework adds a contract for the returned object. Python's replacement rule is the foundation for reading those framework conventions.
+
+A decorator isn't a switch temporarily enabled when the function runs. As execution reaches the definition, Python evaluates the decorator expressions, invokes the decorators, and binds the resulting name; importing a module normally triggers this work. A wrapper's function body waits until a later call.
+
+## How it works
+
+When a decorated function definition executes, Python evaluates each decorator expression in the surrounding scope from top to bottom, then creates the original function object. The resulting callables receive that object from the inside out. The outermost decorator's return value is finally bound to the function name.
+
+One equivalence is worth memorizing. If the source reads `@outer(config)`, `@inner`, and `def handle(...): ...` from top to bottom, the final binding is approximately `handle = outer(config)(inner(handle))`; unlike that assignment, the original function isn't temporarily bound to `handle`. Decorator expressions are evaluated in written order, while application proceeds outward from the decorator closest to `def`.
+
+Keep definition time separate from call time. The factory `outer(config)` runs during definition and produces the actual decorator, and both `inner(handle)` and the outer application complete in that phase. A later `handle()` call enters the outermost wrapper, moves through each layer to the original function, and returns in the opposite direction.
+
+| Phase | What happens | Common surprise |
+| --- | --- | --- |
+| Execute definition | Evaluate decorator expressions and create the original function | Importing a module already performs registration or I/O |
+| Apply decorators | Pass and replace objects from the inside out | A factory or wrapper layer is missing or duplicated |
+| Bind name | Point the name at the outermost return value | The original is reachable only through a retained reference |
+| Call name | Run the wrapper chain from the outside in | Stacking changes authorization, logging, or transaction semantics |
+
+### A wrapper must preserve its contract
+
+A transparent function decorator must at least forward every argument, return the original result, and let unhandled exceptions propagate. `*args` and `**kwargs` forward a call shape, but don't themselves preserve a <Term id="function-signature">function signature</Term>. If a wrapper intentionally adds parameters, changes the sync model, or transforms the result type, treat that as a new public API instead of claiming transparency.
+
+`functools.wraps(func)` copies common metadata to the wrapper and sets `__wrapped__` to the wrapped object. `inspect.signature()` follows that chain by default, and documentation tools and some frameworks rely on it. `wraps()` doesn't repair bad argument forwarding, return values, exception policy, or sync/async boundaries.
+
+Runtime metadata and static typing are separate mechanisms. A type-preserving decorator can use `ParamSpec` for the original parameter list and `TypeVar` for the return type; `@wraps` is still needed for the runtime introspection chain. Type annotations neither validate calls nor prove that the wrapper really returns the result unchanged.
+
+### Functions, methods, and classes
+
+Plain functions implement descriptor binding, so a function stored as a class attribute becomes a bound method when accessed through an instance. A decorator that returns a plain function generally retains that behavior. If it returns an instance with `__call__()` but no suitable `__get__()`, `obj.method()` won't inject `self` automatically.
+
+`@classmethod`, `@staticmethod`, and `@property` return descriptor objects, and ordering controls what an outer decorator receives. A decorator written only for plain functions and reading `__name__` may not wrap every descriptor. Constrain each supported target explicitly, then test both class and instance access paths.
+
+A class decorator receives a class after its class object has been created and binds the return value to the class name. It can register or modify that class, but defining a subclass later doesn't rerun the decoration automatically. If a class decorator returns a function to implement a singleton, the original name is no longer a class, so `isinstance()`, inheritance, and type tooling encounter a completely different object.
+
+## Examples
+
+The four examples cover transparent wrapping, a parameterized factory, stacking order, and the async boundary. Their output came from local Python 3.12.13; the examples were also checked against the target Python 3.14 documentation and use no APIs that differ between those versions.
+
+### Recording a call transparently
+
+`trace()` returns a new function that records entry and result, then gives the result back to its caller. `@wraps(func)` keeps the name, documentation, and default inspected signature pointed at `total()`'s public contract.
+
+<Depth level="quick">
+
+```python run title="trace_call.py"
+from functools import wraps
+from inspect import signature
+
+
+def trace(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"call {func.__name__}: args={args!r}, kwargs={kwargs!r}")
+        result = func(*args, **kwargs)
+        print(f"return {result!r}")
+        return result
+
+    return wrapper
+
+
+@trace
+def total(price: int, quantity: int = 1) -> int:
+    """Calculate an order total."""
+    return price * quantity
+
+
+print(total(12, quantity=3))
+print(total.__name__)
+print(signature(total))
+print(total.__wrapped__(5, 2))
+```
+
+```text
+call total: args=(12,), kwargs={'quantity': 3}
+return 36
+36
+total
+(price: int, quantity: int = 1) -> int
+10
+```
+
+<TryToBreak items={['remove @wraps(func)', 'make total() raise', 'omit quantity', 'pass an unknown keyword argument']} />
+
+</Depth>
+
+`total` is the wrapper, while `total.__wrapped__` retains an explicit link to the original function. Calling that attribute bypasses logging, so it belongs in introspection, tests, or a deliberate bypass, not as a routine application entry point.
+
+The logger uses `repr()` for deterministic sample output. A real system shouldn't record passwords, tokens, or personal data without redaction, and printing a complete return object may be both sensitive and expensive. Redaction belongs in the decorator's contract.
+
+### Configuring retry with a decorator factory
+
+`retry_on()` first receives an exception type and attempt count, then returns the decorator that accepts a function. The actual wrapper catches only the declared exception, and the factory rejects an invalid attempt count immediately at definition time.
+
+```python run title="retry_factory.py"
+from functools import wraps
+
+
+def retry_on(exception_type, *, attempts):
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+
+    def decorate(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exception_type as error:
+                    print(f"attempt {attempt}: {error}")
+                    if attempt == attempts:
+                        raise
+
+        return wrapper
+
+    return decorate
+
+
+responses = iter([
+    ConnectionError("temporary outage"),
+    ConnectionError("temporary outage"),
+    "12 units",
+])
+
+
+@retry_on(ConnectionError, attempts=3)
+def fetch_inventory():
+    outcome = next(responses)
+    if isinstance(outcome, Exception):
+        raise outcome
+    return outcome
+
+
+print(fetch_inventory())
+```
+
+```text
+attempt 1: temporary outage
+attempt 2: temporary outage
+12 units
+```
+
+The three call layers have distinct jobs: `retry_on(...)` configures the factory, `decorate(func)` receives the decorated function, and `wrapper(...)` handles each call. Collapsing two of them often leaves `@retry_on(...)` returning something that isn't a decorator or calls the business function during definition.
+
+This example deliberately adds no delay. A production retry policy must also define backoff, jitter, deadlines, cancellation, and idempotency, and it should retry only errors classified as transient. A decorator can reuse the policy; it can't decide whether repeating a business operation is safe.
+
+### Seeing both stacking orders
+
+`layer()` prints `build` during definition, its returned decorator prints `apply`, and the wrapper prints `enter` and `leave` during a call. One output exposes expression evaluation, decorator application, and wrapper invocation as separate orders.
+
+```python run title="stack_order.py"
+from functools import wraps
+
+
+def layer(name):
+    print(f"build {name}")
+
+    def decorate(func):
+        print(f"apply {name} to {func.__name__}")
+
+        @wraps(func)
+        def wrapper():
+            print(f"enter {name}")
+            result = func()
+            print(f"leave {name}")
+            return result
+
+        return wrapper
+
+    return decorate
+
+
+@layer("outer")
+@layer("inner")
+def render_invoice():
+    print("body")
+    return "done"
+
+
+print(render_invoice())
+```
+
+```text
+build outer
+build inner
+apply inner to render_invoice
+apply outer to render_invoice
+enter outer
+enter inner
+body
+leave inner
+leave outer
+done
+```
+
+Expressions evaluate from top to bottom, so `build outer` appears first. Application proceeds bottom to top, calls proceed outside in, and returns unwind inside out. Saying only that "decorators execute bottom to top" conflates three different phases.
+
+Order changes real semantics. Auditing outside authorization can record rejected attempts; auditing inside it sees only accepted calls. Transaction, cache, and retry order also changes which results are cached and whether each attempt gets a new transaction.
+
+### Preserving the async boundary
+
+A transparent wrapper for an async function must also use `async def` and `await` the original inside its own `try` scope. Exceptions and cleanup then occur while the wrapper still controls execution, and callers still see a coroutine function.
+
+```python run title="async_wrapper.py"
+import asyncio
+import inspect
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import ParamSpec, TypeVar
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def trace_async(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    @wraps(func)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        print(f"start {func.__name__}")
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            print(f"finish {func.__name__}")
+
+    return wrapper
+
+
+@trace_async
+async def load_order(order_id: int) -> str:
+    await asyncio.sleep(0)
+    return f"order:{order_id}"
+
+
+async def main():
+    print(inspect.iscoroutinefunction(load_order))
+    print(await load_order(42))
+
+
+asyncio.run(main())
+```
+
+```text
+True
+start load_order
+finish load_order
+order:42
+```
+
+If a regular `def wrapper` merely returns `func(...)`, it returns an unexecuted coroutine object. Timing, exception handling, and cleanup in that wrapper cover coroutine creation rather than execution, and `inspect.iscoroutinefunction()` sees the outer layer as synchronous.
+
+The `finally` suite runs on success, exceptions, and cancellation, but it shouldn't swallow the exception or cancellation. To support both sync and async functions, inspect the target during decoration and generate two distinct wrappers instead of making a sync wrapper guess whether a returned value is awaitable.
+
+## Pitfalls
+
+### Forgetting `functools.wraps`
+
+> [!PITFALL]
+> Without `@wraps(func)`, callers see a broadly shaped function named `wrapper`, and the original documentation, annotations, and `__wrapped__` chain disappear. Routers, dependency injection, tests, or documentation tools that inspect signatures may read the wrong interface.
+
+**Fix:** use `@wraps(func)` on every transparent layer that returns a plain function, then assert `__name__`, `inspect.signature()`, and `__wrapped__`. If the decorator intentionally changes the signature, publish that new signature explicitly instead of using `wraps()` to imply nothing changed.
+
+### Losing the return value or exception
+
+> [!PITFALL]
+> A wrapper that calls `func(*args, **kwargs)` without `return` silently changes every successful result to `None`. Catching `Exception` and returning a fallback also rewrites the original contract and can disguise a programming error as a normal result.
+
+**Fix:** a transparent wrapper returns the original result directly and catches only exceptions the policy explicitly handles. Test a non-`None` result, an expected exception, and failures in the wrapper's own pre-call and post-call logic.
+
+### Treating definition-time effects as call-time behavior
+
+> [!PITFALL]
+> Registration, opening a connection, or reading mutable configuration inside a decorator factory or `decorate()` normally happens during import. Test discovery, automatic reloaders, and multiprocess startup can repeat those effects, while a failure prevents the module from loading.
+
+**Fix:** keep only stable configuration validation and necessary registration at definition time. Acquire resources in a call or application startup path with an explicit lifetime, and test "import the module" separately from "call the function."
+
+### Ordering multiple decorators by intuition
+
+> [!PITFALL]
+> The arrangement of `@cache`, `@authorize`, `@retry`, and `@transaction` isn't cosmetic. A cache outside authorization may reuse a result across permission contexts, while retry inside or outside a transaction changes whether each attempt gets a fresh transaction.
+
+**Fix:** expand the stack into nested calls and write down each layer's inputs, outputs, and exception boundary. Assert entry and exit events in a list, covering rejection, cache hits, success after one failure, and final failure.
+
+### Using one implementation for sync and async functions
+
+> [!PITFALL]
+> A sync wrapper that returns a coroutine, or an async wrapper that awaits a synchronous result, breaks the call contract. Checking whether a call result is awaitable is also too late when types and framework detection were already wrong before the call.
+
+**Fix:** branch with `inspect.iscoroutinefunction()` at decoration time and generate separate `def` and `async def` wrappers, or expose two explicit decorators. Test success, exceptions, and metadata on both paths, plus cancellation on the async path.
+
+### Sharing decorator-instance state accidentally
+
+> [!PITFALL]
+> Reusing one stateful decorator instance for several functions can make them share counters, caches, or rate windows. Even if each function gets its own wrapper, each wrapper closure may still capture the same decorator object.
+
+**Fix:** state whether data belongs to the decorator configuration, decorated function, instance, request, or call. Decorate at least two functions and interleave calls. If sharing isn't the contract, create independent state during each decoration or use a class that exposes ownership more clearly.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often produce a plausible `def wrapper(*args, **kwargs)` but omit either `@wraps` or `return`; the code runs, yet framework introspection and business results have changed. They also put an `async def` behind a sync wrapper, so a "finished" log appears before the coroutine runs and exceptions escape the wrapper's `try`. Generated retry decorators commonly catch every `Exception`, block an event loop with `time.sleep()`, and repeat writes that have no idempotency key.
+
+**Ask your AI to check**
+
+- Expand every `@` into nested assignments and separate decorator-expression evaluation, application, and call order.
+- Compare `inspect.signature()`, `__name__`, `__wrapped__`, return type, and coroutine-function identity before and after decoration.
+- List all state captured or stored by the wrapper and name the function, instance, request, or process that owns it.
+
+**Review checklist**
+
+- Use a non-`None` result and representative exception to prove arguments, results, and failures aren't rewritten accidentally.
+- Record the exact entry, exit, rejection, retry, and cache-hit events for every meaningful stack order.
+- Give async targets a real async wrapper and verify awaiting, cancellation, cleanup, and nonblocking waits.
+
+**Prompt vocabulary**
+
+Use the exact terms `decorator`, `decorator factory`, `wrapper function`, `decoration time`, `call time`, `decorator stacking order`, `metadata preservation`, `__wrapped__ chain`, `descriptor binding`, and `ParamSpec`. Ask for a contract-diff table and an event trace; "add a logging decorator" doesn't constrain these boundaries.
+
+<Depth level="deep">
+
+## Contracts behind wrappers
+
+### Object identity and the `__wrapped__` chain
+
+After decoration, the public name generally points to a new object, so `decorated is original` is false. The closed-over `func` reference and `wrapper.__wrapped__` may both point to the next inner object, but they serve different roles: the implementation calls the former, while introspection tools unwrap the latter. Every layer in a three-decorator stack must use `wraps()` to produce a complete chain.
+
+`functools.update_wrapper()` copies `__module__`, `__name__`, `__qualname__`, `__annotations__`, `__type_params__`, and `__doc__` by default, and it updates the wrapper's `__dict__`. `wraps()` is a decorator factory that conveniently invokes it on a wrapper definition. Copying those attributes doesn't make the two functions the same object.
+
+Code can deliberately bypass a layer by calling the corresponding `__wrapped__`. Authorization and auditing therefore can't rely on an assumption that callers won't bypass the wrapper. Control reachability to the original function, and enforce a real authorization boundary somewhere code in the same trust domain can't casually skip it.
+
+| Observation | What `wraps()` can do | What it cannot guarantee |
+| --- | --- | --- |
+| Name and documentation | Copy common display metadata | Logs and documentation are accurate |
+| Annotations and type parameters | Copy runtime attributes | Type checking passes or runtime validation occurs |
+| `__wrapped__` | Link to the next inner layer | Bypassing the wrapper is safe |
+| Default inspected signature | Let `inspect.signature()` follow the chain | The wrapper truly accepts the identical call set |
+
+A custom `__signature__` can sometimes expose a display signature for a wrapper that intentionally changes its interface, but Python documents `inspect.signature()` handling of that attribute as an implementation detail. Depend on it only when a library's compatibility policy covers it, and test every supported Python implementation and version.
+
+### Static types aren't preserved by `wraps()`
+
+A synchronous decorator with no argument changes is commonly typed as `Callable[P, R] -> Callable[P, R]`. `P = ParamSpec("P")` retains parameter names, positions, and keyword shapes, while `R = TypeVar("R")` links the input function's result to the wrapper result. With only `Callable[..., Any]`, a type checker can't carry the concrete call constraints to the decorated function.
+
+A decorator that inserts an argument needs `Concatenate` or a dedicated `Protocol`; removing arguments, changing the sync model, or transforming results must also appear in its annotations. Don't use `cast()` to hide disagreement between implementation and declaration. It only silences the checker and doesn't change the runtime object.
+
+Functions in Python 3.14 may also have `__type_params__`, which `update_wrapper()` copies by default. That runtime attribute complements a `ParamSpec` annotation but still can't verify correct forwarding inside the wrapper. You need both type checking and execution tests.
+
+### Method binding depends on the returned object
+
+A function in a class dictionary is a non-data descriptor. Access through an instance calls its `__get__()` to produce a bound method with the instance placed in the first parameter. A `@trace` that returns a plain function can therefore work for both module functions and instance methods without a special `self` branch.
+
+A callable instance doesn't get that behavior automatically. Implementing `__call__()` makes an instance callable; it doesn't make the instance bind a receiver when stored on another class. A class-based function decorator that supports methods needs a suitable descriptor protocol or should return a plain function during decoration.
+
+When a decorator stacks with `@classmethod`, `@staticmethod`, or `@property`, the inner result may no longer be a plain function. Don't guess one universal safe order. Document and type the object kinds the decorator accepts; if it supports only instance methods, constrain it to plain functions and fail clearly on the wrong target.
+
+### A class decorator isn't a metaclass
+
+A class decorator runs after the class object exists, making it useful for class registration, checked attribute changes, or returning a replacement object. It handles only the class bearing that `@decorator`. Subclasses inherit attributes normally but don't automatically rerun the base class's decoration logic.
+
+Metaclasses and `__init_subclass__()` participate in the class-creation protocol and can affect later subclasses. When a constraint must continue across an inheritance hierarchy, those mechanisms are usually more reliable than requiring every subclass to repeat a decorator. A class decorator is simpler for registering a few explicit plugins.
+
+Returning the original class preserves class identity. Returning a factory function, proxy instance, or different class changes assumptions made by `issubclass()`, pattern matching, serialization, and type checking. Before decorating a class, state the returned object type, not only the behavior being added.
+
+### Exceptions, generators, and async generators
+
+An exception policy must surround the expression that really executes the original function. A synchronous function executes inside `func(...)`; a coroutine body executes at `await func(...)`; a generator body usually runs only when its returned generator is iterated. Merely wrapping object creation can't catch later failures.
+
+For a generator, returning the original generator from a normal function preserves laziness but can't observe each iteration. A `yield from` wrapper can surround iteration, but it must correctly support `send()`, `throw()`, `close()`, and the return value. An async generator needs `async for`, cancellation handling, and `aclose()` semantics.
+
+A decorator advertised for every callable is often not transparent across these execution shapes. A more honest interface limits itself to sync functions, coroutine functions, or a stated generator protocol and fully tests that shape. Broad `*args, **kwargs` forwarding doesn't solve execution-model differences.
+
+### State, lifetime, and concurrency
+
+Locals in a decorator factory can survive in a wrapper closure. State created inside `decorate()` is generally per decorated function; state created on a factory instance or at module scope may be shared by several functions. State created inside `wrapper()` starts again for every call.
+
+Those locations encode different lifetimes and shouldn't be chosen by indentation alone. A cache must answer whether its key contains every semantic input, how long values remain, and how invalidation works. A limiter must name whether its scope is a process, user, or external service. A counter must state whether concurrent updates may be lost. An in-process dictionary doesn't become multiprocess shared state.
+
+Decorators don't provide thread safety or task isolation. A check followed by an update in a wrapper can still interleave, and a regular closure dictionary can mix tenant data. For request-local async state, consider explicit parameters or `contextvars`; for cross-process consistency, use an external coordination mechanism with the required guarantees.
+
+### Testing the decorator, not only the original function
+
+Tests should cover the decorator as a unit and the decorated object in integration. A unit test can decorate a small function that records events or fails on a schedule. An integration test should use a real method, coroutine, or framework entry point and confirm that introspection still sees the promised contract.
+
+A useful set of checks is:
+
+1. Assert that positional arguments, keyword arguments, defaults, and results pass through unchanged.
+2. Assert event order for success, expected errors, unexpected errors, and cleanup.
+3. Assert names, documentation, annotations, signatures, and the `__wrapped__` chain.
+4. Stack at least two layers and test every order with business meaning.
+5. Verify the execution shape of every supported target, such as methods, coroutines, or generators.
+
+Don't test only one no-argument function returning `None`. That test simultaneously hides lost arguments, lost returns, state bleed, and several exception mistakes. Decorating two independent functions and interleaving calls often reveals accidental shared state quickly.
+
+</Depth>
+
+<Checkpoint id="python/decorators" />
+
+## Further reading
+
+- [Python glossary: decorator](https://docs.python.org/3.14/glossary.html#term-decorator)
+- [Python language reference: function definitions and decorator application](https://docs.python.org/3.14/reference/compound_stmts.html#function-definitions)
+- [Python `functools.wraps()`](https://docs.python.org/3.14/library/functools.html#functools.wraps)
+- [Python `inspect.signature()`](https://docs.python.org/3.14/library/inspect.html#inspect.signature)
+- [Python `typing.ParamSpec`](https://docs.python.org/3.14/library/typing.html#typing.ParamSpec)
+- [Python descriptor guide: functions and methods](https://docs.python.org/3.14/howto/descriptor.html#functions-and-methods)

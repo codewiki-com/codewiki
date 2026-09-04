@@ -1,0 +1,401 @@
+---
+title: C# 属性
+description: 理解 C# 属性、访问器、自动属性、init 与 required 的真实契约，并避开验证失效和伪不可变对象等常见错误。
+track: csharp
+section: basics
+difficulty: intermediate
+tags: [properties, accessors, auto-properties, init, required, encapsulation]
+prerequisites: [csharp/fundamentals, csharp/data-types]
+related: [csharp/records, csharp/attributes, csharp/reflection, csharp/ef-core]
+terms: [property, property-accessor, backing-field, init-accessor, required-member]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/properties
+sources:
+  - { title: 'Properties - C# Programming Guide', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/properties' }
+  - { title: 'Auto-implemented properties', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/auto-implemented-properties' }
+  - { title: 'The init keyword - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init' }
+  - { title: 'required modifier - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/required' }
+  - { title: 'C# language specification - Properties', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/classes#157-properties' }
+origin: old/src/content/docs/csharp/properties.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    C# 属性用字段式语法公开数据，却通过 `get`、`set` 或 `init` 访问器执行读取和赋值契约。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `init` 不是深度不可变，`required` 也不是运行时验证；公开集合的 getter 仍可能泄露可变状态。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    简单存储使用自动属性，需要验证时实现访问器，并把状态变更、空值与对象所有权写成可测试的契约。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="property">属性（property）</Term>是类、结构体或接口的成员。调用方以 `order.Total` 或 `order.Status = value` 这样的字段式语法使用它，声明类型则通过访问器控制读取或赋值。属性本身不等于字段：它可以返回存储值、计算结果，也可以拒绝一次赋值。
+
+属性解决的是公开数据与保留控制权之间的矛盾。公开字段一旦成为 API，声明类型就无法在同一访问点增加验证、计算或更严格的写权限；成对的 `GetName()`、`SetName()` 方法又会让简单数据访问变得笨重。属性把这些控制点放在稳定的成员语法后面。
+
+你会在领域对象、配置类型、DTO、序列化模型和 UI 绑定对象中遇到属性。调用代码看起来相同，不代表契约相同：自动属性通常只保存值，计算属性每次读取都求值，而自定义访问器可以运行任意代码。审查属性时，要从声明而不是调用语法推断行为。
+
+属性适合表达对象在某一时刻具有的特征。一次网络请求、数据库查询、长时间计算或明显的状态转换通常更适合方法，因为方法调用能让成本与动作更可见。
+
+## 工作原理
+
+### 访问器定义读写能力
+
+<Term id="property-accessor">属性访问器（property accessor）</Term>是属性中的 `get`、`set` 或 `init` 部分。读取属性会执行 `get`；普通赋值会执行 `set`；`init` 只允许在对象构造阶段的合法位置赋值。`set` 与 `init` 中的隐式参数 `value` 就是调用方提供的新值。
+
+访问器组合直接构成公开契约。只有 `get` 的属性对调用方只读；`get` 加 `set` 可以反复赋值；`get` 加 `init` 允许构造阶段赋值，之后不再允许普通赋值。C# 也允许仅写属性，但调用方无法读回状态，实际 API 中很少需要这种形状。
+
+属性和访问器还可以使用不同的可访问性。`public decimal Balance { get; private set; }` 允许所有调用方读取，却只允许声明类型修改。较严格的访问修饰符只能放在其中一个访问器上，而且属性必须同时具有读取与写入访问器。
+
+| 声明形状 | 外部读取 | 外部普通赋值 | 对象初始化器赋值 |
+| --- | --- | --- | --- |
+| `{ get; set; }` | 可以 | 可以 | 可以 |
+| `{ get; private set; }` | 可以 | 不可以 | 不可以 |
+| `{ get; init; }` | 可以 | 不可以 | 可以 |
+| `{ get; }` | 可以 | 不可以 | 不可以 |
+| `=> expression` | 可以 | 不可以 | 不可以 |
+
+### 存储属性与计算属性
+
+自动属性省略访问器主体，例如 `public string Name { get; set; }`。编译器为它创建隐藏的<Term id="backing-field">幕后字段（backing field）</Term>，并生成读取和写入该存储的访问器。属性初始值设定项会在构造过程中为这份存储赋值。
+
+需要控制逻辑时，可以显式声明幕后字段，再在访问器中引用它。这样适合范围检查、规范化输入或维护简单不变量。访问器应先验证，再写入字段，否则抛出异常时对象可能已经进入部分更新状态。
+
+计算属性不需要自己的存储。`public decimal Total => UnitPrice * Quantity;` 每次读取都会根据当前状态求值，因此不会出现独立缓存过期的问题。计算很昂贵或需要 I/O 时，应改用名称明确的方法，或者设计带清晰失效规则的缓存。
+
+C# 14 的 `field` 上下文关键字提供第三种形状。访问器可以通过 `field` 使用编译器合成的幕后字段，同时保留自动实现的另一个访问器。这减少了只为一小段验证逻辑而声明字段的样板代码。
+
+### `init` 与 `required` 回答不同问题
+
+<Term id="init-accessor">`init` 访问器（init accessor）</Term>限制属性可以在哪里赋值。调用方可以在对象初始化器中设置它，类型的构造过程也可以建立初始状态；构造阶段结束后，普通代码不能再次给它赋值。这个限制针对属性赋值，不会冻结属性引用的对象。
+
+<Term id="required-member">必需成员（required member）</Term>要求创建表达式初始化某个字段或属性，除非所调用的构造函数声明自己已经满足全部必需成员。`required` 不决定之后能否修改，因此既可配合 `set`，也可配合 `init`。它也不会自动验证字符串非空、数值范围或业务关系。
+
+非可空引用类型、`required` 和运行时验证各自处理一层问题。非可空注解参与编译器的空状态分析，`required` 检查对象创建语法是否遗漏成员，访问器或构造函数则执行真正的运行时不变量。健壮的边界类型经常需要三者配合，而不是选择其中一个。
+
+### 调用语法隐藏了方法调用
+
+编译后，读取和写入属性对应特殊名称的方法，通常可在元数据中看到 `get_Name` 与 `set_Name`。反射把属性作为属性元数据公开，同时也能取得相应访问器。调用方仍写 `customer.Name`，编译器负责绑定到访问器调用。
+
+这解释了为什么属性能够出现在接口中，也能声明为 `virtual` 或 `abstract`。实现或重写提供的是访问行为，不是要求所有类型具有同名字段。它也解释了为什么调试器读取一个属性可能执行用户代码。
+
+## 示例
+
+### 从自动属性开始
+
+第一个例子把简单状态交给自动属性，把派生值写成计算属性，并把库存变化放进方法。`private set` 让调用方不能绕过 `TrySell` 直接替换库存。
+
+<Depth level="quick">
+
+```csharp title="ProductInventory.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+
+var item = new InventoryItem(openingStock: 3)
+{
+    Name = "Keyboard",
+    UnitPrice = 79.90m
+};
+
+Console.WriteLine($"{item.Name}: {item.Stock} units, {item.InventoryValue:F2}");
+Console.WriteLine($"sold: {item.TrySell(2)}");
+Console.WriteLine($"remaining: {item.Stock}");
+
+public sealed class InventoryItem
+{
+    public InventoryItem(int openingStock)
+    {
+        if (openingStock < 0)
+            throw new ArgumentOutOfRangeException(nameof(openingStock));
+        Stock = openingStock;
+    }
+
+    public required string Name { get; init; }
+    public decimal UnitPrice { get; init; }
+    public int Stock { get; private set; }
+    public decimal InventoryValue => UnitPrice * Stock;
+
+    public bool TrySell(int quantity)
+    {
+        if (quantity <= 0 || quantity > Stock)
+            return false;
+        Stock -= quantity;
+        return true;
+    }
+}
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+</Depth>
+
+`Name` 必须出现在创建表达式中，之后也不能通过普通赋值修改。`UnitPrice` 没有 `required`，所以遗漏它仍能编译，并得到 `decimal` 的默认值 `0`；真实领域若不接受零价，还需要构造或验证契约。
+
+`InventoryValue` 始终根据当前 `Stock` 计算。库存只有私有 setter，但 `TrySell` 仍能在类型内部使用复合赋值；方法集中处理数量范围，并以返回值表达一次预期的拒绝。
+
+### 用 `field` 验证赋值
+
+第二个例子使用 C# 14 的字段支持属性。调用方仍然面对普通属性，`init` 和私有 `set` 则分别规范化名称与保护积分变化入口。
+
+```csharp title="ValidatedProfile.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+
+var profile = new CustomerProfile
+{
+    DisplayName = "  Ada  "
+};
+
+profile.AddPoints(25);
+Console.WriteLine($"{profile.DisplayName}: {profile.LoyaltyPoints}");
+
+try
+{
+    profile.AddPoints(-1);
+}
+catch (ArgumentOutOfRangeException)
+{
+    Console.WriteLine("negative points rejected");
+}
+
+public sealed class CustomerProfile
+{
+    public required string DisplayName
+    {
+        get;
+        init => field = string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Display name is required")
+            : value.Trim();
+    }
+
+    public int LoyaltyPoints
+    {
+        get;
+        private set => field = value >= 0
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(value));
+    }
+
+    public void AddPoints(int points) => LoyaltyPoints += points;
+}
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+`DisplayName` 的 `required` 检查创建代码没有遗漏成员，`init` 主体才负责拒绝空白并保存裁剪后的值。这两个约束不能互相替代。调用方即使显式写入 `null`，`required` 条件也算满足，因此运行时验证仍然必要。
+
+`AddPoints` 把结果写回 `LoyaltyPoints`，所以私有 setter 会检查相加后的最终值。这里的负数调用被拒绝，是因为结果小于零；若业务规则规定参数本身必须为正，还应在方法入口单独检查 `points`。
+
+### 保护集合所有权
+
+第三个例子把列表保留在对象内部，只通过只读包装公开。属性只读并不等于对象深度不可变，因此类型仍用方法控制集合变化。
+
+```csharp title="PurchaseOrder.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+
+var order = new PurchaseOrder { Number = "PO-42" };
+order.AddLine(new OrderLine("Keyboard", 2, 79.90m));
+order.AddLine(new OrderLine("Cable", 1, 12.50m));
+
+Console.WriteLine($"{order.Number}: {order.Lines.Count} lines");
+Console.WriteLine($"total: {order.Total:F2}");
+
+public sealed class PurchaseOrder
+{
+    private readonly List<OrderLine> _lines = [];
+
+    public PurchaseOrder()
+    {
+        Lines = _lines.AsReadOnly();
+    }
+
+    public required string Number { get; init; }
+    public ReadOnlyCollection<OrderLine> Lines { get; }
+    public decimal Total => _lines.Sum(line => line.Quantity * line.UnitPrice);
+
+    public void AddLine(OrderLine line)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+        if (line.Quantity <= 0 || line.UnitPrice < 0)
+            throw new ArgumentOutOfRangeException(nameof(line));
+        _lines.Add(line);
+    }
+}
+
+public sealed record OrderLine(string Product, int Quantity, decimal UnitPrice);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+`Lines` 没有 setter，调用方不能替换包装对象；`ReadOnlyCollection<T>` 也不公开添加和删除操作。内部列表改变时，包装视图会反映最新内容，这正是此 API 选择的实时视图语义。
+
+元素使用不可变记录，避免调用方取得某一行后再偷偷修改数量。若元素本身可变，只读集合只能保护集合结构，不能保护元素状态；这种所有权决策必须在类型契约中明确。
+
+## 陷阱
+
+### 访问器递归调用自身
+
+> [!PITFALL]
+> 生成的 setter 可能写成 `set => Name = value;`，getter 也可能写成 `get => Name;`。两者都会再次调用同一个访问器，直到发生 `StackOverflowException`。
+
+**修复方法：** 显式实现时写入幕后字段，或者在 C# 14 中使用 `field`。搜索访问器主体中的属性自身名称，并为一次读写添加最小测试；不要把这种错误当成普通验证异常来捕获。
+
+### 在 getter 中隐藏 I/O 或状态变化
+
+> [!PITFALL]
+> `Report` 看起来像普通数据，却可能在每次读取时查询数据库、读取文件或推进计数器。调试器、日志模板和序列化器都可能重复读取它，造成额外工作或改变结果。
+
+**修复方法：** 有明显成本、失败模式或副作用的操作使用方法，例如 `LoadReportAsync()`。计算属性保持可预测；必须缓存时，明确缓存的所有者、线程行为与失效条件。
+
+### 把 `init` 或私有 setter 当成深度不可变
+
+> [!PITFALL]
+> `public List<string> Tags { get; init; }` 只禁止构造后把 `Tags` 指向另一个列表。调用方仍能执行 `item.Tags.Add(...)`，因此对象的可观察状态仍会变化。
+
+**修复方法：** 对外暴露不可变集合、只读包装或快照，并控制元素本身的可变性。审查属性类型形成的整个对象图，不要只看 setter 的可访问级别。
+
+### 把 `required` 当成验证器
+
+> [!PITFALL]
+> `required string Email` 可以被显式赋成 `null`，这通常产生可空警告，而不是“遗漏必需成员”的错误。反射、反序列化器或使用旧编译器的代码也可能绕开创建表达式检查。
+
+**修复方法：** 在可信边界内执行空值、格式和跨字段验证。把 `required` 当作调用方体验与编译时完整性工具，不要把它当作运行时数据验证或安全边界。
+
+### 在验证前修改幕后状态
+
+> [!PITFALL]
+> setter 先写字段，再发现另一个条件不满足并抛出异常，会把对象留在调用方没有预期的状态。多个属性逐个赋值时，还可能暂时破坏跨字段不变量。
+
+**修复方法：** 先在局部值上完成验证和规范化，再提交字段更新。涉及多个成员的原子状态转换应使用方法或工厂，把全部条件检查完后再一次性修改对象。
+
+### 让可写属性破坏哈希或集合身份
+
+> [!PITFALL]
+> 如果 `Equals` 或 `GetHashCode` 依赖可写属性，把对象放入 `Dictionary` 或 `HashSet` 后再修改该属性，集合可能再也找不到这个对象。自动属性的语法不会提示这种身份风险。
+
+**修复方法：** 用稳定且不可变的值定义键身份，或者在修改前移出、修改后重新加入。记录类型也要检查参与值相等性的属性是否会引用可变对象。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型在重构属性时，经常把验证 setter 换成自动属性，让非法状态重新变得可写；也会生成 `Name = value` 这种自递归访问器。为消除可空警告，它们可能同时添加 `required` 和 `null!`，表面上安静了，却没有建立任何运行时不变量。另一个真实故障是把 `private set` 或 `init` 误称为“不可变”，同时公开 `List<T>`、数组或可变子对象。
+
+**让 AI 检查**
+
+- 列出每个属性访问器的读取、写入、抛出、分配与 I/O，并检查是否直接或间接再次访问同一属性。
+- 沿构造函数、对象初始化器、反射与实际序列化路径验证每个 `required` 成员，分别说明编译时保证与运行时验证。
+- 标出所有 `init`、私有 setter 和只读属性可到达的可变对象，并说明谁可以修改它们。
+
+**审查清单**
+
+- 用有效值、边界值、`null`、空白值和失败后再次读取来测试自定义 setter。
+- 对 getter 计数并重复读取，确认没有隐藏的网络、磁盘、时间依赖或意外状态变化。
+- 尝试从公开属性修改集合及其元素，确认实际所有权符合 API 声明。
+
+**提示词词汇**
+
+使用准确术语：`property`（属性）、`property accessor`（属性访问器）、`backing field`（幕后字段）、`auto-implemented property`（自动实现的属性）、`field-backed property`（字段支持属性）、`init accessor`（`init` 访问器）、`required member`（必需成员）、`object initializer`（对象初始化器）、`computed property`（计算属性）和 `deep immutability`（深度不可变）。要求 AI 给出写入路径与对象所有权图；“让模型不可变”不足以说明调用方还能修改哪些引用对象。
+
+<Depth level="deep">
+
+## 属性在元数据中的形状
+
+C# 源码把属性呈现为一个成员，但公共语言运行时通过访问器方法执行它。常规实例 getter 没有参数并返回属性类型，setter 接收一个属性类型的参数并返回 `void`。属性元数据把这些方法关联起来，让反射、序列化器和绑定框架能够把它们视为一个逻辑属性。
+
+自动属性的幕后字段是实现细节。它的名称、特性和是否存在都不应成为应用契约；从自动属性改为显式幕后字段后，依赖编译器字段名称的反射代码很容易失效。需要持久化或传输时，应绑定公开属性或明确声明的契约，而不是扫描编译器生成字段。
+
+属性调用也参与普通成员规则。静态属性没有实例接收者，虚属性根据运行时类型分派，接口属性要求实现提供兼容访问器。字段没有这些多态行为，因此把属性描述成“公开字段的语法糖”会漏掉重要语义。
+
+### 复合赋值仍会读后再写
+
+`account.Balance += amount` 不是对某个公开存储位置的直接修改。概念上，它先调用 getter 取得旧值，计算新值，再调用 setter 写回。getter 或 setter 中任一逻辑都可能运行并抛出。
+
+这对带副作用的访问器尤其危险。一次看似单独的复合赋值会同时触发读与写，线程之间也可能在两步之间交错；属性访问本身不提供原子性。共享计数应使用锁、`Interlocked` 或更高层同步契约，而不是依赖 `Count++` 的简短语法。
+
+只写属性无法参加复合赋值，因为运算需要先读取旧值。只有 getter 的属性则不能接收最终写回。编译器在调用点检查这些访问器能力。
+
+## C# 14 的字段支持属性
+
+`field` 是属性访问器中的上下文关键字，表示该属性由编译器合成的幕后字段。它允许一个访问器保持自动实现，另一个访问器增加验证。例如，getter 可以只写分号，`init` 则在写入 `field` 前规范化输入。
+
+`field` 不会让多个属性共享存储，每个字段支持属性都有自己的合成字段。它也不是可以传给其他 API 的公开名称，调用方仍只能通过属性访问。需要多个属性共同维护一个值或进行跨成员协调时，显式字段通常更清楚。
+
+已有成员确实可能名为 `field`。在属性访问器范围内需要引用该成员时，应写成 `@field`，否则新关键字可能改变名称解析。升级到 C# 14 后，包含这种名称的生成代码值得单独检查。
+
+字段支持属性减少样板代码，却没有改变访问器设计规则。验证仍应在修改前完成，getter 仍不应隐藏昂贵工作，异常和线程行为仍属于 API 契约。语法变短不能代替行为审查。
+
+## 初始化契约的边界
+
+`init` 的限制由编译器在赋值位置执行。它提供浅层的赋值限制：属性所引用的列表、字典或普通类仍可通过自己的 API 修改。若需要真正不可变的对象图，成员类型本身也必须不可变，或者对象必须复制传入数据并只公开不可变视图。
+
+`required` 同样主要是编译时协议。创建类型实例的 C# 表达式必须设置所有可见必需成员，但显式赋默认值仍算“已设置”。非可空分析可能另外警告 `null`，两套诊断表达的是不同问题。
+
+标有 `SetsRequiredMembers` 的构造函数告诉编译器：它已经初始化全部必需成员。编译器不会检查这个承诺是否真实，所以该特性是一个需要审计的逃生口。生成代码机械添加它时，遗漏的成员会从调用点诊断中消失。
+
+反射和某些对象构造基础设施不一定通过普通 C# 创建表达式，因此不能把 `required` 当成反序列化保证。应针对实际使用的序列化器和配置运行端到端测试，并在数据进入可信模型时验证不变量。框架支持会随版本和选项变化，类型设计不能只靠一个关键词猜测绑定行为。
+
+### 继承会扩大必需成员集合
+
+派生类型会继承基类型的必需成员，并可以增加自己的必需成员。调用方创建派生实例时，必须满足最终类型的完整集合。重写一个必需属性不能移除它的必需状态。
+
+这会影响工厂和带 `new()` 约束的泛型代码。具有必需成员的类型不能直接用作依赖无参 `new()` 约束来创建实例的类型实参，因为泛型创建点无法提供对象初始化器。工厂需要接收初始化数据或由类型提供能明确建立契约的构造路径。
+
+API 演进时新增 `required` 也会给重新编译的调用方增加工作。它也许不会改变现有二进制中的访问器签名，却会改变新的源代码创建要求。公共库应把这种变化当成调用方契约变更来评估。
+
+## 属性与对象不变量
+
+单属性验证只能看到一次赋值。如果 `Start` 必须早于 `End`，分别公开两个 setter 会让赋值顺序决定中间状态，甚至让任何顺序都先失败一次。构造函数、工厂或 `ChangeWindow(start, end)` 方法可以先验证整组候选值，再一起提交。
+
+规范化也属于契约。setter 若自动裁剪名称或调整大小写，读取结果可能不同于调用方写入的文本；这可能合理，但应被测试和记录。对密码、令牌或签名输入进行静默规范化通常会破坏数据，应由领域要求决定。
+
+属性抛出异常后，对象应尽量保持原状态。先计算、验证并保存到局部变量，再更新幕后字段，可以让单属性修改具有清晰的提交点。需要更新多个字段时，同样先建立完整的新状态，再执行不会失败的赋值部分。
+
+可观察不变量还包括相等性、哈希和排序。若这些行为依赖可写属性，修改会影响集合位置、缓存键或去重结果。标识属性通常应在构造后稳定，状态属性则不应偷偷参与标识。
+
+### 可访问性与重写保持契约
+
+访问器的可访问性决定调用方能执行什么，不只是文档提示。公开属性上的 `private set` 不会出现在外部赋值的候选操作中，因此调用方代码直接编译失败。它比“请勿修改”的注释更可靠，但声明类型内部仍要负责所有写入路径。
+
+虚属性的重写必须保留基类契约允许的访问器。调用方若通过基类引用读取属性，运行时会分派到派生实现；派生 getter 因而不应突然加入破坏基类预期的 I/O、副作用或更弱不变量。多态属性需要像多态方法一样审查替换行为。
+
+隐藏继承属性与重写不同。派生类型使用 `new` 声明同名属性后，通过基类静态类型访问时仍选择基类属性，通过派生静态类型访问时则选择新属性。同一个对象因引用类型不同而呈现两套状态，通常比明确的重写或改名更难维护。
+
+接口只规定属性访问器形状，不规定幕后字段。一个实现可以存储值，另一个实现可以计算值，但两者都应满足接口对成本、失败和可变性的语义约定。若这些约定对调用方重要，应写进接口文档并用契约测试覆盖。
+
+### 特性可以指向不同产物
+
+属性声明上的特性默认作用于属性元数据，不会自动作用于编译器生成的幕后字段。需要标注自动属性的存储时，可以使用 `field:` 特性目标；需要标注访问器返回值或方法时，则应选择相应目标。
+
+这个区别会影响序列化、验证与反射工具，因为不同工具读取的元数据位置并不相同。添加特性前先确认使用方检查属性、字段还是访问器，不能只根据源码中紧邻的位置推断。
+
+集成测试可以通过实际使用方读取一份最小模型，确认特性落在预期元数据目标上。
+
+</Depth>
+
+<Checkpoint id="csharp/properties" />
+
+## 延伸阅读
+
+- [C# 编程指南：属性](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/properties)
+- [自动实现的属性](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/auto-implemented-properties)
+- [`init` 关键字参考](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init)
+- [`required` 修饰符参考](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/required)
+- [C# 语言规范：属性](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/classes#157-properties)

@@ -1,0 +1,400 @@
+---
+title: Go slices
+description: Slices are Go's dynamic views over contiguous elements; understanding length, capacity, backing arrays, and append prevents subtle sharing bugs.
+track: go
+section: basics
+difficulty: beginner
+tags: [slices, arrays, append, memory]
+prerequisites: [go/fundamentals]
+related: [go/maps, go/structs, go/generics, go/concurrency-patterns]
+terms: [slice-header, backing-array, full-slice-expression, nil-slice]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/slices
+sources:
+  - { title: 'The Go Programming Language Specification - Slice types', url: 'https://go.dev/ref/spec#Slice_types' }
+  - { title: 'Go blog - Go Slices: usage and internals', url: 'https://go.dev/blog/slices-intro' }
+  - { title: 'Go built-in functions - append', url: 'https://pkg.go.dev/builtin#append' }
+  - { title: 'Go slices package', url: 'https://pkg.go.dev/slices' }
+origin: old/src/content/docs/go/slices.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A slice is a descriptor for a contiguous part of a backing array. Its value carries a start, length, and capacity, while the length is not part of the `[]T` type.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Copying a slice copies only its descriptor, so several slices may still share elements. `append` sometimes reuses the backing array and sometimes replaces it.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Always keep the value returned by `append`, use `slices.Clone` when data must be independent, and define nil-versus-empty behavior at API boundaries.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A slice is Go's main type for representing a contiguous sequence of elements. `[]T` means a slice whose element type is `T`, with a length decided at runtime. By contrast, an array type `[N]T` includes the length `N` in its type. Most Go APIs that accept or return a sequence use a slice instead of a fixed-length array.
+
+A slice value describes part of a <Term id="backing-array">backing array</Term>. It does not carry all of its elements inside the variable, and it is not a container object with automatic synchronization. Assigning a slice to another variable or passing it to a function still copies a value, but the copied descriptor usually points to the same elements.
+
+This design makes array windows cheap to pass and lets `append` grow a sequence when needed. The cost is that aliasing is not obvious from the type: two unrelated-looking `[]byte` values may refer to the same buffer. When you read slice code, track ownership of the backing array as well as the element type, length, and capacity.
+
+Slices fit request results, batches, buffers, and ordered records. If the element count is fixed at compile time, an array may express that constraint better. If lookup by key is the main operation, a map is a better fit. A slice does not provide uniqueness, synchronization, or immutability.
+
+This topic focuses on slice values, slice expressions, `append`, copying, and the nil-versus-empty distinction. The standard `slices` package also provides sorting and searching, but algorithm selection and domain-specific containers are outside this topic.
+
+## How it works
+
+### A slice value describes storage
+
+Semantically, a <Term id="slice-header">slice header</Term> contains a start into backing storage, a length, and a capacity. The length is the number of elements currently reachable by indexing. The capacity is the number of elements that storage can accommodate from the slice's start. `len(s)` and `cap(s)` read these two values.
+
+Those three parts are a reliable model, not a memory layout for application code to depend on. `reflect.SliceHeader` exists for low-level interoperation, and assembling slices with it and `unsafe` can violate garbage-collector and pointer rules. Ordinary code should use slice expressions, `make`, `append`, `copy`, and the `slices` package.
+
+Copying the header does not copy any elements. The two variables in the table can have different lengths and capacities while overlapping indices still name the same array element.
+
+| Property | Meaning of `inventory[1:4]` | Effect |
+| --- | --- | --- |
+| Start | Original array index `1` | Slice index `0` names that element |
+| Length | `4 - 1`, which is `3` | Valid indices run from `0` through `2` |
+| Capacity | From index `1` to the array's end | Controls space available to an in-place `append` |
+
+An out-of-range index panics at runtime. Capacity cannot be less than length. `make([]T, length, capacity)` with that invalid relationship either fails to compile for constant arguments or panics when the arguments are runtime values.
+
+### Construction, zero values, and preallocation
+
+A slice literal such as `[]int{2, 4, 6}` creates a slice containing three elements. Slicing an array or another slice with `source[low:high]` creates a new view over shared storage. `make([]T, n)` creates a slice whose length and capacity are at least `n`; its first `n` elements already exist and contain the zero value of `T`.
+
+To append an estimated `n` results one at a time, the common form is `make([]T, 0, n)`. Length zero says that no elements exist yet, while capacity `n` reserves room for later appends. If the final length is known, use `make([]T, n)` and fill by index. These forms describe different initial contents.
+
+The declaration `var values []T` produces a <Term id="nil-slice">nil slice</Term>. Its length and capacity are zero, and it is safe to range over it, append to it, and pass it to `copy`. An empty literal `[]T{}` also has no elements, but it is not equal to `nil`.
+
+These construction forms are all valid, but their contracts differ:
+
+1. `var values []int` represents a nil slice with no result yet.
+2. `values := []int{10, 20}` creates and fills two elements.
+3. `values := make([]int, 5)` creates five indexable zero-valued elements.
+4. `values := make([]int, 0, 5)` creates an empty result with capacity for five elements.
+
+### Half-open bounds and capacity limits
+
+The simple slice expression `source[low:high]` uses a half-open interval: it includes `low` and excludes `high`. The new slice length is `high - low`. When slicing an array, an omitted low bound defaults to zero and an omitted high bound defaults to the array length. When reslicing a slice, the high bound can extend to its capacity when the rules allow it.
+
+A <Term id="full-slice-expression">full slice expression</Term> is written `source[low:high:max]`. It limits the new capacity to `max - low`, so `source[i:j:j]` has equal length and capacity. A later append then has no tail capacity to reuse and must choose a new backing array for its result.
+
+The capacity limit isolates future growth, not existing elements. Assigning to any current index of `source[i:j:j]` still modifies the shared backing array. If the caller must not modify existing elements either, copy the data instead of merely limiting capacity.
+
+Slice bounds must satisfy their ordering and range constraints. When bounds come from external input, validate them before evaluating the slice expression. Treating a panic as an ordinary input error makes an API's contract needlessly obscure.
+
+### `append` returns a new slice value
+
+`append(s, values...)` returns a slice containing the additional elements. If `s` has enough capacity, it reuses the backing array. Otherwise, it allocates a sufficiently large new array and copies the existing elements. The language specification does not promise a growth factor, so code must not depend on the next capacity.
+
+Both paths return a new length, so write `s = append(s, value)`. If you ignore the result, the caller's visible length does not change. When the original slice has spare capacity, however, an invisible position in the backing array may still have been written. That combination is hard to diagnose because logging only the original slice hides the write.
+
+Passing a slice to a function does not change this rule. The function receives a header copy and can change elements inside the shared range, but it normally must return a slice for the caller to see a new length. Consider `*[]T` only when an API genuinely needs to replace the caller's slice variable directly. A helper returning `[]T` is clearer for most append operations.
+
+To append another slice's elements, write `append(dst, src...)`. Overlap between source and destination has defined behavior, but complicated overlapping expressions are difficult to review. If the intent is to copy all data, `slices.Clone` is usually clearer.
+
+### Copying, clearing, and the `slices` package
+
+The assignment `clone := source` copies only the header. The built-in `copy(dst, src)` copies `min(len(dst), len(src))` elements and returns the number copied; it also handles overlapping source and destination correctly. The destination must already have enough length, not just capacity, because `copy` does not extend it.
+
+The standard `slices.Clone(source)` makes a shallow copy: the new slice has an independent backing array, but pointer, map, slice, or other reference-like elements can still refer to shared objects. `slices.Equal` compares comparable elements and treats a nil slice and a non-nil empty slice as equal because both have length zero.
+
+`clear(s)` sets elements within the slice's current length to their zero value without changing length or capacity. When pointer-bearing elements are deleted, stale tail references can keep objects alive. The current `slices.Delete` clears the now-unused tail elements. Hand-written deletion logic should explicitly clear those slots as it shortens the length.
+
+`slices.Delete`, `slices.Insert`, and sorting functions may reuse the input's backing array. Use their returned values and treat the original slice as potentially modified. Clone first when you must preserve an input snapshot.
+
+### Nil and empty slices are an API choice
+
+Nil and non-nil empty slices both satisfy `len(s) == 0`; a `range` has no iterations, and `append` works on either. Slices cannot be compared to each other with `==`. The only direct slice comparison allowed is against `nil`; use `slices.Equal` or a custom rule for contents.
+
+Some boundaries expose a difference. The standard `encoding/json` package encodes a nil slice as `null` by default and a non-nil empty slice as `[]`. Reflection, database drivers, and other serializers may preserve the distinction too, so the API contract should decide which value to return.
+
+If an interface means only "zero elements," asking callers to rely on `len(s) == 0` is usually robust. If a JSON field must always be an array, construct a non-nil empty slice at that boundary or provide custom encoding. Do not convert back and forth throughout business logic without a reason.
+
+## Examples
+
+The four programs build from shared elements to append results, independent copies, and serialization boundaries. Save each program separately and run it with `go run filename`. The output shown came from the local Go toolchain.
+
+### Observe shared storage and a capacity limit
+
+`window` shares three visible elements with the array, so assigning `window[1]` changes the array. `limited` uses a full slice expression to reduce capacity to length. Appending a fourth element must move its result to different backing storage.
+
+<Depth level="quick">
+
+```go run title="views.go"
+package main
+
+import "fmt"
+
+func main() {
+	inventory := [6]string{"pen", "notebook", "eraser", "ruler", "tape", "clips"}
+	window := inventory[1:4]
+
+	fmt.Printf("window=%v len=%d cap=%d\n", window, len(window), cap(window))
+	window[1] = "marker"
+	fmt.Println("inventory after write:", inventory)
+
+	// Limit capacity so append cannot overwrite later inventory elements.
+	limited := window[:len(window):len(window)]
+	limited = append(limited, "stapler")
+	fmt.Println("limited after append:", limited)
+	fmt.Println("inventory after append:", inventory)
+}
+```
+
+```text
+window=[notebook eraser ruler] len=3 cap=5
+inventory after write: [pen notebook marker ruler tape clips]
+limited after append: [notebook marker ruler stapler]
+inventory after append: [pen notebook marker ruler tape clips]
+```
+
+</Depth>
+
+The full expression did not stop `window[1]` from changing the array because that element was already in the shared range. It only forced later growth away from the original array. Use `slices.Clone(window)` instead if the first three elements must be isolated too.
+
+### Keep an `append` result across a function call
+
+The first call deliberately discards its result. `states` has spare capacity, so the string reaches the third backing-array slot, but the caller's length remains two. The second call appends from that same length and overwrites the invisible value.
+
+```go run title="append_result.go"
+package main
+
+import "fmt"
+
+func appendState(states []string, state string) []string {
+	return append(states, state)
+}
+
+func main() {
+	states := make([]string, 2, 4)
+	states[0], states[1] = "new", "paid"
+
+	// The result is discarded, so the caller's length stays 2.
+	appendState(states, "packed")
+	fmt.Println("visible after ignored result:", states)
+	fmt.Println("hidden backing slot:", states[:cap(states)][2])
+
+	states = appendState(states, "shipped")
+	fmt.Println("after assigned result:", states)
+}
+```
+
+```text
+visible after ignored result: [new paid]
+hidden backing slot: packed
+after assigned result: [new paid shipped]
+```
+
+The useful contract is for the helper to return the new slice and for the caller to assign it. Tests should cover inputs where length equals capacity and where spare capacity remains, because the same bug looks different on the two paths.
+
+### Clone before deleting elements
+
+This program uses `slices.Clone` to make an independent queue before changing and deleting a range. The original workflow stays intact, and `slices.Equal` returns `false` based on the new length and elements.
+
+```go run title="clone_delete.go"
+package main
+
+import (
+	"fmt"
+	"slices"
+)
+
+func main() {
+	original := []string{"draft", "review", "publish", "archive"}
+	queue := slices.Clone(original)
+
+	queue[0] = "queued"
+	queue = slices.Delete(queue, 1, 3)
+
+	fmt.Println("original:", original)
+	fmt.Println("queue:", queue)
+	fmt.Println("same contents:", slices.Equal(original, queue))
+}
+```
+
+```text
+original: [draft review publish archive]
+queue: [queued archive]
+same contents: false
+```
+
+Cloning is shallow, but this example's elements are string values, so changing a queue slot does not rewrite the corresponding slot in the original. If the elements were `*Record`, pointers in both slices could still name the same `Record`.
+
+### Fix the JSON contract for nil and empty slices
+
+The program sends both zero-length forms through `encoding/json`. They behave alike for `len` and `append`, but their default JSON shapes differ.
+
+```go run title="nil_empty.go"
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+func encode(values []string) string {
+	data, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func main() {
+	var missing []string
+	empty := []string{}
+
+	fmt.Printf("missing: nil=%t len=%d JSON=%s\n", missing == nil, len(missing), encode(missing))
+	fmt.Printf("empty: nil=%t len=%d JSON=%s\n", empty == nil, len(empty), encode(empty))
+
+	missing = append(missing, "ready")
+	fmt.Println("after append:", missing)
+}
+```
+
+```text
+missing: nil=true len=0 JSON=null
+empty: nil=false len=0 JSON=[]
+after append: [ready]
+```
+
+If a response schema requires an array, ensure the field is non-nil when constructing the response and test the zero-result case. If `null` means "not queried," keep nil and document that additional state.
+
+## Pitfalls
+
+### Treating slice assignment as a data copy
+
+> [!PITFALL]
+> `backup := records` copies only the slice header. Changing `backup[i]` will usually change `records[i]` too.
+
+**Fix:** use `slices.Clone(records)` when the top-level element slots must be independent, or allocate a destination of sufficient length and call `copy`. If an element itself contains a pointer, map, or slice, decide whether recursive copying is required. A shallow copy and a deep copy are different contracts.
+
+### Assuming `append` always or never allocates
+
+> [!PITFALL]
+> With spare capacity, `append` can overwrite a shared array. Without it, the result moves away from the original array. Depending on either path creates capacity-sensitive bugs.
+
+**Fix:** always use the returned value, and do not infer ownership from an observed growth factor. If a function must not modify its caller's later elements, give it a read-only contract and clone. If only growth must not overwrite the tail, pass a capacity-limited slice.
+
+### Confusing `make` length with capacity
+
+> [!PITFALL]
+> `make([]Item, n)` already contains `n` zero-valued elements. Appending another `n` results creates length `2n` with a zero-valued first half.
+
+**Fix:** use `make([]Item, 0, n)` when appending items and `make([]Item, n)` when filling by index. During review, read the allocation and the write pattern together. The fact that generated code "preallocates" does not prove it chose the right length.
+
+### Letting a small slice retain a large array
+
+> [!PITFALL]
+> Returning a tiny subslice of a large buffer can keep the whole backing array reachable. Reducing capacity to length does not detach that storage.
+
+**Fix:** when the small result will live for a long time, copy its elements with `slices.Clone` or `append([]T(nil), part...)`. Whether that allocation is worthwhile depends on size and lifetime, so confirm a real problem with memory profiles instead of copying every subslice mechanically.
+For `[]*T`, a hand-written `copy` followed by shortening can also leave stale pointers in the tail. Use the current `slices.Delete`, which clears discarded slots, or call `clear` on the tail yourself; keep the function's returned value as well.
+
+### Changing nil and empty slices casually
+
+> [!PITFALL]
+> Replacing a nil result with an empty literal may leave loops unchanged while changing JSON from `null` to `[]`, breaking an external schema.
+
+**Fix:** test serialized output at the API boundary and document whether a zero result carries state. When an internal algorithm does not care, use `len(s) == 0` rather than spreading unnecessary nil checks.
+
+### Appending to a shared slice concurrently
+
+> [!PITFALL]
+> Concurrent writes by several goroutines to one slice variable or shared elements cause a data race. Reserving enough capacity does not make `append` safe.
+
+**Fix:** give one goroutine ownership and collect values through a channel, or protect the header and related elements with a mutex. Goroutines may also write to preallocated, non-overlapping indices, but the index partition must be proven and the tests should run under the race detector.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often produce a zero-value prefix by writing `make([]T, n)` followed by a loop that calls `append`. They also describe `dst := src` as a copy. Another common failure is a helper that appends internally without returning the new slice, or a caller that ignores the return. Generated concurrent code may have several goroutines append to one slice; small test inputs can look fine despite races on the header and backing array.
+
+**Ask your AI to check**
+
+- Mark the backing-array owner for every slice and list every pair of slices whose ranges overlap.
+- Trace each `append` with both `len == cap` and `len < cap` inputs, confirming that every returned value is used.
+- Check the JSON shape of zero results and whether locks, single ownership, or disjoint indices protect every concurrent write.
+
+**Review checklist**
+
+- Compare every `make` length and capacity with the code's subsequent write pattern.
+- Mutation-test assignments, return values, and subslices that claim independence, then observe whether the source data changes.
+- Run `go test -race ./...` on shared-slice paths and test empty, single-element, and capacity-boundary inputs.
+
+**Prompt vocabulary**
+
+Use the exact terms `slice header`, `backing array`, `length`, `capacity`, `aliasing`, `full slice expression`, `append reallocation`, `shallow copy`, and `nil versus empty slice`. Ask the model to show `len`, `cap`, and sharing after every operation. That exposes more than a vague request to "check whether the slice is safe."
+
+<Depth level="deep">
+
+## Aliasing, lifetime, and implementation boundaries
+
+### Value semantics do not mean independent storage
+
+Go has only value parameter passing. A function accepting `[]T` gets a copy of the slice descriptor, while the elements reached through it may remain shared with the caller. Calling a slice a "reference type" is convenient shorthand, but it does not mean a function can replace the caller's length, capacity, or start.
+
+Reason separately about element writes and slice-variable writes. `s[0] = value` follows the descriptor to a shared element and is normally visible to the caller. `s = append(s, value)` creates a new slice value and updates only the function's local variable unless the function returns it or explicitly writes through a pointer.
+
+Slices can also contain slices, as in `[][]byte`. Cloning the outer slice copies only the inner slice headers, so each row's bytes remain shared. For genuinely independent two-dimensional data, clone every inner slice and test that changing one copy leaves the other unchanged.
+
+### A full slice expression provides limited isolation
+
+The expression `part := whole[i:j:j]` sets `part`'s capacity to its length. Appending at least one element can no longer occupy `whole[j]`. This is useful when passing a growable window to a helper that must not overwrite the data following that window.
+
+It is not an immutable view. The helper can still modify `part[0:len(part)]`, and those writes appear in `whole`. It also does not release the original array because `part` still points into that allocation. Copy when you need either write isolation or lifetime isolation.
+
+Capacity is not an authorization boundary either. Code receiving a slice can reslice it within the limits the language allows. Do not place sensitive data beside a mutable view in one backing array and rely on convention to prevent access. A real boundary hands over independent storage or only exposes copied data.
+
+### Stack, heap, and escape analysis
+
+"Slices live on the heap" is inaccurate. The compiler decides whether a slice variable and its backing array live on a stack or the heap using escape analysis, size, and optimization decisions. The language specification does not promise either placement, and correct code cannot rely on it.
+
+Returning a slice is safe even when it began with an array created inside the function. If the storage must outlive the call, the compiler and runtime arrange a valid lifetime. Hand-writing an `unsafe` pointer to "avoid returning stack memory" discards Go's safety guarantees instead of improving them.
+
+Performance decisions need benchmarks, allocation statistics, and profiles. Preallocation can reduce growth, but an oversized capacity can also retain more memory. The right capacity comes from the workload, not a fixed growth-ratio rule.
+
+### The cost of retaining a backing array
+
+A subslice with a tiny visible range still keeps its backing array reachable. A typical failure reads a large file or network frame and caches a few dozen bytes from it for a long time. Copying those bytes adds a small allocation but lets the large buffer be collected.
+
+For slices containing pointers, distinguish retaining the array itself from retaining objects referenced by array slots. Shortening a slice does not necessarily express that tail objects are dead. `clear` and current standard-library deletion helpers remove pointers from discarded slots, after which you must still check for other slice aliases.
+
+`slices.Clip` limits capacity to length, but its definition is equivalent to `s[:len(s):len(s)]`; it does not copy the backing array. It can stop a result from growing in place into unused capacity, but it cannot fix large-array retention. Use `slices.Clone` to break that retention relationship.
+
+### Standard helpers still carry ownership semantics
+
+The generic `slices` package makes comparison, cloning, insertion, deletion, and sorting easier to read, but it does not eliminate backing arrays. `Clone` explicitly copies. Many other functions modify or reuse input storage for efficiency and return a possibly updated slice.
+
+Decide whether the input may change before the call, and use the return afterward. If a function documents storage sharing, include that relationship in the caller's ownership reasoning. A name such as `Delete` or `Compact` does not prove that a new array was allocated.
+
+For named slice types, generic helpers generally preserve the type expressed by the slice type parameter. Review still needs to account for element-level shallow copying. Preserving a type does not copy the objects referenced by its elements.
+
+Trace the ownership effect of a slice operation in a fixed order:
+
+1. Record the slice's start, length, capacity, and known aliases before the operation.
+2. Decide whether the operation writes existing elements or changes the slice descriptor.
+3. For `append`, analyze both backing-array reuse and reallocation.
+4. Record which slices and backing arrays remain reachable after the function returns.
+
+This trace does not require private runtime fields. It follows directly from language guarantees and handles combinations of capacity changes, returned subslices, and shallow copies.
+
+If sharing is still unclear, write a minimal test that prints the relevant slices before and after a mutation and checks the source data. A behavior test is more reliable than guessing whether one allocation occurred.
+
+</Depth>
+
+<Checkpoint id="go/slices" />
+
+## Further reading
+
+- [Go language specification: slice types](https://go.dev/ref/spec#Slice_types)
+- [Go blog: slice usage and internals](https://go.dev/blog/slices-intro)
+- [Built-in `append` documentation](https://pkg.go.dev/builtin#append)
+- [Standard `slices` package](https://pkg.go.dev/slices)

@@ -1,0 +1,404 @@
+---
+title: 记录类型
+description: 用 C# 记录类与记录结构体建模数据，并明确处理相等性、复制、可变性与继承行为。
+track: csharp
+section: types-linq
+difficulty: intermediate
+tags: [records, value-equality, with-expression, immutability, record-struct]
+prerequisites: [csharp/fundamentals, csharp/data-types, csharp/properties]
+related: [csharp/pattern-matching, csharp/collections, csharp/properties, csharp/ef-core]
+terms: [record-type, structural-equality, init-accessor, shallow-copy, value-type, with-expression]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/records
+sources:
+  - { title: 'Records - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record' }
+  - { title: 'C# record types', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/records' }
+  - { title: 'The with expression - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/with-expression' }
+  - { title: 'The init keyword - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init' }
+origin: old/src/content/docs/csharp/records.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    记录类型是以成员值决定相等性的类或结构体；编译器会生成相等比较、显示与复制支持。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    记录类型并非深层不可变，`with` 也只做浅拷贝。可变成员可能同时影响两个副本，或使记录不再适合作为哈希键。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明确选择类或结构体形式，保持参与相等判断的成员稳定，并测试嵌套引用、结构体默认值与复制后的不变量。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="record-type">记录类型（record type）</Term>是一种类或结构体，其编译器生成的契约把数据视为类型的核心。两个分别分配的记录对象，只要对应成员相等，就可以比较为相等。普通类默认比较引用标识，除非你另行实现相等契约。
+
+`record` 修饰符要求编译器生成值相等比较、配套哈希行为、可读的 `ToString()` 与 `with` 表达式支持。位置记录还会得到主构造函数、公开属性与 `Deconstruct()`。这些成员消除了重复代码，却不会替你决定哪些数据应该属于该类型。
+
+当数据内容决定身份时，记录类型适合数据传输对象、消息、坐标、金额值与快照。若实体在属性变化后仍保持同一身份，记录类型通常不是默认选择。例如，客户改名后仍是同一位客户，用基于 ID 的类契约可能比比较每个记录成员更清楚。
+
+`record` 与 `record class` 声明引用类型；`record struct` 与 `readonly record struct` 声明<Term id="value-type">值类型（value type）</Term>。它们共享编译器生成的记录功能，但赋值、可空性、继承与默认值行为仍由底层的类或结构体语义决定。
+
+记录类型不承诺不可变。位置记录类的属性带有 `init` 访问器，但记录仍可声明可写属性，也可以包含可变对象。非只读 `record struct` 的位置属性默认可读写。
+
+## 工作原理
+
+### 位置声明与生成成员
+
+`public record OrderLine(string Sku, int Quantity);` 声明一个记录类。两个位置参数会成为公开的 `init`-only 属性、构造函数参数与生成的 `Deconstruct()` 输出，并参与编译器生成的相等比较与字符串表示。
+
+名义记录用普通类型体替代位置参数。它仍会得到记录类型的相等、哈希、显示与复制成员，但不会仅因为写了 `record` 就自动得到主构造函数或 `Deconstruct()`。需要展开属性名称、默认值、访问器或构造规则时，适合使用这种形式。
+
+<Term id="init-accessor">`init` 访问器（init accessor）</Term>允许在对象构造阶段和 `with` 初始化器中赋值，之后拒绝普通赋值。这只提供浅层不可变性。若一个 `init`-only 属性指向 `List<T>`，调用方在构造后仍能修改该列表。
+
+生成的接口取决于声明形式：
+
+| 声明 | 底层类型 | 位置属性 | 继承 | `default` 值 |
+| --- | --- | --- | --- | --- |
+| `record` / `record class` | 引用类型 | `get; init;` | 其他记录类 | `null` |
+| `record struct` | 值类型 | `get; set;` | 不支持结构体继承 | 全零初始化值 |
+| `readonly record struct` | 值类型 | `get; init;` | 不支持结构体继承 | 全零初始化值 |
+
+### 相等性与哈希码
+
+编译器生成的记录相等性，是针对记录实例状态的<Term id="structural-equality">结构相等性（structural equality）</Term>。每个成员沿用自身的相等契约。字符串按内容比较，而数组和常见可变列表类默认按引用比较，除非另有比较器或包装类型定义不同规则。
+
+在同一次执行中，相等的记录会产生相同哈希码，因此记录可用作字典键或集合元素。反向推论并不成立，不相等的值可能发生哈希冲突。更重要的是，记录存放在哈希集合期间，所有参与相等与哈希的值都必须保持稳定。
+
+插入后修改可写属性，可能改变生成的哈希码。字典随后会去另一个桶查找，甚至找不到当初作为键插入的同一个对象。`init` 能降低顶层属性的这类风险，却不能阻止嵌套对象改变自身的相等行为。
+
+记录类继承会在相等判断中加入运行时类型检查。基类记录实例与派生记录实例不会仅因共有成员一致而相等。这样才能保持对称性，即 `baseValue.Equals(derivedValue)` 与反向调用必须得到同一答案。
+
+### 使用 `with` 复制
+
+<Term id="with-expression">`with` 表达式（with expression）</Term>先创建副本，再给初始化器中点名的成员赋值。对记录类，编译器生成的机制会按复制语义创建新对象；对记录结构体，则先复制值，再修改副本上选定的字段或属性。
+
+默认结果是<Term id="shallow-copy">浅拷贝（shallow copy）</Term>。除非初始化器替换引用类型成员，否则它们仍指向同一个嵌套实例。`original with { Name = "new" }` 不会克隆其他成员保存的数组、列表、字典或对象。
+
+在记录类继承体系中，结果会保留操作数的运行时类型。静态类型为基记录的变量可以指向派生记录，对它使用 `with` 仍会生成另一个派生对象。初始化器只能点名接收者编译时类型可见的成员。
+
+复制还会影响派生值或缓存值。由位置参数计算的属性初始化器在原始构造时运行，其存储结果随后被复制。如果 `with` 改变输入属性，这个已存结果可能过期；应在访问时计算依赖值，或明确重建不变量。
+
+### 先决定相等性，再选择语法
+
+决定性问题是：哪些值一致时，两个实例可以互换？如果答案是所有稳定成员值，记录生成的契约很有用。如果相等性取决于数据库身份、规范化策略、序列内容或领域容差，就不能未经审查直接接受生成的相等行为。
+
+复制语义是另一个决定。普通赋值记录类时复制的是引用，使用 `with` 才会创建新的外层对象。记录结构体在普通赋值时也会复制字段，因此大型或可变结构体即使没有出现 `with`，也可能让调用方意外。
+
+构造规则需要单独处理。`required` 可以要求调用方初始化成员，却不会校验范围或跨成员关系。构造函数、工厂与验证访问器仍需覆盖无效值的测试；无论构造函数检查了什么，`default(SomeRecordStruct)` 始终存在。
+
+## 示例
+
+下面的示例依次展示生成的位置接口、浅拷贝、嵌套成员相等性与记录继承。本地环境没有 .NET SDK 或 C# 编译器，因此所有代码块都明确标为未执行，也不编造输出。
+
+### 查看位置记录的接口
+
+两个分别创建的订单行会比较为相等。解构遵循位置顺序，`with` 则创建修改后的外层对象，不改变原对象。
+
+<Depth level="quick">
+
+```csharp title="OrderLine.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+
+OrderLine first = new("KB-42", 2);
+OrderLine duplicate = new("KB-42", 2);
+OrderLine revised = first with { Quantity = 3 };
+
+var (sku, quantity) = first;
+
+Console.WriteLine(first == duplicate);
+Console.WriteLine(ReferenceEquals(first, duplicate));
+Console.WriteLine($"{sku}: {quantity}");
+Console.WriteLine(first);
+Console.WriteLine(revised);
+
+public sealed record OrderLine(string Sku, int Quantity);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+<TryToBreak items={['空 SKU', '数量为零', '两个只有字母大小写不同的值']} />
+
+</Depth>
+
+这个声明没有验证逻辑，因此生成的构造函数会接受挑战项中的边界值。这里使用按成员顺序比较的相等性，编译器不会修剪 SKU、折叠大小写，也不会推断数量必须为正。
+
+`sealed` 阻止派生记录扩大相等性定义域。对于含义封闭的小型值，这是合理选择，但它不会让引用类型成员变为不可变。
+
+### 暴露浅拷贝
+
+`with` 表达式修改了 `Version`，但只复制 `Tags` 引用。通过任一记录修改列表，另一个记录都会看到变化。
+
+```csharp title="ReleaseNotes.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+
+ReleaseNotes original = new("1.0", ["preview"]);
+ReleaseNotes published = original with { Version = "1.1" };
+
+published.Tags.Add("stable");
+
+Console.WriteLine(ReferenceEquals(original, published));
+Console.WriteLine(ReferenceEquals(original.Tags, published.Tags));
+Console.WriteLine(string.Join(", ", original.Tags));
+Console.WriteLine(string.Join(", ", published.Tags));
+
+public sealed record ReleaseNotes(
+    string Version,
+    List<string> Tags);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+把属性写成 `IReadOnlyList<string>` 会限制通过该接口修改，却不会复制传入对象，也不能保证实际实现不可变。当记录契约要求内容固定时，需要定义集合所有权，并取得防御性快照或不可变快照。
+
+记录类可以用自定义复制行为克隆嵌套状态，但出人意料的深拷贝不一定更好。必须说明对象图中哪些边会复制；否则遇到身份敏感对象、资源与循环时，「全部克隆」本身就没有明确含义。
+
+### 测试嵌套成员相等性
+
+数组自身的 `Equals` 使用引用相等性。前两个键共享同一个数组，因此比较为相等；第三个键使用内容相同但实例不同的数组，不满足生成的记录相等性。
+
+```csharp title="CacheKey.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+
+string[] sharedScopes = ["read", "write"];
+
+CacheKey first = new("tenant-a", sharedScopes);
+CacheKey sameReference = new("tenant-a", sharedScopes);
+CacheKey sameContents = new("tenant-a", ["read", "write"]);
+
+HashSet<CacheKey> keys = [first, sameReference, sameContents];
+
+Console.WriteLine(first == sameReference);
+Console.WriteLine(first == sameContents);
+Console.WriteLine(keys.Count);
+
+public sealed record CacheKey(
+    string TenantId,
+    string[] Scopes);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+把数组替换为 `IReadOnlyList<string>` 本身不会改变相等行为。若序列内容定义这个值，应使用具备序列相等性的包装类型，或实现完整的相等与哈希契约。只自定义 `Equals` 而不提供匹配的 `GetHashCode`，会破坏哈希集合行为。
+
+缓存键必须包含租户、区域、权限与规范化版本等所有隔离字段。记录语法无法判断遗漏字段究竟无关紧要，还是会导致跨租户数据泄漏。
+
+### 结合继承与模式
+
+这个继承体系为每种消息提供简洁的数据形状。模式匹配随后可以在消费边界区分派生运行时类型，并校验其中的值。
+
+```csharp title="PaymentMessage.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+
+PaymentMessage[] messages =
+[
+    new Authorized("P-17", 42m),
+    new Declined("P-18", "insufficient-funds")
+];
+
+foreach (PaymentMessage message in messages)
+    Console.WriteLine(Describe(message));
+
+static string Describe(PaymentMessage message) => message switch
+{
+    Authorized { Amount: > 0m } paid => $"paid {paid.Id}: {paid.Amount}",
+    Authorized => "invalid authorization",
+    Declined { Reason.Length: > 0 } failed => $"declined {failed.Id}: {failed.Reason}",
+    _ => "unknown payment message"
+};
+
+public abstract record PaymentMessage(string Id);
+public sealed record Authorized(string Id, decimal Amount) : PaymentMessage(Id);
+public sealed record Declined(string Id, string Reason) : PaymentMessage(Id);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+基类型明确列出可接受的类型族，但 C# 记录继承并不是密封联合。另一个程序集仍可从可访问且未密封的基类派生，所以最后一个分支必须定义未知类型策略。
+
+模式匹配只消费记录形状，不负责验证构造。如果负数金额在任何位置都不应存在，应在消息进入继承体系前建立不变量，而不是要求每个消费者重复同一个分支。
+
+## 陷阱
+
+### 把所有记录都称为不可变
+
+> [!PITFALL]
+> 位置记录类公开 `init` 属性，但记录可以声明 `set` 属性，也可以保存可变引用。普通 `record struct` 的位置属性默认可写。
+
+**修复方法：** 审查每个字段与属性，包括嵌套对象。不需要值类型变更时使用 `readonly record struct`；内容必须固定时，对调用方拥有的集合取得快照。
+
+### 假设 `with` 会深拷贝
+
+> [!PITFALL]
+> 生成的 `with` 副本会共享引用类型成员。通过副本修改嵌套列表、数组、字典或领域对象，可能改变原记录观察到的内容。
+
+**修复方法：** 对所有权敏感的嵌套成员测试 `ReferenceEquals`。可以在初始化器中替换成员、使用不可变表示，或在更深复制属于契约时，为记录类定义并说明自定义复制行为。
+
+### 误以为生成的相等性会比较集合内容
+
+> [!PITFALL]
+> 记录会把成员比较委托给成员类型。元素相同但实例不同的数组或列表通常仍不相等；两个记录若共享同一个可变集合，则在集合内容变化后仍可能相等。
+
+**修复方法：** 明确集合身份、顺序敏感的内容或集合式内容中，哪一种定义相等。把选择编码进包装类型或自定义比较器，并验证相等值始终产生相同哈希码。
+
+### 修改哈希键
+
+> [!PITFALL]
+> 记录进入 `Dictionary` 或 `HashSet` 后，若参与生成哈希的可写成员发生变化，查找可能失败，因为对象现在会散列到另一个桶。
+
+**修复方法：** 键位于集合期间，必须保持其哈希状态稳定。优先使用由规范化标量值组成的小型不可变键记录，并在每个可能修改嵌套状态的操作后测试查找。
+
+### 忘记记录结构体的全零值
+
+> [!PITFALL]
+> 即使公开构造函数拒绝零、`null` 或其他无效组合，`default(MyRecordStruct)` 依然存在。该结构体类型的数组与字段也可能从同一个全零状态开始。
+
+**修复方法：** 让零值具备有效含义，或者在使用前验证；若「没有值」必须单独表达，可以选择记录类或显式可选包装。只靠构造函数验证无法禁止结构体默认值。
+
+### 让复制后的属性过期
+
+> [!PITFALL]
+> 根据另一个属性初始化的存储属性，在 `with` 改变输入后可能保留旧计算结果。复制操作先复制已存状态，再应用初始化器，并不会重新执行任意构造逻辑。
+
+**修复方法：** 计算成本较低时，把依赖值写成计算 getter；否则通过同时重建并验证所有依赖状态的操作更新。测试时用 `with` 逐一改变每个源成员，再读取所有派生成员。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把 DTO 改成记录类型后直接称其不可变，同时继续暴露 `List<T>` 成员。它会把 `with` 当成对象图的递归克隆，还会生成 `Normalized = Query.Trim()` 一类缓存属性，使其在后续副本修改 `Query` 后过期。对于缓存键，生成的记录还经常遗漏租户或授权范围，使用按引用比较的数组，或者加入能在插入后改变哈希的公开 setter。
+
+生成式重构还会把实体类改成记录类型，却不检查调用方是否依赖引用身份。另一个常见错误是为了所谓的分配优化，把 `record` 改成 `record struct`，同时忽略全零无效值、字段复制、装箱与普通位置属性自带的 setter。这些决定都不能只靠语法得出。
+
+**让 AI 检查**
+
+- 列出参与相等与哈希的每个输入，并说明各成员类型实际采用的相等行为和可变性。
+- 沿 `with` 操作向下跟踪一层引用，标出共享对象、替换成员、复制的缓存值，以及不会重新执行的验证。
+- 找出所有字典键、ORM 实体、消息基类与结构体默认值用法，并为身份、查找稳定性、未知派生类型和零值提出测试。
+
+**审查清单**
+
+- 验证两个独立构造的逻辑值是否按预期相等，覆盖数组、列表、大小写、规范化与派生运行时类型。
+- 复制后修改每个可达引用，确认共享或隔离行为符合所有权契约。
+- 对记录结构体执行 `default`，并在所有允许的修改后执行哈希查找；拒绝任何会让键漂移的状态。
+
+**提示词词汇**
+
+使用准确术语：`record class`（记录类）、`record struct`（记录结构体）、`readonly record struct`（只读记录结构体）、`value equality`（值相等性）、`reference identity`（引用身份）、`init-only property`（仅初始化属性）、`with expression`（`with` 表达式）、`shallow copy`（浅拷贝）、`copy constructor`（复制构造函数）、`EqualityContract` 与 `hash stability`（哈希稳定性）。要求模型给出相等成员表和对象所有权图；「用记录把它变成不可变」没有说明真正重要的决定。
+
+<Depth level="deep">
+
+## 相等性取决于成员是否稳定
+
+### 生成的比较是组合
+
+编译器不会递归检查任意对象来发现其内容，而是组合各个记录成员的相等操作。只要知道每个成员的契约，结果就可预测；但「值」这个词容易掩盖数组仍采用基于引用的值契约。
+
+可空成员遵循自身的一般相等语义。浮点成员保留浮点规则，包括对 `NaN` 的处理；字符串也保留规定的字符串相等性。记录功能不会自动加入大小写折叠、Unicode 规范化、时区转换或金额舍入等领域规则。
+
+若生成的相等性不符合领域契约，一个专门的规范化字段往往比庞大的自定义相等实现更稳妥。用已验证输入构造一次该字段，并保持稳定。自定义相等必须满足自反、对称与传递性，哈希码也必须使用同一组相等输入。
+
+### 键在集合中必须保持不变
+
+哈希集合假设键从插入到移除期间，相等性与哈希码始终稳定。这是生命周期规则，不只是「不可变类型」标签。若私有修改方法在对象作为键期间运行，它和公开 setter 一样会破坏该规则。
+
+嵌套可变对象更隐蔽，因为影响取决于它自己的契约。修改 `List<T>` 通常不会改变列表对象的身份哈希，但替换列表引用会改变记录哈希。如果自定义序列相等包装按元素散列，修改一个元素就可能立即破坏查找。
+
+缓存键应小于被缓存的值。键记录通常只应包含已规范化的标识符和标量选项，不应保存完整请求、载荷、服务引用或可变集合。这样也能让日志与测试更容易解释，而无需声称未经测量的性能数字。
+
+## 复制、验证与派生状态
+
+### 复制操作不等于重新构造
+
+记录类的 `with` 操作先执行复制行为，再应用成员初始化器。它不会像所有修改值同时进入那样调用公开构造函数。因此，只放在该公开构造函数中的验证可能管不到复制后的组合。
+
+`with` 初始化器给某个成员赋值时，会调用该成员的 `init` 访问器，所以局部成员验证仍可运行。跨成员规则更难处理：只改变 `Start` 而不改变 `End`，即使两个时间戳各自有效，也可能破坏时间区间。命名转换操作或工厂更适合表达原子规则。
+
+记录类可以通过复制构造函数自定义复制行为，结构体复制语义则不能以同样方式自定义。只有调用方能够准确说明哪些对象共享、哪些对象复制时，才应采用自定义复制。复制开放对象图属于另一个序列化或克隆设计问题。
+
+### 根据当前状态计算
+
+`Area => Width * Height` 这样的表达式体 getter 每次读取都会使用当前属性值；带 `= Width * Height` 初始化器的只读自动属性则只存储一次结果。浅拷贝改变 `Width` 后，后一个属性仍可能描述原对象。
+
+重新计算并非永远免费，但缓存需要失效契约。如果类型确实不可变，也无法通过副本修改输入，存储派生值可能安全。如果公开 API 包含 `with`，就要针对缓存测试每种允许的初始化器，或者不要把派生结果存入记录状态。
+
+序列化与反序列化还会增加一条构造路径。根据序列化器及其配置，构造函数、setter、必需成员检查与私有状态可能有不同表现。应测试实际序列化边界，不能把一个有效的 `new` 表达式当成所有物化记录都满足同一不变量的证据。
+
+## 继承与记录形状
+
+### 记录类形成独立继承体系
+
+记录类可以派生自另一个记录类，但记录不能直接派生自普通类，普通类也不能派生自记录。记录结构体不支持用户定义的类继承。所有这些形式仍可以实现接口。
+
+生成的相等契约包含类型身份，因此基类值与派生值不会只因共有字段相同而相等。缺少这条规则时，新增的派生状态可能导致相等性不对称，或让集合把契约不同的对象视为可以互换。
+
+`with` 使用虚拟的记录类复制行为保留运行时类型。这对多态快照有用，却可能让只看到基类变量的代码意外。基类型值跨越复制边界时，需要检查实际运行时类型与派生成员。
+
+### 位置形状也是 API
+
+位置记录会公开构造与解构顺序。交换两个同类型参数后，调用点可能仍能编译，却会悄悄改变含义。命名参数能帮助阅读，但修改参数名称也可能影响使用这些名称的调用方源码兼容性。
+
+当记录包含多个同类型成员时，属性模式通常比位置模式清楚。`{ Start: 0, End: var end }` 自带标签，`(0, var end)` 则要求读者记住 `Deconstruct()` 顺序。位置记录应保持短小，正在演化或验证繁重的契约更适合名义语法。
+
+添加新位置参数会同时改变构造、解构形状与相等性。这比添加非位置便利属性更大的兼容性变化。演化公开记录前，需要审查序列化模式、模式匹配、生成客户端与持久化哈希。
+
+## 在类、记录类与记录结构体之间选择
+
+当对象身份、可变生命周期、封装行为或框架跟踪定义模型时，普通类通常更清楚。类仍可以实现明确的值相等性，但那应该是有意的领域决定。不使用记录语法也不妨碍实现不可变。
+
+记录类适合需要值相等性与引用类型赋值语义的稳定数据。大型值在普通赋值时不必复制所有字段，也可以使用记录继承。`with` 仍会分配新的外层对象，因此更新频繁的热点路径必须用真实工作负载测量。
+
+记录结构体适合小型、自包含的值，前提是逐字段复制和零值都能接受。`readonly record struct` 会阻止生成的位置属性发生普通变更，但嵌套引用仍可能指向可变对象。不要沿用旧稿中「结构体必然位于栈上」的说法；存储位置取决于上下文与运行时行为。
+
+先按语义选择，再做测量。分配次数、相等成本、复制成本、装箱与缓存行为都取决于大小和用法。「小于 N 字节就始终使用结构体」一类规则需要针对目标环境的测量，没有数据时不应写进通用参考资料。
+
+### 诊断意外的记录行为
+
+先确认两个操作数的声明类型与运行时类型。它们决定普通赋值复制引用还是字段、继承是否影响相等，以及 `with` 初始化器可以点名哪些成员。接着检查成员契约，不要假设「值相等」就是递归内容相等。
+
+遇到相等或哈希错误时，按以下顺序缩小问题：
+
+1. 分别比较每个标量成员与运行时记录类型。
+2. 对引用类型成员同时测试 `Equals` 与 `ReferenceEquals`。
+3. 记录插入前的哈希，并在每种允许的修改后再次记录。
+4. 独立构造逻辑相等的值，不要复制第一个实例。
+
+遇到复制错误时，画出两个外层对象，并为每个引用成员画一个节点。执行 `with` 后，把每个输出成员连到它实际引用的对象。这个小型所有权草图通常能暴露共享列表，或从旧输入复制而来的缓存值。
+
+| 症状 | 首先检查的事实 |
+| --- | --- |
+| 外观看似相等的记录比较不等 | 成员相等性与运行时记录类型 |
+| 字典找不到自己的键 | 插入后是否修改了哈希相关状态 |
+| 复制后原对象也发生变化 | 是否共享引用类型成员 |
+| 派生值与输入不一致 | `with` 更新前是否复制了存储初始化值 |
+
+可以通过反射与反编译器查看编译器生成成员，但诊断应从公开语义开始。生成成员名称与降低后的实现细节可能变化；相等结果、复制共享关系、运行时类型与可观察属性值才是应测试的稳定契约。
+
+</Depth>
+
+<Checkpoint id="csharp/records" />
+
+## 延伸阅读
+
+- [记录类型：C# 参考](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/record)
+- [C# 记录类型](https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/records)
+- [`with` 表达式：C# 参考](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/with-expression)
+- [`init` 关键字：C# 参考](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/init)

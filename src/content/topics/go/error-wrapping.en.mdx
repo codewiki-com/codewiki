@@ -1,0 +1,490 @@
+---
+title: Error wrapping
+description: Go error wrapping adds context without sacrificing the error identities, types, and fields that callers inspect with errors.Is and errors.As.
+track: go
+section: basics
+difficulty: intermediate
+tags: [errors, wrapping, errors-is, errors-as, errors-join]
+prerequisites: [go/fundamentals, go/error-handling]
+related: [go/error-handling, go/interfaces, go/testing, go/context]
+terms: [error-wrapping, error-chain, sentinel-error]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/error-wrapping
+sources:
+  - { title: 'Package errors', url: 'https://pkg.go.dev/errors' }
+  - { title: 'Package fmt: Errorf', url: 'https://pkg.go.dev/fmt#Errorf' }
+  - { title: 'Working with Errors in Go 1.13', url: 'https://go.dev/blog/go1.13-errors' }
+  - { title: 'Go 1.20 Release Notes', url: 'https://go.dev/doc/go1.20#errors' }
+  - { title: 'Go 1.27 Release Notes', url: 'https://go.dev/doc/go1.27' }
+origin: old/src/content/docs/go/error-wrapping.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="error-wrapping">Error wrapping</Term> adds operation context while retaining the original error, so the message helps people and the underlying cause remains available to code.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Using `%v` instead of `%w`, inspecting only the outer error, or wrapping a dependency error unintentionally can break or expand the contract callers rely on.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Decide what callers may recognize, build the error tree with `%w`, and verify that contract with `errors.Is`, `errors.As`, and boundary tests.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="error-wrapping">Error wrapping</Term> places one error inside another while adding context about the current operation.
+The formatted message can say what failed, while the wrapped value retains its identity, type, and fields.
+
+If every layer returns an error unchanged, the final log may say only `permission denied` or `record not found`, without naming the business operation that failed.
+If every layer creates a fresh text error, the message grows but code can no longer classify the original cause reliably.
+Wrapping keeps both needs on one path: text for people and structure for programs.
+
+Go code commonly wraps errors in file access, database adapters, HTTP clients, parsers, and service boundaries.
+Add context when one layer knows the current operation and another knows the more specific cause.
+Returning the error unchanged is usually clearer when you have no new information.
+
+The error structure is also an API contract.
+Once an exported function wraps a value with `%w`, callers may depend on finding it through `errors.Is` or `errors.As`.
+Choosing `%w` is therefore more than a formatting decision; it determines which causes cross the package boundary.
+
+| What the caller needs | Suitable public structure |
+| --- | --- |
+| Know only whether the operation succeeded | A non-nil error |
+| Recognize a stable failure category | A <Term id="sentinel-error">sentinel error</Term> and `errors.Is` |
+| Read a path, field, or status code | A custom error type and `errors.As` |
+| Recognize several independent failures | Multi-error wrapping and `errors.Join` |
+
+## How it works
+
+The `error` interface has only an `Error() string` method, but the wrapping protocol also recognizes `Unwrap() error` and `Unwrap() []error`.
+A value implementing the first method wraps one child; a value implementing the second wraps zero or more children.
+Successive unwrapping produces an <Term id="error-chain">error chain</Term>, though a node with several children makes the structure a tree.
+
+`fmt.Errorf("load profile: %w", err)` returns an error whose message includes `err` and whose `Unwrap` method returns `err`.
+If the format string has several `%w` verbs, the result exposes every operand through `Unwrap() []error` in argument order.
+`%w` formats visible text like `%v`; the difference exists in the traversable structure.
+
+`errors.Is(err, target)` examines the error tree in pre-order, depth-first order.
+It first checks whether the current error equals the target or its `Is(error) bool` method reports a shallow match, then visits the children.
+A stable sentinel error remains discoverable after several `%w` wrappers.
+
+`errors.As(err, &target)` uses the same traversal order to find an error assignable to the target type.
+The caller declares a target slot and passes a pointer to that slot; on a match, `As` writes the found error into it.
+Use it to read structured fields exposed by a custom error instead of parsing the string returned by `Error()`.
+
+`errors.Join` discards nil inputs and puts the remaining errors under one parent.
+It returns nil when every input is nil.
+`errors.Is` and `errors.As` visit each non-nil child, but `errors.Unwrap` recognizes only `Unwrap() error` and does not enumerate a joined node for you.
+
+A typical propagation path is:
+
+1. A low-level operation returns a concrete error or sentinel error.
+2. An intermediate layer uses `%w` to add operation context only that layer knows.
+3. A boundary classifies the failure with `errors.Is` or `errors.As`.
+4. The boundary that owns the outcome logs once, returns a status, or decides whether to retry.
+
+These mechanics do not define an error contract automatically.
+Package authors still decide whether to retain a low-level cause, translate it to a domain error, or keep it private.
+Callers may rely only on matching behavior promised by documentation and tests.
+
+## Examples
+
+### Wrap and match a sentinel error
+
+The first layer says which order it looked up, and the second says that it was loading a receipt.
+Both pieces of context survive, while the caller can still recognize the stable `ErrOrderMissing` category.
+
+<Depth level="quick">
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrOrderMissing = errors.New("order missing")
+
+func lookupOrder(id string) error {
+	if id != "ORD-42" {
+		return fmt.Errorf("lookup order %q: %w", id, ErrOrderMissing)
+	}
+	return nil
+}
+
+func loadReceipt(id string) error {
+	if err := lookupOrder(id); err != nil {
+		return fmt.Errorf("load receipt: %w", err)
+	}
+	return nil
+}
+
+func main() {
+	err := loadReceipt("ORD-9")
+	fmt.Println(err)
+	fmt.Println("is missing:", errors.Is(err, ErrOrderMissing))
+	fmt.Println("equal:", err == ErrOrderMissing)
+}
+```
+
+```text
+load receipt: lookup order "ORD-9": order missing
+is missing: true
+equal: false
+```
+
+</Depth>
+
+Direct equality sees the outer wrapper, so it returns false.
+`errors.Is` visits both wrapper layers and eventually finds the sentinel error.
+That answers the semantic question the caller intended, rather than asking whether two interface values are equal.
+
+The error message reads from the outer operation toward the inner cause.
+Each layer adds only what it knows, avoiding filler such as "failed to handle error" that adds no diagnostic value.
+
+### Read fields with `errors.As`
+
+A custom error can carry fields when category matching alone is not enough.
+After it implements `Unwrap`, the concrete type and a broader sentinel category can occupy the same error tree.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var ErrInvalidField = errors.New("invalid field")
+
+type FieldError struct {
+	Field string
+	Value string
+	Err   error
+}
+
+func (e *FieldError) Error() string {
+	return fmt.Sprintf("%s=%q: %v", e.Field, e.Value, e.Err)
+}
+
+func (e *FieldError) Unwrap() error { return e.Err }
+
+func validateEmail(email string) error {
+	if !strings.Contains(email, "@") {
+		return &FieldError{"email", email, ErrInvalidField}
+	}
+	return nil
+}
+
+func main() {
+	err := fmt.Errorf("create account: %w", validateEmail("alex.example.com"))
+	var fieldErr *FieldError
+
+	fmt.Println("invalid:", errors.Is(err, ErrInvalidField))
+	if errors.As(err, &fieldErr) {
+		fmt.Printf("field=%s value=%s\n", fieldErr.Field, fieldErr.Value)
+	}
+}
+```
+
+```text
+invalid: true
+field=email value=alex.example.com
+```
+
+`errors.Is` answers whether the error belongs to the invalid-field category; `errors.As` obtains the fields on `*FieldError`.
+The checks address different contracts and can be combined at one call site.
+
+Using `%v` inside this error's `Error` method to format its stored cause is correct.
+The `Unwrap` method establishes the wrapping relationship; writing `%w` inside `Error()` would do nothing because `%w` creates structure only in the value returned by `fmt.Errorf`.
+
+### Define shallow custom matching
+
+Some packages classify errors with a stable code while each instance retains a different operation and cause.
+A custom `Is` method can map a template error to that category, but it should compare only the current receiver and target.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrRowAbsent = errors.New("row absent")
+
+type CodeError struct {
+	Code string
+	Op   string
+	Err  error
+}
+
+func (e *CodeError) Error() string {
+	return fmt.Sprintf("%s [%s]: %v", e.Op, e.Code, e.Err)
+}
+
+func (e *CodeError) Unwrap() error { return e.Err }
+
+func (e *CodeError) Is(target error) bool {
+	want, ok := target.(*CodeError)
+	return ok && e.Code == want.Code
+}
+
+var ErrNotFound = &CodeError{Code: "NOT_FOUND"}
+
+func main() {
+	err := &CodeError{
+		Code: "NOT_FOUND",
+		Op:   `find user "U-9"`,
+		Err:  ErrRowAbsent,
+	}
+
+	fmt.Println(err)
+	fmt.Println("category:", errors.Is(err, ErrNotFound))
+	fmt.Println("cause:", errors.Is(err, ErrRowAbsent))
+}
+```
+
+```text
+find user "U-9" [NOT_FOUND]: row absent
+category: true
+cause: true
+```
+
+`CodeError.Is` completes the first match by comparing codes.
+The second match does not need the `Is` method to search recursively; after checking the current node, the standard library calls `Unwrap` and finds `ErrRowAbsent`.
+
+Template matching expands the public contract.
+Once callers depend on the matching semantics of `NOT_FOUND`, changing the code value or the `Is` rule may be a breaking change.
+
+### Join several error branches
+
+A validator can return several independent failures at once.
+`errors.Join` preserves the wrapping context on every branch, so callers do not need to parse the newline-separated message.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var (
+	ErrNameRequired = errors.New("name required")
+	ErrEmailInvalid = errors.New("email invalid")
+)
+
+func validateProfile(name, email string) error {
+	var failures []error
+	if strings.TrimSpace(name) == "" {
+		failures = append(failures,
+			fmt.Errorf("name: %w", ErrNameRequired))
+	}
+	if !strings.Contains(email, "@") {
+		failures = append(failures,
+			fmt.Errorf("email %q: %w", email, ErrEmailInvalid))
+	}
+	return errors.Join(failures...)
+}
+
+func main() {
+	err := validateProfile("", "alex.example.com")
+	if err == nil {
+		fmt.Println("valid")
+		return
+	}
+
+	fmt.Println(err)
+	fmt.Println("name:", errors.Is(err, ErrNameRequired))
+	fmt.Println("email:", errors.Is(err, ErrEmailInvalid))
+	fmt.Println("single unwrap is nil:", errors.Unwrap(err) == nil)
+}
+```
+
+```text
+name: name required
+email "alex.example.com": email invalid
+name: true
+email: true
+single unwrap is nil: true
+```
+
+The joined value formats its two children on separate lines, but that format is not a classification API.
+The two `errors.Is` calls find their targets along separate branches.
+
+The last line shows an easy detail to miss: `errors.Unwrap` does not handle `Unwrap() []error`.
+Use `Is` or `As` for classification; diagnostic code that must enumerate the tree needs to handle both `Unwrap` signatures explicitly.
+
+## Pitfalls
+
+### Cutting off the tree with `%v`
+
+> [!PITFALL]
+> `fmt.Errorf("read config: %v", err)` retains the visible message but creates no wrapping relationship, so later calls to `errors.Is` and `errors.As` cannot see `err`.
+
+**Fix:** use `%w` if the low-level cause belongs to the public contract, and add a test that checks it through at least one wrapper.
+If the cause is an implementation detail, translate it deliberately to a domain error rather than making `%v` look like a traversable wrapper.
+
+### Inspecting only the outer value
+
+> [!PITFALL]
+> `err == target` and `err.(*Type)` inspect only the outer error, so adding any contextual wrapper can break them.
+
+**Fix:** use `errors.Is` for stable values and `errors.As` for structured types.
+Compare directly only when outer identity is specifically required, and make that limitation explicit in tests.
+
+### Wrapping a nil error
+
+> [!PITFALL]
+> `fmt.Errorf` does not return nil merely because the error supplied to `%w` is nil; unconditional wrapping turns a successful path into a non-nil error.
+
+**Fix:** branch on `if err != nil` before wrapping and return nil directly on success.
+When reviewing generated code, inspect short functions ending in `return fmt.Errorf("operation: %w", err)` because models often omit the guard.
+
+### Passing the wrong target to `errors.As`
+
+> [!PITFALL]
+> `errors.As` panics when its target is nil or is not a non-nil pointer to an error type or interface; pointer-receiver error types make it easy to add or omit one pointer level.
+
+**Fix:** declare `var target *PathError`, then call `errors.As(err, &target)`.
+Run `go vet`, and cover the branch with an error tree that contains the type and one that does not.
+
+### Publishing a dependency error by accident
+
+> [!PITFALL]
+> Once you wrap `sql.ErrNoRows` or a concrete vendor SDK type, callers may treat that matching behavior as your API even if you meant only to retain diagnostic detail.
+
+**Fix:** decide at the package boundary whether callers should depend on that cause.
+If not, translate it to your own sentinel or type; if so, document it and lock down the behavior with a package-boundary test.
+
+### Treating the error chain as a linear list
+
+> [!PITFALL]
+> Several `%w` verbs, `errors.Join`, and a custom `Unwrap() []error` all create branches; repeatedly calling `errors.Unwrap` misses them and cannot represent the full tree reliably.
+
+**Fix:** let `errors.Is` and `errors.As` perform standard traversal for classification.
+Traverse manually only in diagnostic tooling that truly needs every node, and handle the single-child and multiple-child interfaces separately.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often replace `%w` with the apparently equivalent `%v` while rewriting log messages, silently removing structure from a previously matchable error.
+They also wrap possibly nil variables unconditionally, keep using `==` or type assertions after adding wrappers, or generate the wrong target level for `errors.As`.
+A subtler failure is mechanically wrapping database or SDK errors and turning implementation details into a public contract; generated code also calls `errors.Unwrap` for the "first cause" after joining errors.
+
+**Ask your AI to check**
+
+- List every error-return path, state whether it retains, cuts off, or translates the original cause, and name the corresponding `errors.Is` or `errors.As` contract.
+- Check that every `%w` operand is definitely non-nil and write the exact static type of each `errors.As` target.
+- Identify dependency errors exposed across package boundaries and every place that treats a branching error tree as a linear chain.
+
+**Review checklist**
+
+- Trigger failures through the exported function and confirm that promised sentinels and types still match after intermediate wrapping.
+- Assert `err == nil` on successful paths, and search statically for `%v`, direct equality, and string parsing in error classification.
+- Inspect ownership of every wrapped cause and confirm that the boundary owning the outcome logs it exactly once.
+
+**Prompt vocabulary**
+
+Use the precise terms `error wrapping`, `error chain`, `error tree`, `sentinel error`, `%w verb`, `Unwrap() error`, `Unwrap() []error`, `shallow Is method`, and `API error contract`.
+Ask the model for a target-matching table for every return path; "improve error handling" is too vague to show whether it retained the structure callers use.
+
+<Depth level="deep">
+
+## Error-tree traversal
+
+The standard library treats the root error itself as part of the tree.
+`errors.Is` and `errors.As` check the current node first, then visit each child in pre-order, depth-first order.
+An outer custom match or assignable type therefore takes precedence over a matching node deeper in the tree.
+
+A single `%w` usually produces a wrapper implementing `Unwrap() error`.
+Several `%w` verbs produce one implementing `Unwrap() []error`, with children in operand order.
+`errors.Join` also uses the multiple-child form and ignores nil errors supplied to it.
+
+If several branches contain values assignable to the same target type, `errors.As` writes only the first one encountered during traversal.
+Do not use that order as a user-facing priority model.
+Keep separate ordered data when a UI must display validation failures in a particular sequence instead of reconstructing presentation order from an error tree.
+
+`errors.Unwrap` is a convenience function for the single-child case.
+It calls only `Unwrap() error` and returns nil for a multiple-child wrapper.
+No data has disappeared; the children remain present and `Is` and `As` still traverse them.
+
+A custom `Unwrap() []error` must not return a slice containing nil errors.
+Wrappers should also form a finite structure; a node that unwraps directly or indirectly to itself prevents traversal from completing normally.
+Unless you are building an aggregation library, prefer the implementations supplied by `fmt.Errorf` and `errors.Join`.
+
+## Contracts for custom wrappers
+
+A custom error is usually justified when a failure needs structured fields.
+`Error()` provides the readable message, `Unwrap` exposes the cause, and exported fields or methods provide data callers may inspect.
+All three should describe the same failure rather than maintain contradictory copies.
+
+Implementing `Is(target error) bool` can provide matching beyond interface equality.
+The method should compare only its receiver and target, without calling `Unwrap` or recursively calling `errors.Is`.
+The standard library traverses the subtree; doing it again in the custom method repeats work and can make costs grow rapidly in a complex tree.
+
+A custom `Is` method must also avoid matching too broadly.
+One common design treats zero-valued fields in the target as wildcards, but that rule needs documentation.
+Once matching behavior is public, callers may depend on it in control flow.
+
+Implementing `As(target any) bool` has a higher bar because the method must validate the target shape and perform assignment.
+Most custom errors do not need it; ordinary assignability already handles pointer error types and interfaces.
+Consider a custom `As` only when a wrapper must present a different abstract type and that behavior can remain a stable contract.
+
+One error can provide a category, details, and a cause at the same time.
+For example, the concrete `FieldError` supplies fields, `ErrInvalidField` supplies a stable category, and a lower cause could provide more specific diagnostics.
+Expose only the layers needed for caller decisions, not every layer you can technically wrap.
+
+A boundary translation may intentionally end a chain.
+If storage details must not leave a package, the service layer can return its own sentinel and send the original error to an internal telemetry boundary.
+Do not copy details by parsing the original message, and do not log the same error at every layer before returning it.
+
+## Testing the error contract
+
+Tests should begin at the package boundary a caller sees, rather than only at the low-level function that creates a sentinel.
+That way, changing `%w` to `%v` in an intermediate layer makes the test fail.
+Exercise at least one real wrapper before asserting the result of `errors.Is` or `errors.As`.
+
+For a sentinel error, assert `errors.Is(got, want)`.
+For a custom type, obtain the target with `errors.As` and then inspect only documented fields.
+Do not compare the entire struct because private diagnostic fields may change legitimately later.
+
+Failure tests also need a non-matching target.
+An overly broad custom `Is` can make every error of one type match, which positive cases alone will not reveal.
+For a multi-error, check every expected branch separately and verify that inputs with no failures return a real nil.
+
+Test the success path separately.
+An unconditional call to `fmt.Errorf`, or an `error` interface holding a nil pointer, produces a non-nil error.
+Assert `err == nil` before using the result so these generated-code defects fail close to their source.
+
+A boundary test set should cover at least:
+
+- A target that still matches after one and several `%w` wrappers.
+- An internal cause that no longer matches after `%v` or deliberate translation.
+- The concrete type and public fields obtained after `errors.As` succeeds.
+- Every `errors.Join` branch and the case where all inputs are nil.
+
+Compare an error message exactly only when the text itself is public output.
+A command-line diagnostic can use a golden test; library classification tests should depend on `Is`, `As`, and exported fields.
+This preserves freedom to rewrite messages while keeping the actual programmatic contract fixed.
+
+</Depth>
+
+<Checkpoint id="go/error-wrapping" />
+
+## Further reading
+
+- [Go `errors` package](https://pkg.go.dev/errors)
+- [Go `fmt.Errorf` documentation](https://pkg.go.dev/fmt#Errorf)
+- [Go blog: Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors)
+- [Go 1.20 release notes: multiple errors](https://go.dev/doc/go1.20#errors)
+- [Go 1.27 release notes](https://go.dev/doc/go1.27)

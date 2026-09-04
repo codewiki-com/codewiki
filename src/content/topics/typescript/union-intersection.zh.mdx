@@ -1,0 +1,404 @@
+---
+title: 联合类型与交叉类型
+description: 用联合类型表达多种可能，用交叉类型叠加约束，并通过可辨识联合、收窄与 never 检查保持类型组合安全。
+track: typescript
+section: type-system
+difficulty: intermediate
+tags: [typescript, union-types, intersection-types, discriminated-unions]
+prerequisites: [typescript/basics, typescript/literal-types]
+related: [typescript/type-narrowing, typescript/type-guards, typescript/conditional-types, typescript/branded-types]
+terms: [union-type, intersection-type, tagged-union, structural-typing, bottom-type]
+verified: { version: 'TypeScript 6', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: typescript/union-intersection
+sources:
+  - { title: 'TypeScript Handbook - Union types', url: 'https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#union-types' }
+  - { title: 'TypeScript Handbook - Intersection types', url: 'https://www.typescriptlang.org/docs/handbook/2/objects.html#intersection-types' }
+  - { title: 'TypeScript Handbook - Discriminated unions', url: 'https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions' }
+  - { title: 'TypeScript Handbook - The never type', url: 'https://www.typescriptlang.org/docs/handbook/2/narrowing.html#the-never-type' }
+origin: old/src/content/docs/typescript/union-intersection.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="union-type">联合类型（union type）</Term> `A | B` 接受满足至少一个成员类型的值；<Term id="intersection-type">交叉类型（intersection type）</Term> `A & B` 要求值同时满足两个成员类型。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `|` 不是把所有属性放进一个对象，`&` 也不会在运行时合并对象；冲突属性还可能把交叉类型变成无法正常构造的类型。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先收窄联合类型再访问成员专属字段，为对象联合设置稳定的判别字段，并在组合交叉类型前检查重名属性。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+联合类型表示一组可能性。`string | number` 的值可能是字符串，也可能是数字，调用方可以提供任意一种。接收方在确认具体成员之前，只能执行对每种可能值都安全的操作。
+
+交叉类型表示多项约束必须同时成立。`Identified & Timestamped` 要求一个值既有身份字段，也有时间字段。它适合组合独立能力和对象片段，不要求这些声明存在继承关系。
+
+两者解决的是静态模型中的不同问题：联合类型描述选择，交叉类型累积要求。函数输入、解析结果、状态机和事件载荷常用联合类型；权限、元数据和可复用能力常用交叉类型。
+
+TypeScript 按<Term id="structural-typing">结构类型（structural typing）</Term>判断兼容性。一个值只要拥有所需结构，就可以同时满足多个声明，因此联合类型是包含式的“或”，不是排他的二选一。
+
+不要把联合与交叉机械等同于运行时容器。它们会在编译后被擦除，不创建标签、不复制属性，也不验证外部数据。类型定义必须与真实对象构造和运行时检查相配合。
+
+## 工作原理
+
+可以把普通类型近似看成可能值的集合。`A | B` 包含属于 `A` 或 `B` 的值，范围通常更宽；`A & B` 只包含同时属于两者的值，范围通常更窄。这个模型能解释赋值方向和 `never`，但 `any` 等特殊类型会破坏简单集合直觉。
+
+若表达式的类型是 `A`，它可以赋给 `A | B`，因为联合类型接受更多可能性。反过来通常不成立：一个 `A | B` 值可能只满足 `B`。若表达式是 `A & B`，则它可以分别赋给 `A` 和 `B`，因为它已经满足两边的要求。
+
+对象联合不会自动成为“所有字段都可选”的对象。`{ email: string } | { phone: string }` 表示至少匹配其中一种结构，而且某个运行时对象也可能两种都匹配。要保留字段之间的对应关系，应使用可辨识联合，而不是把每个字段改成可选。
+
+交叉类型也不限于对象。`string & "ready"` 会缩小为字面量类型 `"ready"`，而 `string & number` 没有正常值，会得到 `never`。对象交叉只是在结构类型系统中最常见的用法。
+
+### 联合上的安全操作
+
+当变量是 `string | number` 时，编译器必须考虑两种成员。`toString()` 对两者都存在，因此可直接调用；`toUpperCase()` 只属于字符串，`toFixed()` 只属于数字，所以必须先收窄。
+
+“共有成员”指类型检查器能证明安全的成员和调用方式，不只是属性名相同。若两个成员都有同名函数，但参数契约不兼容，知道属性存在仍不表示可以安全调用它。
+
+下面的关系表从使用方角度概括了两种组合：
+
+| 组合 | 值必须满足 | 未收窄时可用信息 | 常见用途 |
+| --- | --- | --- | --- |
+| `A | B` | `A`、`B` 至少一个 | 对所有剩余成员都安全的信息 | 输入选择、状态、结果 |
+| `A & B` | `A`、`B` 全部 | 两边兼容成员的合并结果 | 能力组合、附加元数据 |
+
+### 收窄与可辨识联合
+
+收窄（narrowing）用运行时事实排除联合成员。`typeof`、`instanceof`、相等比较、`in` 检查和自定义类型谓词都能提供不同证据。检查必须真实反映运行时值，类型断言不会产生证据。
+
+对象联合最好共享一个字面量判别字段。`status: "paid"` 与 `status: "failed"` 既能在运行时读取，也能让编译器把整个对象连同载荷一起收窄。这种模式叫作<Term id="tagged-union">可辨识联合（discriminated union）</Term>。
+
+处理完每个成员后，剩余值的类型是 `never`，即<Term id="bottom-type">底类型（bottom type）</Term>。把默认分支的值传给接受 `never` 的函数，可以在以后新增成员却忘记处理时产生编译错误。
+
+这项穷尽性保证只覆盖编译器已信任的联合。JSON、消息队列和 JavaScript 调用方可以提供任意值，因此外部数据仍应从 `unknown` 开始验证，再进入可辨识联合。
+
+### 交叉、重名属性与运行时值
+
+对象交叉把约束叠加到同一个值上。若 `A` 要求 `id: string`，`B` 要求 `createdAt: Date`，那么 `A & B` 同时要求这两个字段。类型别名本身不会生成拥有这些字段的对象。
+
+重名且兼容的属性会继续缩小。例如 `{ mode: string } & { mode: "safe" }` 的 `mode` 是 `"safe"`。重名但不兼容的属性会交叉成 `never`，例如 `{ id: string } & { id: number }`。
+
+属性冲突不会按对象展开顺序选择“最后一个值”。JavaScript 的对象展开确实会覆盖重名属性，但那是运行时求值规则；交叉类型要求一个最终值同时满足两项静态约束。把两者混为一谈，常会诱发不安全的 `as A & B`。
+
+组合第三方类型前应先查看重名键及其含义。若业务上确实要替换字段，应先用 `Omit` 移除旧约束再添加新约束；若两个字段含义不同，应直接改名，而不是用断言压过冲突。
+
+## 示例
+
+下面四个程序依次展示原始类型联合、可辨识联合、对象交叉，以及带公共交叉上下文的联合。每段代码都使用 TypeScript 6.0.3 的 `strict` 模式完成类型检查，并由本地 `tsx` 实际执行。
+
+### 收窄联合类型
+
+标识符可以来自数字数据库键，也可以来自外部字符串。函数先用 `typeof` 确定成员，再调用该成员专属的方法。
+
+<Depth level="quick">
+
+```typescript run title="identifier.ts"
+type Identifier = string | number;
+
+function canonicalId(id: Identifier): string {
+  if (typeof id === "number") {
+    return `customer:${id.toString().padStart(4, "0")}`;
+  }
+
+  return `customer:${id.trim().toLowerCase()}`;
+}
+
+const identifiers: Identifier[] = [42, "  ALPHA-7  "];
+
+for (const identifier of identifiers) {
+  console.log(canonicalId(identifier));
+}
+```
+
+```text
+customer:0042
+customer:alpha-7
+```
+
+<TryToBreak items={['负数标识符', '只含空白的字符串', 'NaN']} />
+
+</Depth>
+
+数字分支可以调用 `padStart()`，因为 `toString()` 已经产生字符串。字符串分支不需要断言；前一个分支提前返回后，控制流中只剩 `string`。
+
+这里的联合只表达接受两种输入，并不规定两个表示法是否可能指向同一客户。去重、范围和空字符串属于领域规则，仍要由函数或更外层的验证器明确处理。
+
+### 用判别字段保持状态与载荷对应
+
+每个支付状态都有自己的必填载荷。`switch` 检查 `status` 后可以直接访问对应字段，默认分支则证明当前联合已被穷尽。
+
+```typescript run title="payment-state.ts"
+type PaymentState =
+  | { status: "pending"; attempt: number }
+  | { status: "paid"; receipt: string }
+  | { status: "failed"; reason: string };
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled payment: ${JSON.stringify(value)}`);
+}
+
+function summarize(state: PaymentState): string {
+  switch (state.status) {
+    case "pending":
+      return `pending attempt ${state.attempt}`;
+    case "paid":
+      return `paid with ${state.receipt}`;
+    case "failed":
+      return `failed: ${state.reason}`;
+    default:
+      return assertNever(state);
+  }
+}
+
+const states: PaymentState[] = [
+  { status: "pending", attempt: 2 },
+  { status: "paid", receipt: "rcpt-81" },
+  { status: "failed", reason: "card expired" },
+];
+
+for (const state of states) {
+  console.log(summarize(state));
+}
+```
+
+```text
+pending attempt 2
+paid with rcpt-81
+failed: card expired
+```
+
+如果加入 `{ status: "refunded"; reference: string }` 却不增加 `case`，默认分支中的 `state` 就不再是 `never`，TypeScript 会在 `assertNever(state)` 处报错。
+
+将模型改成 `{ status: "pending" | "paid" | "failed"; attempt?: number; receipt?: string; reason?: string }` 会丢失对应关系。那种类型允许 `paid` 缺少 `receipt`，也允许它携带互相矛盾的字段。
+
+### 用交叉类型组合独立能力
+
+订阅者同时满足身份与偏好两份契约。接收 `Subscriber` 的函数可以安全使用两侧字段，因为调用方必须提供完整交叉类型。
+
+```typescript run title="subscriber.ts"
+type HasIdentity = {
+  id: string;
+  email: string;
+};
+
+type HasPreferences = {
+  locale: "en" | "zh";
+  digest: boolean;
+};
+
+type Subscriber = HasIdentity & HasPreferences;
+
+function deliveryLabel(subscriber: Subscriber): string {
+  const schedule = subscriber.digest ? "daily" : "off";
+  return `${subscriber.id}:${subscriber.locale}:${schedule}`;
+}
+
+const subscriber: Subscriber = {
+  id: "acct-17",
+  email: "reader@example.com",
+  locale: "zh",
+  digest: true,
+};
+
+console.log(deliveryLabel(subscriber));
+console.log(Object.keys(subscriber).sort().join(","));
+```
+
+```text
+acct-17:zh:daily
+digest,email,id,locale
+```
+
+第二行输出来自实际对象的键，而不是 `Subscriber` 类型。删除对象字面量中的 `email` 会产生编译错误；删除类型别名却不会改变任何运行时对象。
+
+这里两份契约没有重名键，所以组合直接。实际项目中若两侧都声明 `locale`，应先确认类型与语义一致，再决定保留交叉、重命名还是显式重塑对象。
+
+### 给联合的每个成员附加公共上下文
+
+导入结果仍由判别字段保留两种载荷，但每个成员还必须携带 `batchId`。括号先形成联合，外层交叉再把批次上下文应用到所有成员。
+
+```typescript run title="import-result.ts"
+type ImportResult = (
+  | { kind: "accepted"; records: number }
+  | { kind: "rejected"; errors: string[] }
+) & { batchId: string };
+
+function report(result: ImportResult): string {
+  if (result.kind === "accepted") {
+    return `${result.batchId}:accepted:${result.records}`;
+  }
+
+  return `${result.batchId}:rejected:${result.errors.join("|")}`;
+}
+
+const results: ImportResult[] = [
+  { kind: "accepted", records: 18, batchId: "batch-4" },
+  {
+    kind: "rejected",
+    errors: ["missing email", "invalid locale"],
+    batchId: "batch-5",
+  },
+];
+
+for (const result of results) {
+  console.log(report(result));
+}
+```
+
+```text
+batch-4:accepted:18
+batch-5:rejected:missing email|invalid locale
+```
+
+`batchId` 可在收窄之前读取，因为联合的每条路径都有这项交叉约束。`records` 与 `errors` 仍属于各自成员，只有检查 `kind` 后才能使用。
+
+括号表达了运算分组，也让维护者一眼看出公共上下文的作用范围。公共部分继续扩大时，应给它命名，而不是重复粘贴到每个联合成员。
+
+## 陷阱
+
+### 把联合类型当作属性合集
+
+> [!PITFALL]
+> 值是 `EmailContact | PhoneContact` 时，直接读取 `email` 或 `phone` 并不安全。联合表示任一成员都可能出现，不承诺每个值拥有所有成员的字段。
+
+**修复方法：** 添加稳定的字面量判别字段并先收窄。若两个字段确实总要同时存在，模型需要的是交叉或一份完整对象类型，而不是联合。
+
+### 用可选字段模拟不同状态
+
+> [!PITFALL]
+> 把 `data`、`error` 和 `progress` 全写成可选字段，会允许“成功却没有数据”或“失败同时带数据”等非法组合。非空断言只能隐藏结果，不能恢复字段对应关系。
+
+**修复方法：** 为每种状态定义一个完整成员，让同一个字面量字段区分它们。只在字段对该成员本身确实可缺少时才使用 `?`。
+
+### 以为 `&` 会合并运行时对象
+
+> [!PITFALL]
+> `type Combined = A & B` 只声明约束。把一个只有 `A` 字段的对象断言成 `Combined`，不会生成 `B` 的字段，访问它们时仍会得到 `undefined`。
+
+**修复方法：** 通过显式对象字面量、经过审查的展开或构造函数创建真实值，然后让编译器检查结果。不要把 `as A & B` 当作对象合并操作。
+
+### 忽略交叉中的重名冲突
+
+> [!PITFALL]
+> `{ id: string } & { id: number }` 要求同一个 `id` 同时满足两种不相容类型，最终字段是 `never`。断言可能让错误暂时消失，却会把不可能契约传播给调用方。
+
+**修复方法：** 在组合前审查 `keyof` 的重叠部分。需要替换字段时使用 `Omit<Old, "id"> & NewId` 明确写出意图，并为运行时转换添加测试。
+
+### 用通用默认分支吞掉新成员
+
+> [!PITFALL]
+> `switch` 最后直接返回 `"unknown"`，会让新增联合成员静默落入旧行为。代码仍能编译，但状态机的处理逻辑已经不完整。
+
+**修复方法：** 让剩余值赋给 `never` 或传入 `assertNever()`。外部未知值应在进入联合之前验证，不能借默认分支混入静态状态处理。
+
+### 在外部边界直接断言联合类型
+
+> [!PITFALL]
+> `JSON.parse(raw) as PaymentState` 跳过了对象形状、判别值和载荷检查。静态上穷尽的 `switch` 仍可能在运行时收到任意 `status`。
+
+**修复方法：** 立即把解析结果放进 `unknown`，验证非空对象、精确判别值和每个成员的必填字段，再返回领域联合。解析失败和未知判别值都要有明确结果。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把响应生成为一个带大量可选字段的对象，再用 `data!` 或 `error!` 绕过缺失值；这会丢掉判别字段与载荷的对应关系。它也会写出 `JSON.parse(raw) as Event`，让看似穷尽的分支建立在未验证数据上，或者返回 `A & B` 却只展开 `A`，误以为类型运算已经创建了 `B` 字段。遇到重名属性时，生成代码往往继续叠加断言，而没有检查交叉后是否出现 `never`。
+
+**让 AI 检查**
+
+- 列出每个联合成员的判别值和专属必填字段，并构造一个当前类型错误允许的非法状态。
+- 找出所有 `as`、非空断言和 `any`，说明它们是否绕过了外部数据验证或联合收窄。
+- 计算每个交叉类型的重名键及交叉后的属性类型，并对照实际对象构造路径。
+
+**审查清单**
+
+- 用每个合法成员、未知判别值、缺失载荷和错误原始类型测试边界。
+- 确认每次成员专属字段访问之前都有可靠收窄，所有封闭联合都以 `never` 证明穷尽。
+- 确认每个交叉类型的运行时值真正拥有两侧字段，重名属性没有被断言掩盖。
+
+**提示词词汇**
+
+使用准确术语：`union type`（联合类型）、`intersection type`（交叉类型）、`discriminated union`（可辨识联合）、`discriminant property`（判别属性）、`narrowing`（收窄）、`exhaustiveness checking`（穷尽性检查）、`never`（底类型）、`structural typing`（结构类型）和 `conflicting property`（冲突属性）。要求模型给出成员矩阵、边界验证和重名键分析，比“让类型更安全”更容易得到可审查的结果。
+
+<Depth level="deep">
+
+## 类型代数与化简
+
+联合与交叉具有吸收重复项的性质：`T | T` 和 `T & T` 都等价于 `T`。成员顺序通常不改变语义，所以 `A | B` 与 `B | A`、`A & B` 与 `B & A` 表达相同的值集合，即使编辑器显示形式不同。
+
+若一个成员完全包含另一个成员，编译器可以化简组合。`string | "ready"` 是 `string`，因为字面量已经属于字符串；`string & "ready"` 是 `"ready"`，因为它是同时满足两边的部分。
+
+`never` 没有正常运行时值，因此 `T | never` 是 `T`，`T & never` 是 `never`。`unknown` 可以安全接收任意值，因此 `T | unknown` 是 `unknown`，`T & unknown` 是 `T`。这些恒等式经常出现在条件类型和工具类型的中间结果中。
+
+下面的表格把这些关系集中起来。它描述的是静态类型化简，不会在 JavaScript 中执行运算。
+
+| 表达式 | 化简结果 | 原因 |
+| --- | --- | --- |
+| `T \| never` | `T` | 不增加任何可能值 |
+| `T & never` | `never` | 没有值能满足空集合与另一约束 |
+| `T \| unknown` | `unknown` | 结果允许任意未知值 |
+| `T & unknown` | `T` | `unknown` 不再增加具体要求 |
+| `string & "ready"` | `"ready"` | 字面量已经是字符串的子集 |
+
+交叉对联合在值集合上具有分配关系，因此 `A & (B | C)` 可以理解为 `(A & B) | (A & C)`。这解释了给每个事件成员附加同一份元数据的常见写法：先写事件联合，再与 `{ requestId: string }` 交叉。
+
+不必为了显示漂亮而强迫编译器展开每个组合。命名中间概念、保留判别字段并检查公开的可赋值关系，比依赖编辑器是否把别名打印成某种形式更稳定。
+
+这些代数规则不能证明运行时数据可信。即使一个复杂类型最终化简正确，从网络获得的值仍没有经过检查；静态集合模型只适用于已经进入类型系统的证据。
+
+### 对象联合保留字段关系
+
+对象联合的重要价值不是把键放在一起，而是保留相关字段之间的关系。`{ format: "json"; payload: string } | { format: "binary"; payload: Uint8Array }` 表明 `format` 决定 `payload` 的类型。
+
+若把它改成 `{ format: "json" | "binary"; payload: string | Uint8Array }`，两个联合会独立变化。类型随后允许 `format: "json"` 搭配二进制载荷，调用方也无法通过检查 `format` 收窄 `payload`。
+
+联合成员可以共享普通字段，例如每种结果都有 `requestId: string`。共享字段可以直接读取，但成员专属字段仍需收窄。若共享字段很多，可以为公共部分命名，再让每个成员与它交叉。
+
+联合不是排他或。结构足够丰富的对象可能同时满足多个成员，因此不要依赖“它只会属于一个接口”的假设。真正的互斥关系应由不同字面量判别值建立。
+
+## 设计可用的交叉类型
+
+交叉类型最适合正交、可独立解释的约束。身份、审计信息和分页元数据可以组合，因为每一部分有明确所有者。两个都试图定义核心状态的类型更容易出现重名与语义冲突。
+
+接口继承与交叉类型都能组合对象要求，但失败方式不同。接口继承会在声明处拒绝不兼容的同名属性；交叉类型可以先形成，而冲突属性在使用时表现为 `never`。对稳定公共对象层次，早失败的接口往往更清楚；对局部类型运算，交叉更灵活。
+
+`Omit` 后再交叉是一种显式替换字段的方式，但它仍只是静态建模。若旧值中的字段需要从字符串转换成数字，运行时代码必须真正执行转换，并处理失败，而不是只修改类型别名。
+
+交叉类型过长通常暴露了所有权问题。一个值若必须同时满足许多不相关能力，先检查函数是否接收了超出实际需要的契约；缩小参数类型往往比继续添加 `&` 更易测试。
+
+### 键与调用签名
+
+对对象联合，`keyof (A | B)` 只保留在每个成员上都安全存在的键；对对象交叉，`keyof (A & B)` 通常包含两侧键。这个结果与属性访问规则一致：联合使用方只有共同保证，交叉使用方拥有两侧保证。
+
+同名属性的类型也要考虑读写方向。两个声明都允许读取某个键，不代表向该键写入任意一侧的值都安全。可变对象、可选属性和索引签名会让简单的“键合并”解释失真。
+
+函数类型的交叉常表现得像一组调用签名，库声明会用它描述可接受多种参数形状的可调用值。不过，实现必须真的处理每个签名；断言一个只接受单一输入的函数，不会自动生成重载行为。
+
+公开 API 若需要多个清晰调用形式，函数重载通常比手写函数交叉更易读。交叉更适合由工具类型推导出的结果，前提是正向和负向类型测试都覆盖调用契约。
+
+### 静态边界与运行时边界
+
+联合与交叉只约束经过 TypeScript 检查的表达式。来自 JSON、DOM 属性、环境变量或无类型包的值必须先保持为 `unknown`，再通过真实运行时检查获得成员资格。
+
+验证联合时，应先检查容器，再检查判别字段，最后按对应成员验证载荷。只确认 `status` 存在不够，因为错误类型的字段、数组或原型属性仍可能穿过宽松检查。
+
+验证交叉时，必须验证每一侧承诺的全部条件。把两个不完整的谓词用 `&&` 连接，并不会比各自的实现更可靠；类型谓词签名由编译器信任，测试必须覆盖漏字段和冲突字段。
+
+在测试中同时保留运行时断言与编译期类型用例。运行时测试证明解析和构造行为，类型测试证明允许与拒绝的组合；任何一边都不能替代另一边。
+
+</Depth>
+
+<Checkpoint id="typescript/union-intersection" />
+
+## 延伸阅读
+
+- [TypeScript Handbook：Everyday Types](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html)
+- [TypeScript Handbook：Object Types](https://www.typescriptlang.org/docs/handbook/2/objects.html)
+- [TypeScript Handbook：Narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html)
+- [TypeScript Handbook：Discriminated unions](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions)

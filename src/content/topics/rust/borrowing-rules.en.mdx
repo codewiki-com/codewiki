@@ -1,0 +1,412 @@
+---
+title: Borrowing rules
+description: How shared and mutable references access values without taking ownership, why borrows conflict, and how to resolve borrow-checker errors.
+track: rust
+section: basics
+difficulty: intermediate
+tags: [borrowing, references, borrow-checker, nll]
+prerequisites: [rust/ownership, rust/ownership-rules]
+related: [rust/lifetimes, rust/lifetime-annotations, rust/refcell-cell, rust/closures]
+terms: [borrowing, shared-reference, mutable-reference, borrow-checker, non-lexical-lifetimes]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: rust/borrowing-rules
+sources:
+  - { title: 'The Rust Programming Language - References and Borrowing', url: 'https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html' }
+  - { title: 'The Rust Reference - Borrow operators', url: 'https://doc.rust-lang.org/reference/expressions/operator-expr.html#borrow-operators' }
+  - { title: 'Rust standard library - slice::split_at_mut', url: 'https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut' }
+  - { title: 'RFC 2094 - Non-Lexical Lifetimes', url: 'https://rust-lang.github.io/rfcs/2094-nll.html' }
+origin: old/src/content/docs/rust/borrowing-rules.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Borrowing gives temporary access through a reference without taking ownership of the value;
+    `&T` is for shared reading and `&mut T` is for exclusive mutation.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A conflicting borrow is rejected while an existing reference will be used again;
+    collection growth can also invalidate references to its elements.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Decide whether each function observes, mutates, or owns its input, then shorten actual use ranges;
+    use safe splitting APIs for simultaneous access to disjoint regions.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="borrowing">Borrowing</Term> accesses a value through a reference without taking over its ownership.
+A reference is not responsible for freeing the referenced value;
+the value is still destroyed under the ownership rules when its owner leaves scope.
+Borrowing therefore fits an interface that temporarily uses data and then returns control.
+
+Rust distinguishes a <Term id="shared-reference">shared reference</Term> `&T` from a <Term id="mutable-reference">mutable reference</Term> `&mut T`.
+Shared references let readers coexist but cannot write ordinary data through the reference.
+A mutable reference allows reading and writing, but requires exclusive access to the corresponding memory region.
+
+These constraints address reference validity and writes through aliases.
+If code retains an element pointer after a collection reallocates, the pointer could dangle;
+if one alias writes while a reader observes the same data, the read could lose a consistent meaning.
+The <Term id="borrow-checker">borrow checker</Term> rejects those overlaps at compile time, so safe Rust does not defer the check to a runtime path that might happen to execute.
+
+You meet borrowing in function parameters, slices, iterators, pattern matching, and method calls.
+An interface accepting `&str` or `&[T]` usually observes caller-owned data;
+one accepting `&mut T` can change that same value during the call;
+one accepting `T` can consume or transfer ownership.
+
+## How it works
+
+For one value or overlapping memory regions, the rules reduce to two constraints: every reference that will be used again must remain valid, and an access can have one or more shared references or one mutable reference, without conflicting uses of both.
+“Shared” and “exclusive” describe access permissions, not whether a binding was declared with `mut`.
+
+`let view = &value` creates a shared borrow.
+You can copy the shared reference or take a shorter shared borrow through it.
+A shared reference cannot directly write an ordinary `T`, but interior-mutability tools such as `Cell`, `RefCell`, locks, and atomic types have their own checking rules.
+“The underlying data can never change while `&T` exists” is therefore not a universal description.
+
+`let edit = &mut value` creates a mutable borrow when the binding permits mutation and no conflicting access covers the region.
+Because `&mut T` represents exclusive permission, it does not implement `Copy` like `&T` does.
+Assigning it directly to another variable can move the reference;
+when an operation only needs the permission briefly, you can create an explicit reborrow.
+
+The borrow checker analyzes place expressions and the regions that may overlap.
+It can directly see that distinct fields of a struct do not overlap, but it generally does not prove that two slice indices differ.
+Library APIs such as `split_at_mut` establish a safe boundary internally and return two independent mutable slices for disjoint regions.
+
+A borrow's duration follows later uses of its reference and the control flow, rather than necessarily lasting to the enclosing closing brace.
+This model is called <Term id="non-lexical-lifetimes">non-lexical lifetimes (NLL)</Term>.
+After a reference's last use, if no path reads it again, later code can usually begin a borrow that would otherwise conflict.
+
+The following access table connects interface intent to what the caller may do.
+It covers ordinary safe references;
+the boundary section treats interior mutability and synchronization separately.
+
+| Parameter form | What the callee can do | Core constraint during the call |
+|---|---|---|
+| `&T` | Observe `T` | No write may conflict with that read |
+| `&mut T` | Observe and mutate `T` | Access to the region stays exclusive |
+| `T` | Own and possibly consume `T` | The caller usually cannot use the old binding after a move |
+
+Read “borrowed as immutable,” “borrowed as mutable,” and “borrow later used here” together in compiler errors.
+Find the first borrow, its last use, and the intervening access that needs the opposite permission.
+The diagnostic marks a conflict interval;
+it does not say that the variable can never be used again.
+
+## Examples
+
+### Multiple shared readers
+
+The first example lets checkout and audit logic inspect the same price vector.
+Both references only read, so they can coexist.
+`order_total` accepts a slice, allowing it to handle a `Vec<u32>`, an array, or another slice.
+
+<Depth level="quick">
+
+```rust title="shared_borrows.rs"
+fn order_total(prices: &[u32]) -> u32 {
+    prices.iter().sum()
+}
+
+fn main() {
+    let prices = vec![1_250, 2_750, 500];
+
+    let checkout = &prices;
+    let audit = &prices;
+
+    println!("total: {}", order_total(checkout));
+    println!("items: {}, audit: {:?}", checkout.len(), audit);
+}
+```
+
+```text
+total: 4500
+items: 3, audit: [1250, 2750, 500]
+```
+
+</Depth>
+
+`checkout` and `audit` both borrow `prices`;
+neither takes ownership of the vector or its buffer.
+The owner `prices` remains alive until the end of `main`, so both references remain valid.
+
+Using `&[u32]` instead of `&Vec<u32>` limits the interface to the capability it needs: reading a contiguous sequence.
+Borrowing rules do more than prevent errors;
+they help an API state its permissions.
+
+### Shared reading followed by exclusive mutation
+
+The second example prints a shared snapshot before changing the balance.
+The last use of `snapshot` occurs before the call to `debit`, so NLL permits the later mutable borrow without an extra block.
+
+```rust title="mutable_borrow.rs"
+fn debit(balance: &mut u32, amount: u32) {
+    *balance = balance.saturating_sub(amount);
+}
+
+fn main() {
+    let mut balance = 5_000;
+
+    let snapshot = &balance;
+    println!("before: {snapshot}");
+
+    debit(&mut balance, 750);
+    println!("after debit: {balance}");
+
+    let correction = &mut balance;
+    *correction += 200;
+    println!("through mutable borrow: {correction}");
+
+    println!("final: {balance}");
+}
+```
+
+```text
+before: 5000
+after debit: 4250
+through mutable borrow: 4450
+final: 4450
+```
+
+The signature of `debit` says that it may change the balance but does not retain ownership.
+Once the call returns, the mutable borrow ends, and `main` still owns and can read `balance`.
+
+`correction` is last used by the third output line.
+Reading `balance` afterward does not conflict with it.
+If `correction` were used again after the final output, the two access ranges would overlap and the compiler would reject the direct read of `balance`.
+
+### Mutating two elements after splitting
+
+Taking mutable references to both `stock[from]` and `stock[to]` is conservatively treated as a possible overlap because the indices might be equal.
+`split_at_mut(2)` divides the slice into two regions proven not to overlap, after which the program can borrow one element from each side.
+
+```rust title="split_inventory.rs"
+fn move_one(source: &mut u32, destination: &mut u32) -> bool {
+    if *source == 0 {
+        return false;
+    }
+
+    *source -= 1;
+    *destination += 1;
+    true
+}
+
+fn main() {
+    let mut stock = [4, 1, 0, 3];
+
+    let (west, east) = stock.split_at_mut(2);
+    let moved = move_one(&mut west[1], &mut east[0]);
+
+    println!("moved: {moved}");
+    println!("stock: {stock:?}");
+}
+```
+
+```text
+moved: true
+stock: [4, 0, 1, 3]
+```
+
+`west` covers the first two elements of the original array and `east` covers the last two.
+The safe API still returns ordinary `&mut [u32]` values, so the caller needs neither raw pointers nor `unsafe`.
+
+The left and right slices are not used after the call to `move_one`, so the program can finally read all of `stock`.
+If later code used `west` or `east`, the whole-array borrow would remain active and the direct read would conflict.
+
+### Returning a view into an input
+
+A function can return a reference, but the result must come from an input that lives long enough.
+Lifetime elision connects the output of `first_word` to its only reference input.
+It neither copies the word nor gives `label` a longer lifetime.
+
+```rust title="borrowed_view.rs"
+fn first_word(text: &str) -> &str {
+    text.split_once(' ')
+        .map_or(text, |(first, _)| first)
+}
+
+fn main() {
+    let mut label = String::from("priority order");
+
+    let word = first_word(&label);
+    println!("first: {word}");
+
+    label.push_str(" ready");
+    println!("label: {label}");
+}
+```
+
+```text
+first: priority
+label: priority order ready
+```
+
+`word` points into the buffer owned by `label`, so `push_str` cannot potentially change that buffer before `word` is printed.
+Once the print is its last use, NLL permits the mutation.
+
+If the function tried to return a slice of a `String` created inside the function, the owner would be destroyed on return and the result would dangle.
+The correct interface returns an owned `String`, or takes the reference from caller-provided input as this one does.
+
+## Pitfalls
+
+> [!PITFALL]
+> Code keeps a reference to a `Vec` element and then calls `push`, assuming an unrelated tail element is all that changes.
+> Growth can move the entire buffer, so the borrow checker rejects the mutation when the old reference will be used again.
+
+**Fix:** Extract the small owned value you really need before mutating, or retain an index and borrow again afterward.
+If the domain needs stable addresses, choose a data structure that provides that guarantee instead of inferring safety from a run that happened not to reallocate.
+
+> [!PITFALL]
+> Generated code often adds `.clone()` beside every borrow error.
+> This can make the code compile, but it silently turns shared observation into allocation and copying and hides whether the function should borrow or take ownership.
+
+**Fix:** State the interface intent first.
+Prefer `&str` for read-only text and `&[T]` for read-only sequences.
+Clone only when the result genuinely needs independent ownership, and call out that ownership decision in review.
+
+> [!PITFALL]
+> A lifetime annotation cannot make a local value live longer.
+> Adding `'static` to the result or `'a` to both input and output cannot turn a reference to a soon-to-be-destroyed local `String` into a valid result.
+
+**Fix:** Return an owned value, or make the result clearly borrow from an input.
+Treat lifetimes as relationship constraints between references, not instructions that extend an allocation.
+
+> [!PITFALL]
+> `&mut T` is not `Copy`.
+> After assigning a mutable reference directly to another variable, using the old variable can produce “use of moved value”;
+> this follows from the same permission model that prevents arbitrary duplicate exclusive access.
+
+**Fix:** Create a shorter reborrow such as `let short = &mut *original` when you only need to lend the permission temporarily.
+Make the last use of `short` occur early, then continue through `original`.
+
+> [!PITFALL]
+> Adding blocks everywhere to “shorten the lifetime” can make code pass while concealing an overly broad interface or unsuitable data layout.
+> NLL already ends many borrows at their last use, so another scope is not the default answer.
+
+**Fix:** Trace the first borrow, conflicting access, and later use marked by the diagnostic.
+Reorder reads and writes when possible, split data when two regions are needed, and select interior mutability or synchronization only when shared long-lived mutation is part of the design.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models commonly borrow an element from a collection, `push` into that collection, and then reuse the element reference.
+They also take two mutable elements through runtime indices, or hold `&mut` in an async closure across `.await`, keeping later access blocked for too long.
+Another failure is to silence errors with `.clone()`, `Rc<RefCell<_>>`, or `Arc<Mutex<_>>` without explaining copy cost, runtime borrow panics, lock scope, or cross-thread constraints.
+
+**Ask your AI to check**
+
+- List the source and last use of every reference, plus every possibly conflicting read, write, and collection reallocation in that interval.
+- For each `.clone()`, `RefCell`, and lock, state whether it solves ownership, interior mutability, or concurrency, and propose the interface without it.
+- Identify the owner behind every returned reference and reference held across `.await`, then prove that the owner survives the complete use interval.
+
+**Review checklist**
+
+- Test empty collections, equal indices, distinct indices, and inputs that force reallocation before deciding that a fix covers more than the happy path.
+- Check that function signatures distinguish `&T`, `&mut T`, and `T` accurately, including whether the caller still needs the original value after the call.
+- Mark each borrow's last use along the control flow;
+inspect slice splits, reborrows, and lock guards for the smallest explainable scope.
+
+**Prompt vocabulary**
+
+Use the precise terms `shared reference`, `mutable reference`, `exclusive access`, `aliasing`, `reborrow`, `non-lexical lifetimes`, `last use`, and `disjoint mutable borrows`.
+Ask for a “borrow interval and conflicting-access table”;
+that exposes incorrect ownership assumptions better than a vague request to “fix the borrow checker.”
+
+<Depth level="deep">
+
+## Lifetimes describe relationships
+
+Lifetime annotations describe validity relationships that references must satisfy.
+`fn choose<'a>(left: &'a str, right: &'a str) -> &'a str` says that the result cannot be used beyond the range where both inputs are valid.
+It does not require the two arguments to have identical lexical scopes from creation to destruction.
+
+At each call, the compiler selects a concrete region satisfying the constraints.
+If one input is valid for a shorter range, the returned reference cannot be used beyond that range.
+The annotations do not change when any object is destroyed;
+they expose a relationship that callers cannot infer from the function body.
+
+Lifetime elision is normally enough when the output has only one possible input source.
+`fn first_word(text: &str) -> &str` equivalently says that the output borrows from `text`.
+With several reference inputs that might supply the output, the compiler needs an explicit relationship or an API shape such as an enum or owned result that removes the ambiguity.
+
+A `'static` reference must remain valid for the rest of the program, but writing `'static` in a type does not grant data that lifetime.
+A string literal can usually produce `&'static str`;
+a `String` created inside a function cannot.
+Treating `'static` as a button that disables compiler checks is an especially dangerous generated-code mistake.
+
+### Reborrowing preserves later permission
+
+A mutable reference represents an exclusive permission that can be transferred.
+Moving it gives the receiver that permission.
+Reborrowing temporarily restricts the original reference for a shorter interval, after which the original can be used again.
+
+Function calls often create a reborrow automatically.
+For example, a variable `editor: &mut String` passed to a function accepting `&mut String` can usually be used again after the call.
+The compiler inserts a short borrow from the expected type instead of permanently moving the caller's reference.
+
+Complex generics, destructuring, or explicit assignment can make the intent less clear.
+Writing `&mut *editor` then states the reborrow explicitly.
+Do not switch to raw pointers to get around an error;
+first decide whether the operation should transfer permission, lend it briefly, or split the data into disjoint parts.
+
+### Two phases are not two reference types
+
+Some method calls use a two-phase borrow: the mutable receiver borrow is reserved, other arguments are evaluated, and then the borrow is activated.
+This is one reason `values.push(values.len())` passes checking, because the shared `len()` read happens before the exclusive write is activated.
+
+Two-phase borrowing is a checking detail for specific implicit mutable borrows, not a general relaxation of the rules.
+Storing `&mut values` in a variable and then reading `values` cannot generally claim the same treatment.
+API design and review should still prefer clear, non-overlapping access phases.
+
+## The boundary of borrow checking
+
+The compiler must prove safety without running the program, so it conservatively rejects some index operations that a person can see are disjoint.
+For slices, two arbitrary indices could be equal.
+`split_at_mut` packages a runtime boundary check and the non-overlap guarantee inside a reviewed safe API.
+
+Struct fields are more direct.
+The compiler can usually borrow `record.name` and `record.status` simultaneously because the layout proves that distinct fields do not overlap.
+Hiding all state in one collection or behind a helper that returns all of `&mut self` loses that local information and broadens conflicts.
+
+The borrow checker guarantees reference validity and access rules in safe Rust;
+it does not prove business transactions correct.
+Taking mutable borrows in two separate phases can still produce a lost update, and shortening a lock guard can break atomicity.
+Successful compilation is evidence of memory safety, not a complete proof of domain invariants.
+
+### Interior mutability changes the checking point
+
+`Cell<T>` and `RefCell<T>` allow mutation through a shared wrapper, but they do not abolish borrowing rules.
+`RefCell<T>` moves shared-versus-exclusive checking to runtime.
+Overlapping calls to `borrow_mut`, or a call to `borrow` during a mutable borrow, panic.
+
+Concurrent `Mutex<T>` and `RwLock<T>` values control access through guards.
+They also introduce blocking, lock ordering, poisoning policy, and critical-section size.
+Wrapping data mechanically in `Arc<Mutex<_>>` because a static borrow is inconvenient does not address those concerns.
+
+When choosing interior mutability, record why static permissions are insufficient, how runtime failure is handled, and who owns the shared scope.
+Single-threaded shared objects may use `Cell` or `RefCell`;
+cross-thread sharing must satisfy thread-safety constraints and use synchronization.
+The detailed patterns belong to `rust/refcell-cell` and the concurrency topics.
+
+### Read conflicts instead of fighting the compiler
+
+Turn a diagnostic into a timeline: where a reference is created, which branches use it, which operation needs conflicting permission, and where the last use occurs.
+The same method works for closure captures, iterators, and async state machines, which may retain a borrow longer than one surface expression suggests.
+
+Then choose the smallest semantic change: reorder phases, narrow the return type, split the data, or convert a brief observation into an owned value.
+Introduce reference counting and interior mutability only when the domain requires shared ownership or runtime mutation.
+Types that reflect the real ownership relationship are more stable than a series of local changes that merely suppress compiler errors.
+
+</Depth>
+
+<Checkpoint id="rust/borrowing-rules" />
+
+## Further reading
+
+- [The Rust Programming Language: References and borrowing](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html)
+- [The Rust Reference: Borrow operators](https://doc.rust-lang.org/reference/expressions/operator-expr.html#borrow-operators)
+- [Rust standard library: `slice::split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut)
+- [RFC 2094: Non-lexical lifetimes](https://rust-lang.github.io/rfcs/2094-nll.html)

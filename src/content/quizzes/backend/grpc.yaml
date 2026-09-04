@@ -1,0 +1,127 @@
+topic: backend/grpc
+items:
+  - id: predict-status-code
+    type: predict
+    prompt: { en: 'What does this program print?', zh: '这段程序会输出什么？' }
+    code: |
+      package main
+
+      import (
+          "fmt"
+
+          "google.golang.org/grpc/codes"
+          "google.golang.org/grpc/status"
+      )
+
+      func main() {
+          err := status.Error(codes.NotFound, "sku missing")
+          fmt.Println(status.Code(err))
+      }
+    lang: go
+    options:
+      - { text: { en: 'OK', zh: 'OK' }, correct: false }
+      - { text: { en: 'NotFound', zh: 'NotFound' }, correct: true }
+      - { text: { en: 'sku missing', zh: 'sku missing' }, correct: false }
+      - { text: { en: 'Unknown', zh: 'Unknown' }, correct: false }
+    explanation: { en: 'status.Error preserves the supplied gRPC code, and status.Code extracts that code without parsing the message.', zh: 'status.Error 会保留指定的 gRPC 状态码，status.Code 无需解析消息即可取出该状态码。' }
+    difficulty: beginner
+    tags: [status-code, predict-output]
+
+  - id: reserve-removed-field
+    type: mcq
+    prompt: { en: 'What should a schema author do after removing field 4 named warehouse?', zh: '删除编号为 4、名为 warehouse 的字段后，模式作者应怎样处理？' }
+    options:
+      - { text: { en: 'Reuse number 4 for the replacement warehouse_id field.', zh: '把编号 4 复用于新的 warehouse_id 字段。' }, correct: false }
+      - { text: { en: 'Reserve both number 4 and the name warehouse.', zh: '同时保留编号 4 和名称 warehouse。' }, correct: true }
+      - { text: { en: 'Renumber every later field to close the gap.', zh: '重新编号所有后续字段以填补空缺。' }, correct: false }
+    explanation: { en: 'A field number is part of the wire identity. Reserving the old number and name prevents a later declaration from assigning old data a new meaning.', zh: '字段编号属于线上身份。保留旧编号和名称，可以防止后续声明赋予旧数据新的含义。' }
+    difficulty: intermediate
+    tags: [protobuf, compatibility, field-number]
+
+  - id: spot-context-detach
+    type: spotbug
+    prompt: { en: 'Find the cancellation bug in this generated handler.', zh: '找出这段生成处理器中的取消传播错误。' }
+    code: |
+      func (s *server) Reserve(ctx context.Context, req *pb.ReserveRequest) (*pb.ReserveResponse, error) {
+          stock, err := s.inventory.GetStock(
+              context.Background(),
+              &inventorypb.GetStockRequest{Sku: req.Sku},
+          )
+          if err != nil {
+              return nil, err
+          }
+          return s.commit(ctx, req, stock)
+      }
+    lang: go
+    issues:
+      - line: 3
+        kind: correctness
+        note: { en: 'context.Background detaches the downstream call from the RPC deadline and cancellation, so it can continue after the caller leaves.', zh: 'context.Background 会切断下游调用与 RPC 截止时间及取消信号的联系，因此调用方离开后它仍可能继续运行。' }
+    explanation: { en: 'Pass the handler ctx to GetStock. Derive a shorter child context only when the handler must reserve part of the remaining budget.', zh: '应把处理器的 ctx 传给 GetStock。只有需要从剩余预算中预留时间时，才派生更短的子 context。' }
+    difficulty: intermediate
+    tags: [deadline, cancellation, context]
+
+  - id: retry-safety
+    type: mcq
+    prompt: { en: 'A reservation RPC returns UNAVAILABLE after the server may have committed. What makes an automatic retry safe?', zh: '预留 RPC 在服务端可能已经提交后返回 UNAVAILABLE。怎样才能安全自动重试？' }
+    options:
+      - { text: { en: 'UNAVAILABLE itself proves the first attempt did not run.', zh: 'UNAVAILABLE 本身能证明第一次尝试没有执行。' }, correct: false }
+      - { text: { en: 'A caller-stable request ID is atomically bound to the request and stored result.', zh: '调用方稳定提供请求 ID，服务端把它与请求及结果原子绑定。' }, correct: true }
+      - { text: { en: 'The client creates a new request ID for every attempt.', zh: '客户端为每次尝试创建新的请求 ID。' }, correct: false }
+    explanation: { en: 'The status does not rule out a committed side effect. Atomic deduplication lets all attempts with one request identity observe the same operation and result.', zh: '该状态码不能排除副作用已经提交。原子去重能让同一请求身份的所有尝试观察到同一个操作与结果。' }
+    difficulty: advanced
+    tags: [retry, idempotency, unknown-outcome]
+
+  - id: review-generated-reservation-client
+    type: review
+    title: { en: 'Review a generated reservation client', zh: '审查生成的预留客户端' }
+    prompt: { en: 'Review this generated gRPC client before it handles production reservations.', zh: '在这段生成的 gRPC 客户端处理生产预留前，对它进行审查。' }
+    task: { en: 'Reserve inventory with transport security, reuse the channel, honor the caller deadline, and retry unknown results without duplicate reservations.', zh: '使用传输安全预留库存，复用通道，遵守调用方截止时间，并在结果未知时重试而不产生重复预留。' }
+    code: |
+      func reserve(ctx context.Context, sku string, qty int32) error {
+          conn, err := grpc.NewClient(
+              "dns:///inventory:443",
+              grpc.WithTransportCredentials(insecure.NewCredentials()),
+          )
+          if err != nil { return err }
+          defer conn.Close()
+
+          client := inventoryv1.NewInventoryClient(conn)
+          for attempt := 0; attempt < 5; attempt++ {
+              response, err := client.Reserve(
+                  context.Background(),
+                  &inventoryv1.ReserveRequest{Sku: sku, Quantity: qty},
+              )
+              if err == nil {
+                  fmt.Println(response.ReservationId)
+                  return nil
+              }
+              if status.Code(err) != codes.Unavailable { return err }
+          }
+          return errors.New("reservation failed")
+      }
+    lang: go
+    right: { en: 'The code uses generated request and client types, bounds the loop to five attempts, inspects the gRPC status, and stops immediately after success.', zh: '代码使用生成的请求与客户端类型，把循环限制为五次尝试，读取 gRPC 状态，并在成功后立即停止。' }
+    checklist:
+      - { en: 'Verify TLS credentials and server identity for the deployment target.', zh: '验证部署目标的 TLS 凭据与服务端身份。' }
+      - { en: 'Inject and reuse ClientConn instead of constructing it per operation.', zh: '注入并复用 ClientConn，不要为每次操作重新创建。' }
+      - { en: 'Pass the caller context and keep every attempt inside one total deadline.', zh: '传递调用方 context，让所有尝试共用一个总截止时间。' }
+      - { en: 'Send one stable request ID and test atomic replay after a lost response.', zh: '发送一个稳定请求 ID，并测试响应丢失后的原子重放。' }
+    issues:
+      - line: 2
+        lines: 5
+        kind: performance
+        note: { en: 'Each reservation constructs and closes a ClientConn, discarding reusable resolution, connection, and load-balancing state.', zh: '每次预留都创建并关闭 ClientConn，丢弃了可复用的解析、连接与负载均衡状态。' }
+      - line: 4
+        kind: security
+        note: { en: 'The production target uses insecure transport credentials, so the client neither encrypts traffic nor authenticates the server.', zh: '生产目标使用不安全的传输凭据，因此客户端既不加密流量，也不认证服务端。' }
+      - line: 12
+        kind: correctness
+        note: { en: 'context.Background ignores the caller cancellation and deadline, and every retry can outlive the original request.', zh: 'context.Background 忽略调用方的取消与截止时间，每次重试都可能超过原始请求的生命周期。' }
+      - line: 13
+        kind: edge-case
+        note: { en: 'The retried mutation has no stable request ID, so a response lost after commit can create more than one reservation.', zh: '被重试的修改操作没有稳定请求 ID，因此提交后响应丢失可能创建多个预留。' }
+    explanation: { en: 'Create one TLS-authenticated channel at application scope, pass it into this operation, and preserve ctx across attempts. Add a caller-stable request ID backed by atomic deduplication before retrying UNAVAILABLE.', zh: '应在应用级创建一个经过 TLS 认证的通道并传入操作，让所有尝试沿用 ctx。重试 UNAVAILABLE 前，还要增加由调用方稳定提供、并由原子去重支撑的请求 ID。' }
+    difficulty: advanced
+    minutes: 8
+    tags: [code-review, TLS, deadline, idempotency, channel-reuse]

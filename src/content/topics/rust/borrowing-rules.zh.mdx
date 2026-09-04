@@ -1,0 +1,408 @@
+---
+title: Rust 借用规则
+description: 共享引用与可变引用如何在不转移所有权的前提下安全访问值，以及怎样读懂并解决借用冲突。
+track: rust
+section: basics
+difficulty: intermediate
+tags: [borrowing, references, borrow-checker, nll]
+prerequisites: [rust/ownership, rust/ownership-rules]
+related: [rust/lifetimes, rust/lifetime-annotations, rust/refcell-cell, rust/closures]
+terms: [borrowing, shared-reference, mutable-reference, borrow-checker, non-lexical-lifetimes]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: rust/borrowing-rules
+sources:
+  - { title: 'The Rust Programming Language - References and Borrowing', url: 'https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html' }
+  - { title: 'The Rust Reference - Borrow operators', url: 'https://doc.rust-lang.org/reference/expressions/operator-expr.html#borrow-operators' }
+  - { title: 'Rust standard library - slice::split_at_mut', url: 'https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut' }
+  - { title: 'RFC 2094 - Non-Lexical Lifetimes', url: 'https://rust-lang.github.io/rfcs/2094-nll.html' }
+origin: old/src/content/docs/rust/borrowing-rules.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    借用让代码通过引用临时访问值，而不取得值的所有权；
+    `&T` 用于共享读取，`&mut T` 用于独占修改。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    只要已有引用之后还会使用，同一内存区域上的冲突借用就会被拒绝；
+    集合扩容还会让元素引用失效。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先明确每个函数是观察、修改还是取得所有权，再缩短借用的实际使用区间；
+    需要同时修改不重叠区域时使用安全的拆分 API。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="borrowing">借用（borrowing）</Term>是通过引用访问值、但不接管其所有权的机制。
+引用本身不负责释放被引用的值；
+所有者离开作用域时，值仍按所有权规则销毁。
+借用因此适合“暂时使用，之后归还控制权”的函数接口。
+
+Rust 区分<Term id="shared-reference">共享引用（shared reference）</Term> `&T` 与<Term id="mutable-reference">可变引用（mutable reference）</Term> `&mut T`。
+共享引用允许多个读取者并存，但不能通过它写入普通数据。
+可变引用允许读写，却要求对相应内存区域拥有独占访问权。
+
+这些限制解决的是引用有效性与别名写入问题。
+若一个集合扩容后仍使用旧元素指针，指针可能已悬空；
+若一个读取者观察数据时另一个别名同时写入，读取结果可能失去一致性。
+<Term id="borrow-checker">借用检查器（borrow checker）</Term>在编译时拒绝这些重叠关系，安全 Rust 因而不会把检查推迟到偶然触发的运行时路径。
+
+你会在函数参数、切片、迭代器、模式匹配和方法调用中不断遇到借用。
+接口接收 `&str` 或 `&[T]`，通常表示只观察调用方的数据；
+接收 `&mut T`，表示可在调用期间修改同一个值；
+接收 `T`，则可能消费或转移所有权。
+
+## 工作原理
+
+对同一个值或重叠的内存区域，借用规则可以压缩成两个约束：任何会被继续使用的引用都必须有效；
+在一次访问发生时，要么存在一个或多个共享引用，要么存在一个可变引用，不能让两类有效访问发生冲突。
+“共享”与“独占”描述的是访问权限，而不是变量是否写了 `mut`。
+
+`let view = &value` 创建共享借用。
+你可以复制共享引用，也可以从它继续取得更短的共享借用。
+共享引用不能直接写入普通 `T`，但 `Cell`、`RefCell`、锁和原子类型等内部可变性机制有各自的检查规则；
+因此，“有 `&T` 时底层数据绝不会改变”并不是普遍成立的表述。
+
+`let edit = &mut value` 创建可变借用，前提是绑定允许修改，而且相关区域没有冲突访问。
+`&mut T` 表达独占权限，所以它不像 `&T` 那样实现 `Copy`。
+把它直接赋给另一个变量可能移动引用；
+需要暂时把权限借给较短操作时，可以显式重新借用（reborrow）。
+
+借用检查器分析的是位置表达式（place expression）及其可能重叠的区域。
+它能直接看出结构体的不同字段互不重叠，却通常不会证明两个切片索引一定不同。
+标准库的 `split_at_mut` 等 API 在内部建立安全边界，再把两个不重叠区域作为独立的可变切片交给调用方。
+
+借用的持续时间由引用之后的实际使用与控制流决定，而不一定延伸到包围它的右花括号。
+这个模型叫作<Term id="non-lexical-lifetimes">非词法生命周期（non-lexical lifetimes，NLL）</Term>。
+引用最后一次使用之后，如果所有路径都不再读取它，后续代码通常可以开始一个原本会冲突的借用。
+
+下面的访问表把接口意图与调用方仍可做的事放在一起。
+它只讨论普通安全引用；
+内部可变性与并发同步在后面的边界部分单独说明。
+
+| 参数形态 | 被调用方可以做什么 | 调用期间的核心约束 |
+|---|---|---|
+| `&T` | 观察 `T` | 不得发生与该读取冲突的写入 |
+| `&mut T` | 观察并修改 `T` | 对相应区域保持独占访问 |
+| `T` | 拥有并可能消费 `T` | 调用方通常在移动后不能再用原绑定 |
+
+编译错误中的 “borrowed as immutable”“borrowed as mutable” 和 “borrow later used here” 应连起来读。
+先定位第一次借用，再定位最后一次使用，最后检查中间哪项访问需要相反权限。
+错误标注的是一个冲突区间，不是在宣判某个变量永远不能再用。
+
+## 示例
+
+### 多个共享读取者
+
+第一个例子让结账逻辑和审计逻辑同时查看同一个价格向量。
+两个引用都只读取数据，因此可以共存；
+`order_total` 接收切片，使它既能处理 `Vec<u32>`，也能处理数组或其他切片。
+
+<Depth level="quick">
+
+```rust title="shared_borrows.rs"
+fn order_total(prices: &[u32]) -> u32 {
+    prices.iter().sum()
+}
+
+fn main() {
+    let prices = vec![1_250, 2_750, 500];
+
+    let checkout = &prices;
+    let audit = &prices;
+
+    println!("total: {}", order_total(checkout));
+    println!("items: {}, audit: {:?}", checkout.len(), audit);
+}
+```
+
+```text
+total: 4500
+items: 3, audit: [1250, 2750, 500]
+```
+
+</Depth>
+
+`checkout` 与 `audit` 都借用 `prices`，没有取得向量及其缓冲区的所有权。
+`main` 结束前，所有者 `prices` 仍然存在，所以两个引用都有效。
+
+参数使用 `&[u32]`，而不是 `&Vec<u32>`，把接口限制在真正需要的能力上：读取一段连续元素。
+借用规则不仅防止错误，也能帮助 API 表达权限。
+
+### 先共享读取，再独占修改
+
+第二个例子先打印共享快照，再修改余额。
+`snapshot` 的最后一次使用发生在调用 `debit` 之前，因此 NLL 允许后续创建可变借用，无需额外花括号。
+
+```rust title="mutable_borrow.rs"
+fn debit(balance: &mut u32, amount: u32) {
+    *balance = balance.saturating_sub(amount);
+}
+
+fn main() {
+    let mut balance = 5_000;
+
+    let snapshot = &balance;
+    println!("before: {snapshot}");
+
+    debit(&mut balance, 750);
+    println!("after debit: {balance}");
+
+    let correction = &mut balance;
+    *correction += 200;
+    println!("through mutable borrow: {correction}");
+
+    println!("final: {balance}");
+}
+```
+
+```text
+before: 5000
+after debit: 4250
+through mutable borrow: 4450
+final: 4450
+```
+
+`debit` 的签名说明它可以修改余额，但不会保留余额的所有权。
+调用返回后，可变借用结束，`main` 仍拥有并能读取 `balance`。
+
+`correction` 最后一次用于第三行输出。
+之后读取 `balance` 不与它冲突。
+若在最终输出之后再次使用 `correction`，两次访问的区间就会重叠，编译器会拒绝直接读取 `balance`。
+
+### 拆分后修改两个元素
+
+同时取得 `stock[from]` 与 `stock[to]` 的可变引用会被保守地视为可能重叠，因为两个索引可能相等。
+`split_at_mut(2)` 把切片拆成边界已证明不重叠的两部分，随后可以从左右两侧各借用一个元素。
+
+```rust title="split_inventory.rs"
+fn move_one(source: &mut u32, destination: &mut u32) -> bool {
+    if *source == 0 {
+        return false;
+    }
+
+    *source -= 1;
+    *destination += 1;
+    true
+}
+
+fn main() {
+    let mut stock = [4, 1, 0, 3];
+
+    let (west, east) = stock.split_at_mut(2);
+    let moved = move_one(&mut west[1], &mut east[0]);
+
+    println!("moved: {moved}");
+    println!("stock: {stock:?}");
+}
+```
+
+```text
+moved: true
+stock: [4, 0, 1, 3]
+```
+
+`west` 覆盖原数组的前两个元素，`east` 覆盖后两个元素。
+安全 API 的返回类型仍是普通 `&mut [u32]`，调用方不需要使用裸指针或 `unsafe`。
+
+左右切片在 `move_one` 调用后不再使用，因此最终可以整体读取 `stock`。
+如果后面仍要使用 `west` 或 `east`，整体借用就会继续有效，直接读取原数组会产生冲突。
+
+### 返回输入中的视图
+
+引用可以作为结果返回，但结果必须来自活得足够久的输入。
+`first_word` 的生命周期省略规则把输出引用关联到唯一的输入引用；
+它不会复制单词，也不会让 `label` 获得更长的生命周期。
+
+```rust title="borrowed_view.rs"
+fn first_word(text: &str) -> &str {
+    text.split_once(' ')
+        .map_or(text, |(first, _)| first)
+}
+
+fn main() {
+    let mut label = String::from("priority order");
+
+    let word = first_word(&label);
+    println!("first: {word}");
+
+    label.push_str(" ready");
+    println!("label: {label}");
+}
+```
+
+```text
+first: priority
+label: priority order ready
+```
+
+`word` 指向 `label` 的缓冲区，所以在打印 `word` 之前不能调用可能改变该缓冲区的 `push_str`。
+打印完成后不再使用 `word`，NLL 便允许开始修改。
+
+若函数试图返回函数内部新建的 `String` 的切片，所有者会在返回时销毁，结果将悬空。
+正确接口应返回拥有所有权的 `String`，或像这里一样让引用来自调用方提供的输入。
+
+## 陷阱
+
+> [!PITFALL]
+> 保存 `Vec` 元素的引用后又执行 `push`，常被误认为只是在尾部添加一个无关元素；
+> 但扩容可能搬移整个缓冲区，而旧引用之后还要使用时，借用检查器会拒绝这次修改。
+
+**修复方法：** 在修改前提取真正需要的拥有型数据，或保存索引并在修改后重新借用。
+若业务需要稳定地址，应选择提供相应保证的数据结构，而不是靠一次运行中没有扩容来推断安全。
+
+> [!PITFALL]
+> 生成代码经常在每个借用错误旁添加 `.clone()`。
+> 这可能消除编译错误，却把共享观察悄悄改成分配和复制，并且掩盖了函数到底应该借用还是取得所有权。
+
+**修复方法：** 先写清接口意图。
+只读文本优先接收 `&str`，只读序列优先接收 `&[T]`；
+只有结果确实需要独立拥有数据时才克隆，并在代码审查中指出这项所有权决定。
+
+> [!PITFALL]
+> 生命周期标注不能让局部值活得更久。
+> 给返回类型写上 `'static` 或给输入和输出都加 `'a`，都无法把即将销毁的局部 `String` 变成有效引用。
+
+**修复方法：** 返回拥有型值，或者让返回引用明确来自某个输入。
+把生命周期理解为引用之间的关系约束，而不是延长分配时间的指令。
+
+> [!PITFALL]
+> `&mut T` 不是 `Copy`。
+> 把一个可变引用直接赋给新变量后，再使用旧变量可能得到 “use of moved value”；
+> 这与两个独占访问不能随意并存是同一权限模型的结果。
+
+**修复方法：** 只需临时转交权限时创建较短的重新借用，例如 `let short = &mut *original`。
+还要让 `short` 的最后一次使用尽早发生，再继续通过 `original` 工作。
+
+> [!PITFALL]
+> 为了“缩短生命周期”而到处增加花括号，会让代码通过，却可能隐藏真正过宽的接口或错误的数据布局。
+> NLL 已经按最后使用点缩短许多借用，额外作用域并非默认答案。
+
+**修复方法：** 按编译错误标出的首次借用、冲突访问与后续使用追踪数据流。
+能重排读取与写入就重排；
+需要两个区域就安全拆分；
+长期需要共享修改时，再选择合适的内部可变性或同步类型。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常生成“先从集合借用元素，再向集合 `push`，最后继续使用元素引用”的流程；
+它也会尝试同时用两个运行时索引取得可变元素，或让异步闭包跨 `.await` 持有 `&mut`，导致后续访问长期被锁住。
+另一类失败是用 `.clone()`、`Rc<RefCell<_>>` 或 `Arc<Mutex<_>>` 消音，而没有说明复制成本、运行时借用 panic、锁范围或跨线程约束。
+
+**让 AI 检查**
+
+- 列出每个引用的来源、最后一次使用，以及该区间内所有可能冲突的读取、写入和集合扩容。
+- 对每个 `.clone()`、`RefCell` 和锁说明它解决的是所有权、内部可变性还是并发问题，并给出不使用它时的接口方案。
+- 检查每个返回引用和跨 `.await` 引用来自哪个所有者，证明所有者在完整使用区间内有效。
+
+**审查清单**
+
+- 先测试空集合、相同索引、不同索引与会触发扩容的输入，再判断修复是否只覆盖了顺利路径。
+- 查看函数签名是否准确区分 `&T`、`&mut T` 与 `T`，并确认调用方在调用后是否仍需要原值。
+- 沿控制流标记借用的最后使用点；
+对切片拆分、重新借用和锁守卫分别检查范围是否最小且可解释。
+
+**提示词词汇**
+
+使用准确术语：`shared reference`（共享引用）、`mutable reference`（可变引用）、`exclusive access`（独占访问）、`aliasing`（别名）、`reborrow`（重新借用）、`non-lexical lifetimes`（非词法生命周期）、`last use`（最后使用点）、`disjoint mutable borrows`（不重叠可变借用）。
+要求 AI 给出“借用区间与冲突访问表”，比笼统地要求“修复 borrow checker”更容易暴露错误的所有权假设。
+
+<Depth level="deep">
+
+## 生命周期描述关系
+
+生命周期标注描述引用之间必须满足的有效性关系。
+`fn choose<'a>(left: &'a str, right: &'a str) -> &'a str` 表示结果不能比两个输入共同有效的范围更久；
+它没有要求两个实参从创建到销毁拥有完全相同的词法作用域。
+
+编译器会在每次调用处选择满足约束的具体区域。
+若一个输入只在较短范围内有效，返回引用也不能越过那个范围使用。
+标注没有改变任何对象何时销毁，只让函数签名公开编译器无法从函数体外猜出的关系。
+
+当输出只有一个可能的输入来源时，生命周期省略规则通常足够。
+`fn first_word(text: &str) -> &str` 等价地表达输出借自 `text`。
+若多个输入引用都可能成为输出，编译器需要显式关系，或需要 API 用枚举、拥有型结果等方式消除歧义。
+
+`'static` 引用必须能在程序剩余执行期间持续有效，但类型里写 `'static` 不会赋予数据这种存活能力。
+字符串字面量通常可以产生 `&'static str`；
+函数内创建的 `String` 不可以。
+把 `'static` 当作“让编译器别检查”的按钮，是生成代码中尤其危险的误解。
+
+### 重新借用保留后续权限
+
+可变引用代表一份可转交的独占权限。
+直接移动它，接收方就取得这份权限；
+从它重新借用，则在更短区间内暂时限制原引用，短借用结束后原引用可以继续使用。
+
+函数调用经常自动创建重新借用。
+例如，一个变量 `editor: &mut String` 传给接收 `&mut String` 的函数后，通常还能在调用返回后继续使用 `editor`。
+编译器依据期望类型插入短借用，而不是永久移动调用方的引用。
+
+复杂泛型、模式解构或显式赋值可能让这个意图不够清楚。
+此时 `&mut *editor` 能明确表达重新借用。
+不要为了绕过错误改用裸指针；
+先确认需要的是移动权限、短暂借出，还是把数据拆成不重叠部分。
+
+### 两个阶段不是两种引用
+
+某些方法调用使用两阶段借用（two-phase borrow）：可变接收者的借用先保留，计算其他实参后再激活。
+这就是 `values.push(values.len())` 能通过检查的原因之一，因为 `len()` 的共享读取发生在独占写入激活之前。
+
+两阶段借用是对特定隐式可变借用的检查细节，不会普遍放宽规则。
+先把 `&mut values` 存入变量，再同时读取 `values`，通常不能依赖同样待遇。
+API 设计和代码审查仍应以清晰、不重叠的访问阶段为准。
+
+## 借用检查的边界
+
+编译器必须在不运行程序的情况下证明安全，因此会保守拒绝某些人能看出互不重叠的索引操作。
+对切片而言，两个任意索引可能相等；
+`split_at_mut` 把运行时边界检查与不重叠保证封装在一个经过审查的安全 API 中。
+
+结构体字段的情况更直接。
+编译器通常能同时借用 `record.name` 与 `record.status`，因为字段布局让它们确定不重叠。
+把所有状态藏进一个集合或一个返回整个 `&mut self` 的辅助方法，会丢失这种局部信息并扩大冲突范围。
+
+借用检查器保证的是安全 Rust 中引用的有效性和访问规则，不保证业务事务正确。
+两个阶段分别取得可变借用仍可能产生丢失更新，缩短锁守卫也可能破坏原子性。
+编译通过只是内存安全证据，不是领域不变量的完整证明。
+
+### 内部可变性改变检查位置
+
+`Cell<T>` 和 `RefCell<T>` 允许通过共享外壳修改内部值，但没有取消借用规则。
+`RefCell<T>` 把共享与独占借用检查移到运行时；
+重叠调用 `borrow_mut` 或在可变借用期间调用 `borrow` 会触发 panic。
+
+并发代码中的 `Mutex<T>` 与 `RwLock<T>` 通过守卫控制访问。
+它们还引入阻塞、锁顺序、中毒处理和临界区大小等问题，不能只因为静态借用难写就机械套上一层 `Arc<Mutex<_>>`。
+
+选择内部可变性时，应写下为何静态权限不足、运行时失败如何处理，以及共享范围由谁拥有。
+单线程共享对象可考虑 `Cell` 或 `RefCell`；
+跨线程共享需要满足线程安全约束并选择同步原语。
+具体模式属于 `rust/refcell-cell` 与并发相关主题。
+
+### 读懂冲突而不是对抗编译器
+
+解决错误时先把诊断转换成时间线：引用从哪里创建，在哪些分支使用，哪个操作需要冲突权限，引用的最后使用在哪里。
+这个方法也适用于闭包捕获、迭代器和异步状态机，因为它们可能把借用保持得比表面上一行表达式更久。
+
+然后选择最小的语义调整：重排阶段、缩小返回类型、拆分数据，或把短暂观察结果转换为拥有型值。
+只有业务确实需要共享所有权或运行时可变性时，才引入引用计数和内部可变性。
+让类型反映真正的所有权关系，通常比逐个压掉编译错误更稳定。
+
+</Depth>
+
+<Checkpoint id="rust/borrowing-rules" />
+
+## 延伸阅读
+
+- [《Rust 程序设计语言》：引用与借用](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html)
+- [Rust 参考：借用运算符](https://doc.rust-lang.org/reference/expressions/operator-expr.html#borrow-operators)
+- [Rust 标准库：`slice::split_at_mut`](https://doc.rust-lang.org/std/primitive.slice.html#method.split_at_mut)
+- [RFC 2094：非词法生命周期](https://rust-lang.github.io/rfcs/2094-nll.html)

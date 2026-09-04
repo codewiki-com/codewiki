@@ -10,7 +10,7 @@ A topic explains one concept or tool so that a smart colleague can (a) understan
 
 1. **Frontmatter** (see §8).
 2. **TL;DR** — `<TLDR>` with three cells. Default labels `what` / `trap` / `fix`; for tool topics use `what` / `when` / `how`. Each cell is one or two sentences.
-3. **What it is and why it exists** — `## ` heading in the reader's language. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
+3. **What it is and why it exists** — `## ` heading in the reader's language. The skeleton sections use exactly these H2 names (en / zh): `What it is and why it exists` / `是什么，为什么存在`, `How it works` / `工作原理`, `Examples` / `示例`, `Pitfalls` / `陷阱`, `In the AI era` / `AI 时代`, `Further reading` / `延伸阅读`; only deep-dive sections choose their own headings. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
 4. **How it works** — the mechanics. One Mermaid diagram (` ```mermaid `) if a structure or flow is clearer drawn than described; none otherwise.
 5. **Examples** — two to four runnable examples that build on each other. Every example that the language allows to run in the browser carries the fence meta `run title="file.ext"` (Python, JavaScript, TypeScript; SQL when the example is self-contained). Every example shows its output in a fenced block ` ```text ` immediately after it, and that output was produced by actually running the code (see §6).
 6. **Pitfalls** — three to six, each as `> [!PITFALL]` followed by the fix. "Best practices" belong here as the fix side of a pitfall; do not write a separate best-practices list.
@@ -34,6 +34,7 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 - English: native, direct, present tense, second person where natural. Contractions are fine. Prefer short sentences. Technical terms are used precisely and consistently with the glossary.
 - Chinese: 地道的中文技术写作，不是翻译腔。段落同样以两到五句为一段，围绕一个意思展开；不要一句一段。用短句，主谓宾清楚。术语以术语表为准；首次出现的术语给出英文原文，例如「闭包（closure）」。中西文之间加一个空格（「Python 3.14 的 `asyncio`」），全角标点（，。；：？！「」），代码、数字、英文单词之间不用全角标点。不用「本文将」「让我们」「值得注意的是」。
 - Both: no emoji, no exclamation marks, no marketing adjectives.
+- MDX: raw `<` or `>` in prose must be escaped as an HTML entity or placed in inline code.
 
 ## 5. Currency
 
@@ -83,13 +84,18 @@ sources:
 origin: old/src/content/docs/python/closures.zh.md
 ---
 ```
-`title` and `description` are in the file's language. Everything else is identical between the two files.
+`title` and `description` are in the file's language. Everything else is identical between the two files. A `title` is a noun phrase of at most 40 characters with no colon or subtitle (`Closures`, `CAP theorem`, `asyncio`); everything that explains the title belongs in `description` (≤ 160 characters).
 
 ## 9. Sidecars
 
-- **Quiz** `src/content/quizzes/{track}/{slug}.yaml`: three to eight items; at least one `predict` (code + three or four candidate outputs) and, where the topic allows, one `review` item (a realistic generated snippet with two or three subtle issues, each with `line`, `kind` in `bug | security | performance | style | api`, and a bilingual `note`). Every item has `prompt`, `explanation` and option texts in both languages.
-- **Interview** `src/content/interview/{track}.yaml`: append two to five questions with concise model answers in both languages and `topics: [{track}/{slug}]`.
+- **Quiz** `src/content/quizzes/{track}/{slug}.yaml`: `predict` items pair code with three or four candidate outputs; `spotbug` and `review` items carry a realistic snippet whose issues each name a `line`, a `kind` and a bilingual `note`. Every item has `prompt`, `explanation` and option texts in both languages.
+- **Interview** `src/content/interview/{track}.yaml`: append questions with model answers in both languages and `topics: [{track}/{slug}]`.
 - **Glossary proposals** `content/glossary-proposals/{track}-{slug}.yaml`: any term used in `terms:` that does not exist yet in `src/content/glossary/`, with `id`, `en`, `zh`, `short` (both languages, ≤ 140 chars).
+
+How many, how long, how hard:
+
+- Quiz banks: 4–8 items; at least one predict and one spotbug when the topic has runnable code; one review item per topic (15–25 lines of realistic generated code for a stated task, 3–5 issues with distinct kinds from security | correctness | edge-case | readability | performance, plus task, right (what the generated code did well) and a 3–4 item checklist the learner should run). Distractors are real misconceptions; explanations are one or two sentences per language.
+- Interview items: 3–5 per topic, each with section (the heading it is grouped under, e.g. "Language core"), level, frequency (common | occasional | rare) and an answer of 60–120 words in each language — the length you would say aloud.
 
 ## 10. What to drop from the old articles
 

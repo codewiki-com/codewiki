@@ -125,10 +125,10 @@ describe('toPlainMarkdown', () => {
     expect(fences(out) % 2).toBe(0);
 
     // The prose the page shows is the prose the twin carries.
-    expect(out).toContain('## What a closure is');
-    expect(out).toContain('> - **what**: A closure is a function that keeps access to bindings');
-    expect(out).toContain('> **Pitfall:** A function created in a loop');
-    expect(out).toContain('```python\n# file: make_counter.py\ndef make_counter():');
+    expect(out).toContain('## What it is and why it exists');
+    expect(out).toContain('> - **what**: A closure is a function associated with enclosing lexical bindings');
+    expect(out).toContain('> **Pitfall:** "A closure saves the variable\'s value at that moment"');
+    expect(out).toContain('```python\n# file: label_factory.py\ndef make_labeler(prefix):');
     expect(out).toContain('<!-- deep -->');
     expect(out).toContain('<!-- /deep -->');
     expect(out).toContain('[Checkpoint: python/closures](https://codewiki.com/python/closures/#checkpoint)');

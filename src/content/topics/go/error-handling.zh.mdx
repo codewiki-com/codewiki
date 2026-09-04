@@ -1,0 +1,406 @@
+---
+title: 错误处理
+description: Go 把错误作为值显式返回；这里讲清错误契约、错误包装、errors.Is、errors.As、多错误以及 typed nil 陷阱。
+track: go
+section: basics
+difficulty: intermediate
+tags: [errors, wrapping, errors-is, errors-as]
+prerequisites: [go/fundamentals]
+related: [go/error-wrapping, go/defer-panic-recover, go/testing, go/context]
+terms: [sentinel-error, error-chain, typed-nil]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/error-handling
+sources:
+  - { title: 'Package errors', url: 'https://pkg.go.dev/errors' }
+  - { title: 'Package fmt: Errorf', url: 'https://pkg.go.dev/fmt#Errorf' }
+  - { title: 'Working with Errors in Go 1.13', url: 'https://go.dev/blog/go1.13-errors' }
+  - { title: 'Go 1.27 Release Notes', url: 'https://go.dev/doc/go1.27' }
+origin: old/src/content/docs/go/error-handling.en.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Go 函数把错误当作普通值返回，通常会同时返回结果。调用方需要显式检查、包装、分类或处理这个值。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    错误消息是给人看的，不能作为程序判断依据。比较字符串、丢失被包装的原因，或返回带类型的 nil（typed nil），都会让看似正确的代码误判失败。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明确调用方可以依赖哪些错误属性，用 `%w` 添加上下文，再通过 `errors.Is` 或 `errors.As` 检查错误链。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Go 把失败作为值从函数中返回。常见签名会同时返回有效结果和 `error`，例如 `(Order, error)`。按照约定，`nil` 表示成功，非 nil 错误表示操作失败。
+
+内置接口刻意保持简洁：错误只需实现 `Error() string` 方法。`errors.New` 创建的字符串错误、应用定义的结构化类型，以及 `fmt.Errorf` 生成的包装器，都能满足同一个接口。调用方可以通过 `error` 处理它们，无需知道每种具体实现。
+
+显式返回让可预期的失败留在正常控制流中。无效输入、记录不存在、取消和网络超时都不需要展开调用栈。函数签名说明操作可能失败，调用位置则清楚展示下一步如何处理。
+
+几乎每个 Go 包都会出现这种模式。文件操作、解析函数、数据库调用、HTTP 客户端和并发 worker 都会返回错误。难点通常不是写出 `if err != nil`，而是为真正能作出决定的那一层保留足够信息。
+
+错误也是 API 契约的一部分。一个包可能只承诺成功或失败，也可能公开稳定的<Term id="sentinel-error">哨兵错误（sentinel error）</Term>、返回有文档说明的具体类型，或者提供判断函数。调用方只能依赖包文档明确承诺的属性。
+
+应该选择足以支持实际判断的最小契约：
+
+| 调用方需求 | 应公开的契约 |
+| --- | --- |
+| 遇到任意失败便停止 | 非 nil 错误 |
+| 识别一个稳定类别 | 哨兵错误与 `errors.Is` |
+| 读取结构化详情 | 自定义类型与 `errors.As` |
+| 隐藏具体表示 | 包提供的判断函数 |
+
+## 工作原理
+
+预声明的 `error` 接口只有一个方法：`Error() string`。格式化错误时会调用该方法，但字符串并不定义错误的身份。两个无关的值可能产生相同消息；包装器也可能在保留底层原因的同时改变消息。
+
+返回 `(T, error)` 的函数失败时，通常会返回 `T` 的零值。调用方要先检查错误，再使用结果。这是一项约定，不是类型系统强制的规则，因此函数文档必须说明部分结果是否仍然可用。
+
+大多数调用位置都遵循简短的卫语句流程：
+
+1. 调用操作，接收结果和错误。
+2. 如果错误非 nil，就处理错误，或添加有用上下文后返回。
+3. 只有成功路径才能继续使用结果。
+
+发现失败的那一层知道直接原因。解析器知道哪个 token 无效；存储适配器知道哪个文件或查询失败。更高层知道当时执行的业务操作。错误包装让每一层都能添加自己的上下文，而不抹掉前面的事实。
+
+`fmt.Errorf("load account %q: %w", id, err)` 会创建一个包装 `err` 的新错误。重复包装会形成<Term id="error-chain">错误链（error chain）</Term>。每个包装器都贡献一段消息，而 `errors.Is` 和 `errors.As` 仍能检查链中更深的错误。
+
+当判断依赖某个错误值，或某个类型定义的自定义匹配规则时，使用 `errors.Is(err, target)`。它会检查整条链，因此经过一层或多层 `%w` 包装后仍能找到哨兵错误。直接使用 `==` 只能看到最外层的值，包装后就无法匹配。
+
+当你需要某种错误类型及其结构化字段时，使用 `errors.As(err, &target)`。目标必须是一个非 nil 指针，指向实现了 `error` 的类型或某个接口类型。匹配成功后，`As` 会把找到的值赋给目标。
+
+`errors.Join` 会把多个非 nil 错误合成一个值。结果通过 `Unwrap() []error` 公开所有子错误，`errors.Is` 或 `errors.As` 会遍历每个分支。如果所有输入都是 nil，`Join` 会返回 nil。
+
+错误应由能够采取行动的那一层处理。库通常返回错误；HTTP 边界可以把它转换为状态码；命令可以打印一次再退出；重试循环可以先检查错误再决定是否重试。在每个中间返回位置都记录日志，通常只会为同一次失败产生多条重复记录。
+
+## 示例
+
+### 返回并检查错误
+
+第一个示例解析数量。`parseQuantity` 会把输入值加入转换失败的上下文，`main` 则把成功路径和失败路径分开。
+
+<Depth level="quick">
+
+```go
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func parseQuantity(input string) (int, error) {
+	quantity, err := strconv.Atoi(input)
+	if err != nil {
+		return 0, fmt.Errorf("parse quantity %q: %w", input, err)
+	}
+	if quantity <= 0 {
+		return 0, fmt.Errorf("quantity must be positive: %d", quantity)
+	}
+	return quantity, nil
+}
+
+func main() {
+	for _, input := range []string{"3", "many"} {
+		quantity, err := parseQuantity(input)
+		if err != nil {
+			fmt.Printf("%s -> error: %v\n", input, err)
+			continue
+		}
+		fmt.Printf("%s -> quantity: %d\n", input, quantity)
+	}
+}
+```
+
+```text
+3 -> quantity: 3
+many -> error: parse quantity "many": strconv.Atoi: parsing "many": invalid syntax
+```
+
+</Depth>
+
+失败时返回 `0`，因为不存在有效数量。调用方不会把这个零值当作数据使用，而是先检查 `err`。`%w` 会保留 `strconv` 错误，供后续代码按需检查。
+
+### 匹配被包装的哨兵错误
+
+调用方只需要稳定类别、不需要额外字段时，哨兵错误很合适。导出的哨兵错误通常以 `Err` 开头，其文档应说明哪些操作可能返回或包装它。
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrProductNotFound = errors.New("product not found")
+
+func productPrice(sku string) (int, error) {
+	prices := map[string]int{"PEN-1": 250}
+	price, ok := prices[sku]
+	if !ok {
+		return 0, fmt.Errorf("lookup %q: %w", sku, ErrProductNotFound)
+	}
+	return price, nil
+}
+
+func quote(sku string, quantity int) (int, error) {
+	price, err := productPrice(sku)
+	if err != nil {
+		return 0, fmt.Errorf("quote %q: %w", sku, err)
+	}
+	return price * quantity, nil
+}
+
+func main() {
+	_, err := quote("PEN-9", 2)
+	fmt.Println("error:", err)
+	fmt.Println("not found:", errors.Is(err, ErrProductNotFound))
+}
+```
+
+```text
+error: quote "PEN-9": lookup "PEN-9": product not found
+not found: true
+```
+
+两层代码都为消息添加了上下文，但仍能发现 `ErrProductNotFound`。`err == ErrProductNotFound` 这样的直接比较会得到 false，因为 `err` 是最外层包装器。`errors.Is` 问的才是调用方真正关心的语义问题。
+
+### 提取结构化错误
+
+如果调用方除了类别还需要读取字段，就应使用自定义类型。这个 `FieldError` 会指出被拒绝的字段和值，同时包装表示更宽泛类别的哨兵错误。
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var ErrInvalidField = errors.New("invalid field")
+
+type FieldError struct {
+	Field string
+	Value string
+	Err   error
+}
+
+func (e *FieldError) Error() string {
+	return fmt.Sprintf("%s=%q: %v", e.Field, e.Value, e.Err)
+}
+
+func (e *FieldError) Unwrap() error { return e.Err }
+
+func validateEmail(email string) error {
+	if !strings.Contains(email, "@") {
+		return &FieldError{"email", email, ErrInvalidField}
+	}
+	return nil
+}
+
+func main() {
+	err := validateEmail("alex.example.com")
+	var fieldErr *FieldError
+	fmt.Println("invalid:", errors.Is(err, ErrInvalidField))
+	if errors.As(err, &fieldErr) {
+		fmt.Printf("field: %s, value: %s\n", fieldErr.Field, fieldErr.Value)
+	}
+}
+```
+
+```text
+invalid: true
+field: email, value: alex.example.com
+```
+
+`Unwrap` 会让自定义错误成为错误链的一部分。`errors.Is` 可以看到类别，`errors.As` 则把匹配的 `*FieldError` 赋给目标，供调用方读取字段。这比解析 `Error()` 输出安全得多。
+
+### 保留多个验证失败
+
+调用方作出响应前，可以把互不依赖的检查全部执行完。`errors.Join` 会保留每项失败，不必迫使验证器只选一个，也不用另行设计专用的切片类型。
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var (
+	ErrNameRequired = errors.New("name is required")
+	ErrEmailInvalid = errors.New("email is invalid")
+)
+
+func validateCheckout(name, email string) error {
+	var failures []error
+	if strings.TrimSpace(name) == "" {
+		failures = append(failures, ErrNameRequired)
+	}
+	if !strings.Contains(email, "@") {
+		failures = append(failures, ErrEmailInvalid)
+	}
+	return errors.Join(failures...)
+}
+
+func main() {
+	err := validateCheckout("", "alex.example.com")
+	fmt.Println(err)
+	fmt.Println("name required:", errors.Is(err, ErrNameRequired))
+	fmt.Println("email invalid:", errors.Is(err, ErrEmailInvalid))
+}
+```
+
+```text
+name is required
+email is invalid
+name required: true
+email invalid: true
+```
+
+合并后的消息每个子错误占一行，但调用方不应解析这些行。它们可以通过合并值匹配任意哨兵错误。输入有效时，切片为空，`errors.Join(failures...)` 会返回 nil。
+
+## 陷阱
+
+### 丢弃错误或延迟检查
+
+> [!PITFALL]
+> 把错误赋给 `_`，或在检查前覆盖它，会把显式失败变成错误数据，或变成之后才出现的误导性错误。
+
+错误应紧挨着产生它的调用进行检查。只有操作契约明确说明失败无关紧要时才忽略错误；如果这一选择可能让审查者困惑，应留下简短原因。静态分析可以发现部分被丢弃的结果，却无法判断剩余行为是否安全。
+
+### 根据消息匹配错误
+
+> [!PITFALL]
+> 比较 `err.Error()` 或搜索其中子串的代码依赖的是文案；文案可能随包版本、操作系统或包装层变化。
+
+对于文档明确承诺的值，使用 `errors.Is`；对于文档明确承诺的类型，使用 `errors.As`。如果依赖只公开文本，就在自己的适配器边界把失败转换成由本包控制的错误契约。不要迫使每个调用方重复解析文本。
+
+### 包装导致实现细节外泄
+
+> [!PITFALL]
+> 对每个依赖错误都使用 `%w`，可能会意外地把依赖的哨兵错误和类型变成自己的公开 API。
+
+只有确实希望调用方检查原因时才包装它。否则，应把它转换成本包定义的错误，并按需在边界诊断信息中保留原始详情。更换数据库驱动时，不应悄悄破坏那些被鼓励匹配旧驱动错误的调用方。
+
+### 返回带类型的 nil
+
+> [!PITFALL]
+> `error` 接口只要包含具体类型就是非 nil，即使其中保存的具体指针是 nil。
+
+成功时直接返回字面值 `nil`。不要把 nil 的 `*MyError` 赋给 `error` 结果，并添加成功路径测试来断言 `err == nil`。如果 `Error` 方法会解引用接收者，格式化这个有问题的接口值还可能触发 panic。
+
+### 记录后又返回同一个失败
+
+> [!PITFALL]
+> 函数记录错误后再把它返回，相当于要求每个调用方再次报告同一事件，而且这些记录往往没有统一的请求标识或脱敏规则。
+
+可复用代码应添加上下文后返回错误。只在拥有结果的进程、请求或 worker 边界记录一次。这个边界可以附加稳定元数据，并防止凭据、载荷和个人数据进入消息。
+
+### 对预期失败使用 panic
+
+> [!PITFALL]
+> 生成的辅助函数和手写辅助函数有时会因为无效输入、文件不存在或网络失败而 panic，但调用方本可以正常处理这些情况。
+
+预期中的运行失败应返回错误。只有不变量被破坏，或名称以 `Must` 开头且契约明确说明会 panic 的辅助函数，才适合使用 panic。恢复机制属于边界处理，不能替代普通错误流；`go/defer-panic-recover` 专题有更详细的说明。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+生成的 Go 代码经常写出 `fmt.Errorf("operation failed: %v", err)`，保留了文本，却切断了错误链。其他常见错误包括根据 `err.Error()` 分支、用 `==` 比较被包装的哨兵错误、把 nil 具体指针作为 `error` 返回，以及在每个栈帧重复记录同一次失败。模型还会为了省去在生成签名中逐层传递错误而使用 `panic`，或者包装数据库驱动的错误，却没有决定这是否属于本包契约。
+
+**让 AI 检查**
+
+- 列出每个返回错误，并说明调用方可以依赖哨兵错误、具体类型、判断函数，还是只能依赖非 nil 失败。
+- 跟踪每个包装器，证明 `%w`、`errors.Is` 和 `errors.As` 在跨包边界后仍保留预期原因。
+- 查找 typed nil 返回、字符串匹配、重复日志、秘密泄漏，以及把预期失败变成 panic 的路径。
+
+**审查清单**
+
+- 运行一个成功用例和每种有文档说明的失败用例，其中要包括被包装的原因和 nil 自定义错误指针。
+- 确认判断只依赖稳定的错误身份或类型，不依赖消息文案或合并错误的顺序。
+- 确认只有一个拥有结果的边界报告失败，而且日志字段不含凭据或敏感载荷。
+
+**提示词词汇**
+
+使用准确术语：`error contract`（错误契约）、`sentinel error`（哨兵错误）、`custom error type`（自定义错误类型）、`error chain`（错误链）、`wrap with %w`（用 `%w` 包装）、`errors.Is`、`errors.As`、`errors.Join`、`typed nil`（带类型的 nil）和 `reporting boundary`（报告边界）。要求模型把供人阅读的上下文与供程序检查的分类信息分开。
+
+<Depth level="deep">
+
+## 错误契约比实现更长寿
+
+函数返回错误，并不自动承诺调用方可以对它分类。最弱但有用的契约只说明成功返回 nil，失败返回非 nil。这样，实现就能修改消息、具体类型和依赖，而不破坏正确的调用方。
+
+哨兵错误增加了稳定身份。它适合 `ErrNotFound` 这样的小类别，但每个导出的哨兵错误都会成为调用方可能采用的分支条件。增加类别可能把包与外部控制流耦合起来，因此只应公开调用方真正能采取行动的区别。
+
+判断需要结构化数据时，适合使用自定义类型。字段可以指出无效参数、重试延迟、偏移量或具体操作。导出的字段和方法会成为 API，所以除非调用方确实需要，否则应把依赖对象等偶然细节留在包内。
+
+包装同样是一项 API 决策。如果包文档说明某项操作会包装 `fs.ErrNotExist`，调用方就有理由用 `errors.Is` 检查它。之后替换文件系统实现时，必须保留这一行为，否则就属于契约变更。
+
+因此，添加 `%w` 不只是改进格式。`%v` 会让遍历看不到原因，`%w` 则会公开原因。应根据想公开的抽象进行选择，同时保证可见消息仍能说明哪项操作失败。
+
+### 错误链可以分支
+
+最简单的包装器只返回一个 `Unwrap() error`，所以错误链看起来是线性的。`errors.Join` 和自定义聚合类型则可能实现 `Unwrap() []error`。虽然开发者通常仍称它为错误链，实际结构已经是一棵树。
+
+`errors.Is` 和 `errors.As` 会按前序深度优先方式遍历该结构。自定义 `Is(error) bool` 方法可以定义浅层语义匹配，自定义 `As(any) bool` 方法可以定义赋值行为。这些方法不应递归调用 `Unwrap`；遍历是标准库的职责。
+
+不要把遍历顺序当作业务优先级。如果多个合并错误都匹配同一种目标类型，`errors.As` 会返回遍历中遇到的第一个。用户界面确实需要顺序时，应保留单独的有序验证结果，不要把错误树当作展示模型。
+
+`errors.Unwrap` 只会调用返回单个错误的 `Unwrap() error`，不会返回合并错误的子节点。普通分类代码应优先使用 `errors.Is` 和 `errors.As`；确实需要枚举整棵树的诊断代码，则可以明确处理两种 unwrap 接口。
+
+## 测试错误契约
+
+测试应断言调用方获准使用的行为。如果函数文档说明它会包装 `ErrNotFound`，测试就应使用 `errors.Is`。只有文本本身就是承诺输出时，才适合精确比较消息，例如用 golden test 覆盖命令行诊断。
+
+成功路径和失败路径同样需要认真测试。同时检查结果与 `err == nil`，可以发现 typed nil 和过期的部分结果。对于失败用例，还要确认不可用的结果值没有被意外消费。
+
+一个函数存在多种错误类别时，表驱动测试很合适。每个用例可以携带预期哨兵错误、目标类型和需要检查的字段。这样，分类断言就和触发它的输入放在一起。
+
+至少要经过一层包装进行测试。只测试最底层函数时，即使中间函数把 `%w` 改成 `%v`，测试仍可能通过。只有从包边界测试，才能确认调用方是否仍能发现文档承诺的原因。
+
+对于自定义类型，应先使用 `errors.As`，再只断言文档承诺的字段。比较整个结构体会让测试与内部诊断数据耦合。以后添加无害上下文也可能导致这种测试失败。
+
+对于合并错误，应检查是否包含目标，而不是检查格式化后的行顺序。如果顺序属于面向用户的验证响应，应另行测试有序表示。聚合错误本身应继续充当分类机制。
+
+## 取消与部分工作
+
+在接收 `context.Context` 的代码中，取消属于普通错误路径。返回或包装 `context.Canceled` 与 `context.DeadlineExceeded`，可以让所有者区分操作被放弃和其他失败。如果换成全新的纯文本错误，这个区别就会消失。
+
+循环或批处理可能在取消前已经完成部分工作。其契约应说明是返回部分结果、回滚工作，还是不返回可用结果。仅凭 `(T, error)` 这一形式无法回答这个问题。
+
+不要仅仅因为错误非 nil 就重试。首先要判断操作是否已取消、失败是否在文档中标记为临时性，以及重复操作是否安全。错误处理无法为本身不具备幂等性的操作补上幂等性。
+
+并发 worker 的错误同样需要一个所有者。这个所有者决定第一个错误是否取消其他 worker、是否合并多个错误，以及函数何时可以返回。goroutine 如果只记录自己的错误，就剥夺了调用方作出决定的机会。
+
+## 接口中的 typed nil
+
+接口值包含动态类型和动态值。只有两者都不存在时，接口才等于 nil。如果 nil 的 `*FieldError` 被转换成 `error`，接口已经有动态类型，因此即使指针是 nil，`err != nil` 仍然为 true。
+
+这个问题常见于使用指针累积错误详情的辅助函数：成功时指针保持 nil，最后却通过 `error` 结果返回。源码看起来似乎没有问题，因为具体指针确实是 nil。但在调用位置，这个非 nil 接口会让程序进入失败路径。
+
+最直接的修复在返回位置：没有失败时明确写出 `return nil`。如果函数构造详情时需要具体错误指针，就在把它转换成接口前进行分支。测试必须覆盖无错误路径，因为只测试失败路径发现不了这个问题。
+
+反射不是常规解决办法。生产方违反约定后，不应要求调用方检查每个错误是否包含 nil 指针。把规则保持在本地且足够简单：公开操作成功时必须返回真正为 nil 的 `error`。
+
+typed nil 也会影响自定义 `Error`、`Is` 和 `As` 方法。保存在接口中的 nil 接收者仍可能调用指针接收者方法。除非 nil 具有刻意设计且有文档说明的含义，否则应避免产生这个值，而不是在整个错误类型中加入防御性 nil 处理。
+
+</Depth>
+
+<Checkpoint id="go/error-handling" />
+
+## 延伸阅读
+
+- [Package `errors`](https://pkg.go.dev/errors)
+- [Package `fmt`：`Errorf`](https://pkg.go.dev/fmt#Errorf)
+- [Go 博客：Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors)
+- [Go 1.27 发布说明](https://go.dev/doc/go1.27)

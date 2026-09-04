@@ -1,0 +1,409 @@
+---
+title: Proxy 与 Reflect
+description: Proxy 拦截对象的基本操作，Reflect 提供同语义的默认转发；理解 trap、receiver 与不变量，才能写出透明且可组合的代理。
+track: javascript
+section: core
+difficulty: advanced
+tags: [proxy, reflect, metaprogramming, property-descriptors]
+prerequisites: [javascript/objects-prototypes, javascript/object-methods]
+related: [javascript/private-fields, javascript/symbol, javascript/weakmap-weakset, javascript/classes]
+terms: [property-descriptor, proxy-trap, proxy-invariant, internal-slot]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: javascript/proxy-reflect
+sources:
+  - { title: 'ECMAScript language specification - Proxy Objects', url: 'https://tc39.es/ecma262/#sec-proxy-objects' }
+  - { title: 'ECMAScript language specification - The Reflect Object', url: 'https://tc39.es/ecma262/#sec-reflect-object' }
+  - { title: 'MDN - Proxy', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy' }
+  - { title: 'MDN - Reflect', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect' }
+  - { title: 'MDN - handler.get()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/Proxy/get' }
+origin: old/src/content/docs/javascript/proxy-reflect.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `Proxy` 用 handler 中的 trap 拦截对象的基本操作；`Reflect` 提供名称和参数相匹配的方法，用来执行默认语义。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    trap 不能随意“撒谎”：它必须满足目标对象的不可配置属性、可扩展性与原型等不变量，否则引擎会抛出 `TypeError`。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    默认转发使用 `Reflect` 并保留 `receiver`，再为所有能绕过策略的操作补齐 trap；用冻结目标、`Symbol` 键和带品牌检查的内置对象测试边界。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+`Proxy` 创建一个包装对象，让你能够观察或改写目标对象的基本操作。属性读取、赋值、`in`、`delete`、键枚举、函数调用和构造等操作，都有对应的<Term id="proxy-trap">代理陷阱（proxy trap）</Term>。调用方仍使用普通 JavaScript 语法，不需要改成 `get("name")` 一类专用接口。
+
+`Reflect` 是一组静态方法，不是构造函数。它把 `Reflect.get()`、`Reflect.set()` 和 `Reflect.ownKeys()` 等基本操作暴露为函数，并且 13 个可拦截操作都与同名 trap 对应。handler 只改写少量行为时，调用 `Reflect` 可以清楚地表达“其余部分保持语言默认语义”。
+
+这对 API 适合观察访问、校验写入、提供虚拟属性、构建可撤销视图，以及实现响应式系统或对象膜（membrane）的底层机制。它解决的是“保持普通对象语法，同时介入语言操作”这个问题，不是普通业务对象都应该使用的默认抽象。
+
+代理不是目标的副本。对代理的成功写入通常会改变目标，目标的其他别名也能绕开 handler；代理与目标的对象标识又不相等。因此，隐藏下划线属性或拒绝某次读取只能形成接口约束，不能把仍然可达的目标变成安全保险库。
+
+## 工作原理
+
+`new Proxy(target, handler)` 要求 `target` 和 `handler` 都是对象。JavaScript 对代理执行内部对象操作时，会查找相应 trap；trap 不存在时，操作转发给目标。trap 存在但不可调用，或者返回结果违反语言不变量时，操作会抛出 `TypeError`。
+
+一次带默认转发的属性读取可以按下面的顺序理解：
+
+1. 表达式 `proxy[key]` 对代理发起内部 `[[Get]]` 操作。
+2. 代理查找 handler 的 `get` trap。
+3. `get(target, key, receiver)` 接收目标、属性键和最初的接收者。
+4. trap 调用 `Reflect.get(target, key, receiver)` 执行普通读取语义。
+5. 引擎核对 trap 结果必须满足的不变量，再把结果交给调用方。
+
+trap 的参数由被拦截的语言操作决定，不是任意的回调签名。下面是完整映射；<Term id="property-descriptor">属性描述符（property descriptor）</Term>相关操作尤其容易与赋值混淆。
+
+| 调用方操作 | Proxy trap | 默认操作 |
+| --- | --- | --- |
+| `proxy[key]` | `get` | `Reflect.get()` |
+| `proxy[key] = value` | `set` | `Reflect.set()` |
+| `key in proxy` | `has` | `Reflect.has()` |
+| `delete proxy[key]` | `deleteProperty` | `Reflect.deleteProperty()` |
+| 自有键枚举 | `ownKeys` | `Reflect.ownKeys()` |
+| 读取自有属性描述符 | `getOwnPropertyDescriptor` | `Reflect.getOwnPropertyDescriptor()` |
+| 定义属性 | `defineProperty` | `Reflect.defineProperty()` |
+| 读取原型 | `getPrototypeOf` | `Reflect.getPrototypeOf()` |
+| 设置原型 | `setPrototypeOf` | `Reflect.setPrototypeOf()` |
+| 检查可扩展性 | `isExtensible` | `Reflect.isExtensible()` |
+| 禁止扩展 | `preventExtensions` | `Reflect.preventExtensions()` |
+| 调用函数代理 | `apply` | `Reflect.apply()` |
+| 通过 `new` 构造 | `construct` | `Reflect.construct()` |
+
+`receiver` 是最初收到操作的对象，可能就是代理，也可能是继承自代理的对象。`Reflect.get(target, key, receiver)` 会让访问器中的 `this` 指向这个接收者；直接写 `target[key]` 则把访问器的 `this` 固定为目标。`Reflect.set()` 的 `receiver` 对继承 setter 和最终把属性定义到哪个对象上同样重要。
+
+`Reflect` 不会让操作自动变得安全，也不会绕过其他代理。目标本身若是代理，`Reflect.get()` 仍可能触发它的 trap；目标属性若是 getter，读取仍会执行 getter。handler 中应对 `target` 调用对应方法，而不是对 `receiver` 再做同一反射操作，否则很容易递归回当前 trap。
+
+策略通常跨越多个 trap。只在 `set` 中校验不能拦住 `Object.defineProperty(proxy, key, descriptor)`，只在 `get` 中隐藏名称也不会自动影响 `in`、键枚举或描述符查询。先列出调用方能执行的全部操作，再决定哪些转发、拒绝或需要保持一致。
+
+## 示例
+
+下面四个示例依次展示默认转发、`receiver`、一致的虚拟属性和撤销。输出都由本地 Node 24 实际执行对应文件得到。
+
+### 校验写入并保留默认读取
+
+第一个 handler 只给读取添加日志，并对已声明规则的字段校验写入。属性键可以是 `Symbol`，因此日志先调用 `String(key)`，而不是直接把键插入模板字符串。
+
+<Depth level="quick">
+
+```javascript run title="validated-order.js"
+function withValidation(target, rules) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      console.log(`get ${String(key)}`);
+      return Reflect.get(target, key, receiver);
+    },
+    set(target, key, value, receiver) {
+      const accepts = rules[key];
+      if (accepts && !accepts(value)) {
+        throw new TypeError(`invalid ${String(key)}: ${value}`);
+      }
+      console.log(`set ${String(key)}=${value}`);
+      return Reflect.set(target, key, value, receiver);
+    },
+  });
+}
+
+const order = withValidation(
+  { quantity: 1, unitPrice: 25 },
+  { quantity: (value) => Number.isInteger(value) && value > 0 },
+);
+
+order.quantity = 3;
+console.log(order.quantity * order.unitPrice);
+try {
+  order.quantity = 0;
+} catch (error) {
+  console.log(error.message);
+}
+console.log(order.quantity);
+```
+
+```text
+set quantity=3
+get quantity
+get unitPrice
+75
+invalid quantity: 0
+get quantity
+3
+```
+
+<TryToBreak items={['把 quantity 设为字符串“3”', '使用 Symbol 属性键', '把 quantity 定义为不可写属性']} />
+
+</Depth>
+
+`Reflect.set()` 返回布尔值，正好符合 `set` trap 的返回约定。它返回 `false` 时，严格模式下的普通赋值会抛出 `TypeError`；handler 不应无条件返回 `true` 来掩盖失败。这个例子只承诺校验普通赋值，尚未覆盖属性定义路径。
+
+规则对象本身也有原型，因此通用库不应直接相信任意键能安全索引它。可以使用 `Object.hasOwn(rules, key)`、无原型字典或 `Map` 明确规则集合。这里的数据和规则都由同一段可信代码创建，示例只聚焦 trap 转发。
+
+### 保留访问器的接收者
+
+两个代理只在转发 `receiver` 时不同。子对象从代理继承 getter，因此这个差异会改变 getter 中 `this` 所见的属性。
+
+```javascript run title="receiver.js"
+const account = {
+  owner: "base",
+  currency: "USD",
+  get label() {
+    return `${this.owner}:${this.currency}`;
+  },
+};
+
+const badProxy = new Proxy(account, {
+  get(target, key) {
+    return Reflect.get(target, key, target);
+  },
+});
+
+const goodProxy = new Proxy(account, {
+  get(target, key, receiver) {
+    return Reflect.get(target, key, receiver);
+  },
+});
+
+const badChild = Object.create(badProxy);
+badChild.owner = "Mina";
+badChild.currency = "EUR";
+
+const goodChild = Object.create(goodProxy);
+goodChild.owner = "Mina";
+goodChild.currency = "EUR";
+
+console.log(badChild.label);
+console.log(goodChild.label);
+```
+
+```text
+base:USD
+Mina:EUR
+```
+
+`badProxy` 明确把 `target` 当作接收者，所以 getter 读取基础对象的字段。`goodProxy` 保留最初的 `goodChild`，getter 因而读取子对象自己的字段。这类错误在只测试 `proxy.label` 时不会暴露，必须加入继承或访问器用例。
+
+这里没有 `set` trap，但对子对象赋值仍会通过代理原型的默认 `[[Set]]` 转发，并最终在子对象上创建自有属性。若 handler 添加 `set` trap，传给 `Reflect.set()` 的 `receiver` 仍应是原始接收者。
+
+### 让虚拟属性参与反射
+
+仅实现 `get` 会让 `invoice.total` 可读，却让 `"total" in invoice` 和 `Object.keys(invoice)` 否认它存在。下面的 handler 同时定义读取、存在性、键列表和属性描述符，让常用观察方式得到一致结果。
+
+```javascript run title="virtual-total.js"
+function withTotal(invoice) {
+  const totalKey = "total";
+  if (Reflect.has(invoice, totalKey)) {
+    throw new TypeError("total already exists");
+  }
+
+  return new Proxy(invoice, {
+    get(target, key, receiver) {
+      if (key === totalKey) {
+        return receiver.quantity * receiver.unitPrice;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      return key === totalKey || Reflect.has(target, key);
+    },
+    ownKeys(target) {
+      return [...Reflect.ownKeys(target), totalKey];
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (key === totalKey) {
+        return { configurable: true, enumerable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+}
+
+const invoice = withTotal({ quantity: 3, unitPrice: 25 });
+console.log(invoice.total);
+console.log("total" in invoice);
+console.log(Object.keys(invoice).join(", "));
+console.log(JSON.stringify(invoice));
+```
+
+```text
+75
+true
+quantity, unitPrice, total
+{"quantity":3,"unitPrice":25,"total":75}
+```
+
+`Object.keys()` 先取得 `ownKeys`，再只保留描述符为可枚举的字符串键。`JSON.stringify()` 也会通过这些观察路径读取值，所以它包含 `total`。不同消费者采用不同反射操作，这正是虚拟对象必须定义一致表面的原因。
+
+虚拟描述符声明 `configurable: true`，因为目标上没有不可配置的 `total` 属性可支撑更强声明。若之后调用 `Object.preventExtensions()` 禁止目标扩展，继续报告额外键会违反不变量；生产实现需要规定并测试这个状态转换。
+
+### 撤销一个临时视图
+
+`Proxy.revocable()` 返回代理和撤销函数。撤销后，代理上的基本操作都会失败，但目标对象及其其他别名仍然有效。
+
+```javascript run title="revocable-session.js"
+function openReadOnlySession(record) {
+  const { proxy, revoke } = Proxy.revocable(record, {
+    set() {
+      throw new TypeError("read-only session");
+    },
+  });
+  return { view: proxy, close: revoke };
+}
+
+const record = { id: "job-7", status: "open" };
+const { view, close } = openReadOnlySession(record);
+
+console.log(view.status);
+try {
+  view.status = "closed";
+} catch (error) {
+  console.log(error.message);
+}
+
+close();
+try {
+  console.log(view.id);
+} catch (error) {
+  console.log(error.name);
+}
+
+record.status = "closed";
+console.log(record.status);
+```
+
+```text
+open
+read-only session
+TypeError
+closed
+```
+
+撤销是代理能力的生命周期控制，不是资源清理协议。它不会关闭文件、取消计时器、擦除目标数据，也不会让已有的目标别名失效。资源所有者仍需提供并调用明确的清理操作。
+
+只实现 `set` 也不等于完整只读。调用方仍可能通过 `defineProperty`、`deleteProperty`、原型 setter，或者目标别名修改状态。真实的只读契约必须列出允许的操作，覆盖相关 trap，并控制目标如何暴露。
+
+## 陷阱
+
+### 丢失 `receiver`
+
+> [!PITFALL]
+> 生成 handler 时直接返回 `target[key]`，在普通数据属性测试中看起来正确，却改变了 getter、setter 和继承链中的 `this`。用 `Reflect.get(target, key, target)` 也会产生同样问题。
+
+**修复方法：** 转发时保留 trap 收到的 `receiver`，并用继承自代理的对象测试访问器。只有契约明确要求把方法或访问器固定到目标时才改变接收者，同时记录对象标识和封装边界的变化。
+
+### 把一个 trap 当作完整策略
+
+> [!PITFALL]
+> `set`、`defineProperty` 和 `deleteProperty` 是不同操作；`get`、`has`、`ownKeys` 与 `getOwnPropertyDescriptor` 也是不同观察路径。只覆盖其中一个，会留下绕过路径或彼此矛盾的结果。
+
+**修复方法：** 根据威胁模型和调用方 API 建立操作矩阵。对赋值、`Object.defineProperty()`、删除、`in`、`Object.keys()`、`Reflect.ownKeys()` 与描述符查询分别测试，不能把代理当作真正安全边界时就不要这样宣传。
+
+### 违反不变量
+
+> [!PITFALL]
+> `ownKeys` 返回重复键、漏掉不可配置自有键，或者在不可扩展目标上报告额外键，都会抛出 `TypeError`。某些 `get` 和 `set` 结果也受不可配置属性约束，错误可能只在冻结后的生产对象上出现。
+
+**修复方法：** 尽量从相应 `Reflect` 结果开始做最小变换。用不可写且不可配置的数据属性、无 setter 的访问器和 `Object.preventExtensions()` 目标运行测试，并把抛错视为 handler 缺陷，而不是调用方随机失败。
+
+### 无条件报告写入成功
+
+> [!PITFALL]
+> `set` trap 在没有修改目标时仍返回 `true`，会让赋值看似成功并丢失数据；无条件返回 `false` 又会在严格模式中把普通赋值变成 `TypeError`。模型常为了满足“必须返回布尔值”而生成固定结果。
+
+**修复方法：** 拒绝写入时抛出领域明确的错误，允许写入时返回 `Reflect.set()` 的真实布尔结果。测试不可写属性与不可扩展目标，并断言最终描述符或值，而不只断言“没有抛错”。
+
+### 代理带品牌检查的对象
+
+> [!PITFALL]
+> `new Proxy(new Map(), {}).get("key")` 会让 `Map.prototype.get` 收到代理作为 `this`，而代理没有 `Map` 所需的内部槽。访问类私有字段的方法也会因代理不带实例的私有品牌而失败。
+
+**修复方法：** 不要假定空 handler 对所有对象都透明。为必须支持的具体类型写显式适配器；若把方法绑定到目标，要测试方法标识、回调传递、链式返回和目标是否因此越过代理边界。
+
+### 把撤销当作销毁
+
+> [!PITFALL]
+> `revoke()` 只禁用那个代理。它不会销毁目标、关闭目标持有的资源，或阻止通过目标的其他引用继续操作；重复调用撤销函数也不能替代幂等的资源清理。
+
+**修复方法：** 把访问撤销和资源生命周期设计成两个明确协议。清理函数负责关闭或取消资源，撤销函数负责拒绝后续代理操作；测试两条路径的调用顺序与重复调用行为。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常生成 `return target[key]` 而丢掉 `receiver`，或让 `set` 无条件返回 `true`，于是继承访问器读错对象，失败写入却被报告为成功。它还会只实现 `get` 和 `set` 就宣称获得“安全私有属性”，遗漏 `defineProperty`、删除、枚举与目标别名。另一组故障来自未经边界测试的 `ownKeys`：虚拟键与真实键重复，或者目标冻结后仍报告额外键。
+
+模型也常把同一个通用日志代理套在 `Map`、`Date` 或使用私有字段的类实例上，运行时才遇到 incompatible receiver 或私有品牌错误。为了修复，它可能把所有函数都绑定到目标，这又改变方法标识、`this` 和链式 API 的返回边界。日志代码若用 `` `${key}` `` 处理属性键，还会在某些 `Symbol` 键上抛错并破坏原操作。
+
+**让 AI 检查**
+
+- 列出调用方使用的每种对象操作，并把它映射到 trap、`Reflect` 默认行为和可能的绕过路径。
+- 对每个 trap 给出 `receiver`、返回类型与相关不变量，再用不可配置属性和不可扩展目标验证结论。
+- 搜索 `Map`、`Set`、`Date`、类私有字段、`Symbol` 键与目标别名，说明代理是否改变品牌检查、对象标识或访问边界。
+
+**审查清单**
+
+- 用继承对象和 getter／setter 验证 `receiver`，并断言失败写入没有被伪装成成功。
+- 分别测试赋值、属性定义、删除、存在性、字符串键、`Symbol` 键与全部自有键。
+- 冻结或禁止扩展目标后重复测试，再覆盖撤销前后和带品牌检查的内置对象。
+
+**提示词词汇**
+
+使用准确术语：`proxy trap`（代理陷阱）、`target`（目标）、`handler`（处理器）、`receiver`（接收者）、`forwarding`（转发）、`property descriptor`（属性描述符）、`proxy invariant`（代理不变量）、`internal slot`（内部槽）、`revocable proxy`（可撤销代理）、`brand check`（品牌检查）。要求模型输出操作矩阵和不变量测试；“给对象加一层代理”不足以定义正确行为。
+
+<Depth level="deep">
+
+## Trap 合约与不变量
+
+代理允许自定义行为，但不能破坏对象模型赖以推理的事实。这些约束叫作<Term id="proxy-invariant">代理不变量（proxy invariant）</Term>。引擎在 trap 返回后验证相关约束，所以一个正常返回的 handler 函数仍可能让外层操作抛出 `TypeError`。
+
+不变量与目标的真实状态相连。对于不可写且不可配置的数据属性，`get` 不能报告不同值，`set` 不能声称成功写入不同值；对于不可配置且没有 getter 或 setter 的访问器，相应结果也受限制。可配置属性留给代理的变化空间更大，但不表示所有 trap 之间可以互相矛盾。
+
+`ownKeys` 的结果必须只含字符串或 `Symbol`，而且不能重复。它必须包含目标的全部不可配置自有键；目标不可扩展时，结果必须与目标全部自有键完全一致。因此，额外虚拟键只适合仍可扩展的目标，除非实现把虚拟属性真实定义到目标上并维护描述符一致性。
+
+`getOwnPropertyDescriptor` 不能把目标的不可配置属性伪装成不存在，也不能凭空为不可扩展目标报告新属性。`defineProperty`、`deleteProperty`、`has`、原型和可扩展性 trap 各有类似约束。最可靠的设计是先用对应 `Reflect` 方法取得合法基线，再只修改契约真正需要的部分。
+
+`Reflect` 方法的失败形式并不完全相同。`Reflect.defineProperty()`、`Reflect.deleteProperty()`、`Reflect.set()` 和 `Reflect.preventExtensions()` 用布尔值表示某些失败，而 `Object.defineProperty()` 一类包装 API 可能抛错。调用方必须检查布尔结果；把函数式接口误解为“永不抛错”仍然不正确，因为参数错误、trap 错误和不变量冲突都可能抛出异常。
+
+trap 之间还会组合。带代理 `receiver` 的 `Reflect.set(target, key, value, receiver)` 可能在最终接收者上执行 `[[DefineOwnProperty]]`，从而触发同一个 handler 的 `defineProperty` trap。日志若同时放在 `set` 与 `defineProperty`，一次赋值可能记录两次；策略代码应按语义去重，而不是假定每条源码语句只触发一个 trap。
+
+### 透明转发的边界
+
+空 handler 能转发代理支持的内部对象方法，但代理仍是不同对象。`proxy === target` 为 `false`，以代理和目标分别作为 `Map` 或 `WeakMap` 的键会得到两个条目。依赖引用标识的缓存、订阅和去重逻辑必须选定统一身份。
+
+代理也不能重新定义严格相等、`typeof` 的全部分类或私有字段语法。可调用目标产生可调用代理，构造目标才允许 `construct` trap；handler 不能把普通对象变成真正可调用对象。Proxy 是受语言预定义 trap 集限制的虚拟化机制，不是任意语法重载。
+
+## 接收者、内部槽与对象膜
+
+规范中的<Term id="internal-slot">内部槽（internal slot）</Term>是对象携带、但不能作为普通属性访问的规范状态。`Map`、`Set`、`Date`、带私有字段的实例以及许多平台对象会先检查接收者是否带有正确状态。代理通常不自动获得目标的这些槽或品牌，所以“没有 trap”不等于方法调用一定透明。
+
+把读到的每个函数都 `bind(target)` 可以让一部分内置方法工作，但代价并不小。每次读取若创建新绑定函数，`proxy.method === proxy.method` 会变成 `false`；方法里的 `this` 绕过代理，返回 `this` 的链式方法还可能暴露目标。缓存绑定函数能修复部分标识问题，却不能自动定义正确的安全边界。
+
+面向单一类型的适配器通常更清楚：只暴露允许的方法，以目标作为这些方法的接收者，并明确包装返回的嵌套对象。若需要跨整个对象图维持策略，就进入对象膜设计；读取到的对象、传入的对象、异常和函数调用都可能需要双向包装或解包。
+
+对象膜还必须保持身份。对同一个目标重复包装应返回同一个代理，否则相等比较、集合成员资格和循环对象图都会出问题。典型实现用 `WeakMap` 保存目标到代理的映射，并视需要保存反向映射；这比在每次 `get` 中直接 `new Proxy(value, handler)` 多了一层明确的生命周期与身份管理。
+
+撤销整个对象膜比撤销单个代理更复杂。已经从膜中取得的每个嵌套代理都必须共享撤销状态，后来执行的 getter 或回调也不能重新泄漏未包装目标。若系统只需要一个短期只读视图，保持目标不外泄并使用单个可撤销代理更容易审计。
+
+### 测试代理合约
+
+测试应从可观察契约出发，而不是只逐个调用 handler。至少比较直接语法和对应的 `Reflect` 调用，再加入 `Object.keys()`、`Reflect.ownKeys()`、描述符、继承访问器和严格模式赋值。这能覆盖多个内部操作组合起来的真实路径。
+
+不变量测试需要改变目标状态。先在普通可扩展目标上运行，再加入不可配置属性、不可写属性、无 setter 的访问器，以及 `Object.preventExtensions()` 后的同一组操作。只测试普通对象会让非法 `ownKeys` 和虚假的 `set` 结果长期潜伏。
+
+边界测试还应使用字符串键与 `Symbol` 键、可调用与不可调用目标、内置集合、私有字段实例，以及撤销后的每一种已支持操作。对虚拟属性，要核对读取、`in`、键枚举、描述符与序列化是否按契约一致，而不是假定它们必须全部表现相同。
+
+最后检查目标别名和嵌套对象。如果策略要求所有访问都经过代理，创建代理后继续暴露目标就是设计缺口；如果读取嵌套对象后返回原对象，策略也会在下一层消失。把这些约束写进测试，比把代理笼统称为“安全”或“响应式”更可验证。
+
+</Depth>
+
+<Checkpoint id="javascript/proxy-reflect" />
+
+## 延伸阅读
+
+- [ECMAScript 语言规范：Proxy Objects](https://tc39.es/ecma262/#sec-proxy-objects)
+- [ECMAScript 语言规范：The Reflect Object](https://tc39.es/ecma262/#sec-reflect-object)
+- [MDN：`Proxy`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)
+- [MDN：`Reflect`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect)
+- [MDN：`handler.get()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/Proxy/get)

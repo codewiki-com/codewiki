@@ -1,0 +1,402 @@
+---
+title: TypeScript Utility Types
+description: Derive contracts with Partial, Pick, Omit, Record, and function utilities without confusing shallow types for runtime behavior.
+track: typescript
+section: type-system
+difficulty: intermediate
+tags: [utility-types, mapped-types, conditional-types, api-design]
+prerequisites: [typescript/basics, typescript/generics]
+related: [typescript/mapped-types, typescript/conditional-types, typescript/custom-utility-types, typescript/satisfies]
+terms: [utility-type, mapped-type, conditional-type, type-erasure, structural-typing]
+verified: { version: 'TypeScript 6', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: typescript/utility-types
+sources:
+  - { title: 'TypeScript Handbook - Utility Types', url: 'https://www.typescriptlang.org/docs/handbook/utility-types.html' }
+  - { title: 'TypeScript Handbook - Mapped Types', url: 'https://www.typescriptlang.org/docs/handbook/2/mapped-types.html' }
+  - { title: 'TypeScript Handbook - Conditional Types', url: 'https://www.typescriptlang.org/docs/handbook/2/conditional-types.html' }
+  - { title: 'TypeScript TSConfig - exactOptionalPropertyTypes', url: 'https://www.typescriptlang.org/tsconfig/exactOptionalPropertyTypes.html' }
+  - { title: 'TypeScript TSConfig - noUncheckedIndexedAccess', url: 'https://www.typescriptlang.org/tsconfig/noUncheckedIndexedAccess.html' }
+origin: old/src/content/docs/typescript/utility-types.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="utility-type">utility type</Term> derives a type from existing types, preserving relationships between fields instead of duplicating object, union, or function contracts that can drift.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `Partial` and `Readonly` are shallow by default, and `Omit` doesn't delete runtime properties; these utilities change static assignability, not the data itself.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Define which fields may change, escape, or be indexed, then choose the narrowest utility; still construct or validate external data at runtime and check the boundary under strict compiler options.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+TypeScript utility types are generic type aliases supplied by the standard library. They accept one or more types and produce a new type, such as an object with selected optional fields, a filtered union, or a function's parameter tuple. The result exists only for the type checker; it doesn't emit a JavaScript function or object.
+
+Utility types solve the problem of keeping related contracts synchronized. If `Invoice` gains a field, handwritten versions of `InvoicePreview`, `InvoicePatch`, and a status index can quietly fall behind; when `Pick`, `Partial`, and `Record` express the transformation, the compiler recalculates the derived type. A reviewer sees the rule between the contracts instead of merely seeing two similar interfaces.
+
+You'll encounter these types in update commands, public responses, state-handler tables, function wrappers, and union filters. They work best when the derivation itself belongs to the domain contract. If two shapes only happen to look alike today, separate named types are often more honest because their future changes may not belong together.
+
+Utility types don't validate data, copy objects, freeze values, or remove properties. That boundary follows from <Term id="type-erasure">type erasure</Term>: after compilation, neither `Partial<Account>` nor `Omit<Account, "passwordHash">` exists. Network input, permission fields, and secrets still require runtime validation and projection code.
+
+### Choose by intent
+
+| Intent | Common utilities | Deciding question |
+| --- | --- | --- |
+| Change property modifiers | `Partial`, `Required`, `Readonly` | Should only the first level change, or nested levels too? |
+| Select object fields | `Pick`, `Omit` | Is an allowlist or denylist safer as the source grows? |
+| Map keys to values | `Record` | Are the keys a closed union or arbitrary runtime strings? |
+| Filter union members | `Exclude`, `Extract`, `NonNullable` | Is assignability, rather than a field name, the intended test? |
+| Reuse a function shape | `Parameters`, `ReturnType`, `Awaited` | Does the function have overloads or generic relationships? |
+
+`Pick` is an allowlist: only named fields enter the result, which suits public DTOs and restricted updates. `Omit` is a denylist: a new source field automatically enters the result, which suits internal transforms that retain everything except a few infrastructure fields. This isn't a style preference; it decides whether source growth allows or rejects fields by default.
+
+### How source changes propagate
+
+A derived type turns source changes into compile-time feedback, but different utilities send that feedback in different directions. Before choosing a public type, simulate adding, removing, and changing source fields and decide whether automatic propagation matches the compatibility policy.
+
+| Source change | `Pick<T, K>` | `Omit<T, K>` |
+| --- | --- | --- |
+| Add a field | Excluded from the result by default | Included in the result by default |
+| Remove a named field | The `K` constraint fails | The exclusion can silently stop mattering |
+| Change a retained value type | Propagates to the result | Propagates to the result |
+| Change a retained modifier | Propagates to the result | Propagates to the result |
+
+Public responses usually should not expose a field merely because the source grew, so `Pick` is safer than `Omit`. An internal persistence preparation step may want the opposite: after removing only an ID and timestamps, all remaining domain fields should continue to flow through, which makes `Omit` direct.
+
+`Partial`, `Required`, and `Readonly` apply one modifier rule across the entire top-level key set. If a business rule covers only some fields, narrow the keys first or derive groups with different rules separately and combine them. Don't encode domain permissions as a side effect of technical convenience.
+
+Automatic propagation doesn't replace versioning judgment. Changing a source field from `string` to a literal union can still break consumers even though the derived type updates cleanly. Public libraries should review declaration output and run consumer-facing type tests.
+
+## How it works
+
+Most object utilities build on <Term id="mapped-type">mapped types</Term>. A mapped type walks the property keys from `keyof T`, reads each value type through `T[P]`, and can add or remove `?` and `readonly` modifiers. It redescribes properties without traversing or changing a runtime object.
+
+### Property mapping and selection
+
+| Utility | Derived result | What it doesn't do |
+| --- | --- | --- |
+| `Partial<T>` | Marks every top-level property of `T` optional | Doesn't recurse or create defaults |
+| `Required<T>` | Removes every top-level optional marker | Doesn't prove runtime values exist |
+| `Readonly<T>` | Marks every top-level property read-only | Doesn't freeze the object or nested values |
+| `Pick<T, K>` | Keeps the properties whose keys are in `K` | Doesn't copy those fields from an object |
+| `Omit<T, K>` | Keeps properties of `T` whose keys aren't in `K` | Doesn't delete `K` from an object |
+| `Record<K, V>` | Requires a `V` value for every key in `K` | Doesn't check arbitrary runtime additions |
+
+`Pick<T, K>` requires `K` to belong to `keyof T`, so a misspelled field normally fails immediately. The standard `Omit<T, K>` permits any property key for `K`; `Omit<Account, "paswordHash">` can be valid while omitting nothing. Add type tests for secret fields and migrations, or use a local strict wrapper that constrains `K extends keyof T`.
+
+Modifiers preserve anything they don't explicitly change. `Partial<T>` doesn't remove `readonly`, and `Readonly<T>` doesn't make an optional property required. `Readonly<Partial<T>>` therefore means that top-level properties may be absent and may not be reassigned; it doesn't mean “complete and immutable.”
+
+### Union filtering
+
+`Exclude`, `Extract`, and `NonNullable` build on <Term id="conditional-type">conditional types</Term>. When the checked side is a naked type parameter containing a union, the condition distributes over each member and unions the results. That's why `Exclude<"draft" | "paid", "paid">` produces `"draft"`.
+
+| Utility | Rule for each union member |
+| --- | --- |
+| `Exclude<T, U>` | Drop the member if it's assignable to `U`; otherwise keep it |
+| `Extract<T, U>` | Keep the member if it's assignable to `U`; otherwise drop it |
+| `NonNullable<T>` | Drop `null` and `undefined` |
+
+The test is assignability, not a nominal label. `Extract<Shape, { kind: "circle" }>` can select a matching object member because that member is assignable to the target shape. If the target also requires a field the source member lacks, the result may be `never`; the more specific the filter, the more carefully you should check that it hasn't discarded valid members.
+
+### Function and constructor shapes
+
+`Parameters<F>` produces a parameter tuple, and `ReturnType<F>` extracts a function's return type. `ConstructorParameters<C>` and `InstanceType<C>` perform the matching operations on construct signatures. `Awaited<T>` recursively extracts the eventual value of a Promise or compatible thenable.
+
+These utilities take the function's type, not the result of calling the function. The usual forms are `ReturnType<typeof buildInvoice>` and `Parameters<typeof buildInvoice>`; without `typeof`, a runtime function value can't be used directly in a type position. An async function's `ReturnType` is still `Promise<...>`, so add `Awaited` when you need its fulfilled value.
+
+Overloaded functions need extra care. Conditional inference from several call signatures uses the last signature, usually the broad implementation-compatible one, so `Parameters` or `ReturnType` may not preserve the exact relationship represented by every overload. A wrapper that must retain overloads should declare its public overloads explicitly or use a discriminated parameter union instead.
+
+### Static structure and runtime values
+
+TypeScript uses <Term id="structural-typing">structural typing</Term>: a value is assignable when it has the required structure. A complete `Account` value is therefore assignable to `Omit<Account, "passwordHash">` because the target stops requiring that field; it doesn't forbid extra fields.
+
+Object literals receive excess-property checking in some direct assignment positions, but the behavior changes after storing a value in a variable, returning it from a function, or applying an assertion. That check isn't proof that an object contains no extra properties. If a response must not contain secrets, construct a new object from allowed fields and test the serialized result.
+
+## Examples
+
+These four examples build through selection, modifiers, union filtering, read-only shapes, and function-shape utilities in one billing domain. Every output comes from running the shown source with local `npx tsx`, and the source also passed strict checks with TypeScript 6.0.3.
+
+### Derive a minimal update contract
+
+Use `Pick` to name the fields that callers may change, then use `Partial` to let a caller submit only some of them. Neither `id` nor `status` ever enters the update type, which expresses the permission boundary better than `Partial<Invoice>`.
+
+<Depth level="quick">
+
+```typescript run title="patch-invoice.ts"
+interface Invoice {
+  readonly id: string;
+  recipient: { name: string; email: string };
+  note: string;
+  status: "draft" | "sent" | "paid";
+}
+
+type EditableInvoice = Pick<Invoice, "recipient" | "note">;
+type InvoicePatch = Partial<EditableInvoice>;
+
+function applyPatch(current: Invoice, patch: InvoicePatch): Invoice {
+  return { ...current, ...patch };
+}
+
+const invoice: Invoice = {
+  id: "inv-42",
+  recipient: { name: "Mina", email: "mina@example.com" },
+  note: "Due on receipt",
+  status: "sent",
+};
+
+const revised = applyPatch(invoice, { note: "Payable in 30 days" });
+console.log(`${revised.id}: ${revised.note}`);
+console.log(revised.recipient.email);
+```
+
+```text
+inv-42: Payable in 30 days
+mina@example.com
+```
+
+<TryToBreak items={['an empty update object', 'an explicit undefined with exactOptionalPropertyTypes enabled', 'a nested update containing only recipient.email']} />
+
+</Depth>
+
+Object spread creates the new invoice and retains untouched fields, but that behavior comes from the runtime function, not from `Partial`. `Partial` only lets `patch` omit top-level fields. If a caller supplies `recipient`, it must still contain both `name` and `email`.
+
+This design also performs no runtime validation. If the patch comes from JSON, start from `unknown` and check allowed keys, value types, and the unknown-field policy before calling `applyPatch`. Type annotations constrain only data that has already crossed into TypeScript's trusted boundary.
+
+### Keep a closed status table complete
+
+`Exclude` and `Extract` derive active and terminal sets from the same status union, while `Record` requires a next action for every invoice status. Adding a status produces a compile error until the action table receives its matching key.
+
+```typescript run title="status-actions.ts"
+type InvoiceStatus = "draft" | "sent" | "overdue" | "paid" | "void";
+type ActiveStatus = Exclude<InvoiceStatus, "paid" | "void">;
+type TerminalStatus = Extract<InvoiceStatus, "paid" | "void">;
+
+const nextAction: Record<InvoiceStatus, string> = {
+  draft: "edit",
+  sent: "wait",
+  overdue: "remind",
+  paid: "archive",
+  void: "retain",
+};
+
+function describe(status: InvoiceStatus): string {
+  return `${status}: ${nextAction[status]}`;
+}
+
+const active: readonly ActiveStatus[] = ["draft", "sent", "overdue"];
+const terminal: readonly TerminalStatus[] = ["paid", "void"];
+console.log(active.map(describe).join(" | "));
+console.log(terminal.map(describe).join(" | "));
+```
+
+```text
+draft: edit | sent: wait | overdue: remind
+paid: archive | void: retain
+```
+
+Safe indexing here follows from `status: InvoiceStatus` matching the finite key set exactly. If the parameter were just `string`, `Record<InvoiceStatus, string>` couldn't prove that the string is a valid status; the boundary would still need to validate or narrow it.
+
+`Record<string, string>` expresses a different contract: every string key is treated as having a string value. An ordinary JavaScript object doesn't automatically uphold that runtime promise, so dynamic dictionaries normally need `noUncheckedIndexedAccess`, an explicit missing-value check, or a `Map`.
+
+### See shallow `Readonly` in action
+
+`Readonly<QueueState>` prevents reassignment of the `name` and `jobs` properties, but it doesn't change the array type stored in `jobs`. To make the snapshot's array read-only too, declare it as `readonly string[]` in the source contract or use a recursive type designed for the domain.
+
+```typescript run title="readonly-queue.ts"
+interface QueueState {
+  name: string;
+  jobs: string[];
+}
+
+const shallow: Readonly<QueueState> = {
+  name: "billing",
+  jobs: ["draft"],
+};
+shallow.jobs.push("send");
+console.log(shallow.jobs.join(","));
+
+type QueueSnapshot = Readonly<{ name: string; jobs: readonly string[] }>;
+const before: QueueSnapshot = { name: "billing", jobs: ["draft"] };
+const after: QueueSnapshot = { ...before, jobs: [...before.jobs, "send"] };
+console.log(before.jobs.join(","));
+console.log(after.jobs.join(","));
+```
+
+```text
+draft,send
+draft
+draft,send
+```
+
+The second form rejects array mutation at the type level and expresses the state transition by creating a new array. It still isn't runtime freezing: JavaScript, an assertion, or a mutable alias can change the same object, so untrusted boundaries and shared mutable state require separate controls.
+
+### Reuse an async function contract
+
+The wrapper reuses the parameter tuple through `Parameters` and gets the eventual invoice through `Awaited<ReturnType<...>>`. If the original function adds a parameter or changes its return shape, the wrapper's signature is checked again.
+
+```typescript run title="load-invoice.ts"
+async function loadInvoice(id: string, includeTax: boolean) {
+  const subtotalCents = 2400;
+  return {
+    id,
+    totalCents: includeTax ? subtotalCents + 480 : subtotalCents,
+  };
+}
+
+type LoadArgs = Parameters<typeof loadInvoice>;
+type LoadedInvoice = Awaited<ReturnType<typeof loadInvoice>>;
+
+async function tracedLoad(...args: LoadArgs): Promise<LoadedInvoice> {
+  console.log(`load ${args[0]} tax=${args[1]}`);
+  return loadInvoice(...args);
+}
+
+async function main(): Promise<void> {
+  const invoice = await tracedLoad("inv-42", true);
+  console.log(`${invoice.id}: ${invoice.totalCents}`);
+}
+
+void main();
+```
+
+```text
+load inv-42 tax=true
+inv-42: 2880
+```
+
+Type reuse reduces signature duplication, but it doesn't verify implementation semantics. A generated wrapper can still reorder arguments, swallow rejections, log secrets, or change the `this` binding; runtime tests and review must cover those behaviors.
+
+## Pitfalls
+
+### Treating a top-level transform as recursive
+
+> [!PITFALL]
+> `Partial<T>`, `Required<T>`, and `Readonly<T>` map only the direct properties of `T`. Nested objects, arrays, `Date`, `Map`, and functions retain their original type semantics.
+
+**Fix:** Name the exact nodes that need recursion and prefer domain-specific command types. If you truly need a general recursive utility, handle arrays, tuples, functions, and built-ins separately and review the boundaries in `typescript/custom-utility-types`; a one-line `T[P] extends object` definition isn't enough.
+
+### Treating `Omit` as data redaction
+
+> [!PITFALL]
+> A complete object is assignable to a shape with one requirement omitted, so `return account` can satisfy an `Omit<Account, "passwordHash">` return type while the runtime object still carries `passwordHash`.
+
+**Fix:** Construct a new object at runtime through destructuring or an explicit allowlist, then test `JSON.stringify` or the actual transport payload. Use deny-by-default projections for secrets; don't expect a return annotation, assertion, or excess-property check to perform deletion.
+
+### Designing a patch as `Partial` of the entity
+
+> [!PITFALL]
+> `Partial<Account>` commonly lets callers change IDs, roles, ownership, audit timestamps, and fields that the service should control. It also conflates whether a field can be updated with whether that field exists after creation.
+
+**Fix:** Establish the update allowlist with `Pick` before deciding which fields may be omitted. Give nested patches explicit command types, reject unknown keys at runtime, and use different patch types for operations with different permissions.
+
+### Confusing absence with explicit `undefined`
+
+> [!PITFALL]
+> Without `exactOptionalPropertyTypes`, an optional property generally accepts an explicit `undefined`. A patch merge then overwrites the old value with `undefined`, which differs from leaving the field absent.
+
+**Fix:** Define the API semantics for absence, clearing, and explicit `undefined`, enable `exactOptionalPropertyTypes`, and use an explicit `null` or operation tag when clearing is valid. Test whether the object owns a key instead of relying only on truthiness.
+
+### Using `Record<string, V>` to guarantee any lookup
+
+> [!PITFALL]
+> `Record<string, V>` statically treats every string lookup as a `V`, but an ordinary runtime object can still lack the key. Generated code often calls `handlers[name](value)` directly and throws when an unknown name produces `undefined`.
+
+**Fix:** Use a literal union for a closed key set. For an open set, enable `noUncheckedIndexedAccess` and handle absence, or use `Map#get`, which returns `V | undefined`. Validate external strings before indexing.
+
+### Letting a misspelled `Omit` pass silently
+
+> [!PITFALL]
+> `Omit<T, K>` allows `K` to contain property keys outside `keyof T`, so a misspelled exclusion may produce no diagnostic. The field remains in the derived type, and a later assertion can hide the result again.
+
+**Fix:** Add negative type tests for security-sensitive exclusions, or define `StrictOmit<T, K extends keyof T> = Omit<T, K>`. Prefer a `Pick` allowlist for public responses and verify the serialized result at runtime too.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often wrap a database entity in `Partial<Entity>` and use it as an update input, letting generated routes change IDs, tenant identifiers, or roles. They also declare `Omit<User, "passwordHash">` and return `user` unchanged as though the type deleted the secret. Other failures include a one-line recursive `DeepPartial` that maps array methods, `Date`, or functions as object fields; pretending `Parameters` and `ReturnType` preserve every overload; and indexing `Record<string, Handler>` without checking the dynamic key.
+
+**Ask your AI to check**
+
+- “List the source fields for every `Partial`, `Pick`, and `Omit`, and explain whether a new source field is allowed or rejected by each derived API.”
+- “Trace omitted fields from the runtime object through `JSON.stringify` and prove secrets are removed from data rather than merely hidden from the static type.”
+- “Run `tsc --noEmit` with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, then add tests for absence, explicit `undefined`, unknown keys, and nested updates.”
+
+**Review checklist**
+
+- Confirm that transformation depth, allowed fields, and key sets match the business boundary instead of being derived mechanically from a persistence entity.
+- Compare runtime construction, validation, and serialization so no utility type is mistaken for a sanitizer, freezer, or validator.
+- Check overloads, generics, `this`, Promise rejection, and compiler options to ensure function and index utilities retain the original contract.
+
+**Prompt vocabulary**
+
+Use precise terms: `utility type`, `mapped type`, `conditional type`, `distributive conditional type`, `shallow transformation`, `type erasure`, `structural typing`, `excess property checking`, `exact optional property types`, and `unchecked indexed access`. Ask the model to state static assignability and runtime data changes separately.
+
+<Depth level="deep">
+
+## Why composition works
+
+A utility's result is still an ordinary type, so it can become another utility's input. `Partial<Pick<Invoice, "note" | "recipient">>` first limits the field set and then changes its modifiers; read from the inside out to see each step. Naming intermediate types makes a complex composition easier to review than four stacked angle brackets.
+
+Composition order sometimes changes the result. `Pick` then `Partial` and `Partial` then `Pick` are usually equivalent for a simple object, but the field allowlist should come first in naming and review. With conditional types, key remapping, or conflicting modifiers, don't assume the operations commute; write type tests that prove the intended assignments.
+
+`Required<Partial<T>>` doesn't necessarily restore all semantics of the original `T`. It makes top-level keys required again, but compiler options and the original optional property's value type determine whether `undefined` remains. It never changed nested levels, so don't treat apparently opposite utilities as generally reversible operations.
+
+A type alias stores a computation rule, not a snapshot of fields from one version. When the source type changes, the result changes immediately. That is both the value and the risk: public boundaries need declaration-output diffs, type tests, or API review so a new internal field doesn't automatically leak through an `Omit`-based external contract.
+
+## Distribution, `never`, and filter results
+
+A distributive conditional type handles union members one by one. Conceptually, `Exclude<A | B, U>` computes `Exclude<A, U> | Exclude<B, U>`; an excluded branch produces `never`, and `never` disappears from a union. `Extract` swaps which branch is kept.
+
+This mechanism explains why object unions can be filtered by shape, and it explains surprising empty results. If every member is assignable to the exclusion target, `Exclude` produces `never`; if no member matches an extraction target, `Extract` does too. Use assignment tests or `satisfies` to pin the expected members before an empty type causes a distant error.
+
+Distribution occurs only in specific forms where the checked side is a naked type parameter. A custom conditional can wrap the parameter in a one-element tuple to compare a union as a whole and suppress distribution. That detail belongs to custom utility design; when using built-in `Exclude` and `Extract`, reason in terms of member-by-member filtering.
+
+`NonNullable<T>` is also a filter, not a runtime null check. Before returning `NonNullable<T>`, a function must prove the value is present through control flow, parsing, or construction. Writing `as NonNullable<T>` only disables a diagnostic; it can't change `null` or `undefined`.
+
+## Compiler options complete the contract
+
+`strict` is the baseline, but more specific options often expose utility-type assumptions. `exactOptionalPropertyTypes` interprets `property?: T` more precisely as “the property may be absent” and doesn't automatically permit assigning `undefined` unless `T` includes it. That makes `Partial<T>` closer to the absence semantics used by many patch protocols.
+
+`noUncheckedIndexedAccess` adds `undefined` to indexed reads for keys that weren't declared explicitly. With `Record<string, Handler>` or a string index signature, `handlers[name]` then forces the caller to handle absence. With `Record<ClosedUnion, Handler>` and an index narrowed to that union, the read can remain precise.
+
+These options don't replace runtime validation. They expand static coverage, but they don't know whether JSON is trustworthy, whether an object came from JavaScript, or whether a string passed a business allowlist. Boundary functions should still begin from `unknown` and hand validated values to internal contracts expressed with utility types.
+
+When verifying a utility-type change, use the project's real `tsconfig` and add focused checks for strict options. An editor hover alone isn't enough because the library version, compiler options, overloads, and context can all change the observed type.
+
+## Type-level regression tests
+
+Most utility-type behavior happens during checking, so tests need both uses that should compile and uses that should be rejected. Negative tests can pin a diagnostic with `@ts-expect-error`; if the error later disappears unexpectedly, the now-unused directive fails the test.
+
+Value examples can use `satisfies` to check completeness while retaining the expression's more precise inferred type. This works well for proving that a finite `Record` covers every key, but it still creates no runtime validator and doesn't turn a network string into the key union.
+
+Libraries should inspect generated `.d.ts` files too. A source-field change that looks local in the implementation can spread through `Pick`, `Omit`, or `ReturnType` into the public declarations. A declaration diff brings that change into review before release.
+
+A minimal regression set should prove that:
+
+- Patch types reject IDs, roles, and audit fields.
+- The serialized public object actually contains no secret fields.
+- Adding a member to a finite status union makes an incomplete handler table fail compilation.
+- Absence and explicit `undefined` follow the protocol under exact optional-property settings.
+
+These assertions cover type relationships and runtime data separately. Keeping only one class leaves a blind spot: type tests can't see a secret still present on an object, while runtime tests don't automatically reveal that a derived signature became wider.
+
+Pin the TypeScript and library versions in continuous integration, and run type tests with the production build's core options. Review version or configuration upgrades as separate changes because they can alter utility-type results without any source edit.
+
+</Depth>
+
+<Checkpoint id="typescript/utility-types" />
+
+## Further reading
+
+- [TypeScript Handbook: Utility Types](https://www.typescriptlang.org/docs/handbook/utility-types.html)
+- [TypeScript Handbook: Mapped Types](https://www.typescriptlang.org/docs/handbook/2/mapped-types.html)
+- [TypeScript Handbook: Conditional Types](https://www.typescriptlang.org/docs/handbook/2/conditional-types.html)
+- [TypeScript TSConfig: exactOptionalPropertyTypes](https://www.typescriptlang.org/tsconfig/exactOptionalPropertyTypes.html)
+- [TypeScript TSConfig: noUncheckedIndexedAccess](https://www.typescriptlang.org/tsconfig/noUncheckedIndexedAccess.html)

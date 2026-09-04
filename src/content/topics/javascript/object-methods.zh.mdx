@@ -1,0 +1,487 @@
+---
+title: Object 静态方法
+description: 理清对象自有属性的枚举、浅拷贝、属性描述符与完整性级别，准确使用 JavaScript 的 Object 静态方法。
+track: javascript
+section: core
+difficulty: intermediate
+tags: [object, static-methods, property-descriptors, enumeration, immutability]
+prerequisites: [javascript/data-types, javascript/objects-prototypes]
+related: [javascript/array-methods, javascript/map-set, javascript/proxy-reflect, javascript/symbol]
+terms: [property-descriptor, shallow-copy, prototype-chain]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: javascript/object-methods
+sources:
+  - { title: 'MDN - Object', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object' }
+  - { title: 'MDN - Enumerability and ownership of properties', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Enumerability_and_ownership_of_properties' }
+  - { title: 'MDN - Object.defineProperty()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/defineProperty' }
+  - { title: 'MDN - Object.freeze()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze' }
+  - { title: 'ECMAScript language specification - Object Objects', url: 'https://tc39.es/ecma262/multipage/fundamental-objects.html#sec-object-objects' }
+origin: old/src/content/docs/javascript/object-methods.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `Object` 静态方法用于选择自有属性、转换键值对、控制属性描述符，以及限制对象结构。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    不同方法选择的键并不相同；`Object.assign()` 与 `Object.freeze()` 又都是浅层操作。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先明确自有／继承、可枚举／不可枚举、字符串／Symbol 三个维度，再选择方法并测试嵌套对象的标识。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+`Object` 静态方法是挂在 `Object` 构造函数上的对象操作，例如
+`Object.keys(value)`、`Object.assign(target, source)` 和 `Object.freeze(value)`。
+它们不是任意对象都能安全调用的实例方法；调用形式中的第一个实参明确指出要检查或修改哪个对象。
+
+JavaScript 对象以属性键保存数据。属性键只能是字符串或 Symbol，而属性还可能来自对象自身或
+<Term id="prototype-chain">原型链（prototype chain）</Term>，并带有是否可枚举等元数据。
+因此，「取得对象的所有字段」并不是一个完整需求：调用方必须先说明需要哪些类别的属性。
+
+这些方法解决四类常见问题：把对象投影成键值列表、从键值列表构造对象、精确读取或定义属性行为，
+以及限制对象能否新增、删除或改写属性。配置合并、API 数据投影、库边界和调试工具中经常会遇到它们。
+
+这一组 API 并不提供统一的「复制对象」语义。复制普通数据、保留访问器、保留原型，以及复制整个
+对象图是不同契约。选错方法时，代码表面上得到一个新对象，实际却可能丢失元数据、调用 getter，
+或继续与来源共享嵌套对象。
+
+删除属性仍使用 `delete` 运算符，检查原型链使用 `in`，需要统一反射接口时则使用 `Reflect`。
+`Object` 方法与这些语言能力相邻，但不能互相替代。
+
+## 工作原理
+
+### 三个选择维度
+
+枚举相关 API 主要沿三个维度筛选属性：属性是否属于对象自身、是否可枚举，以及键是字符串还是
+Symbol。先写清这三个条件，比凭方法名猜测结果可靠。
+
+| 操作 | 自有字符串键 | 自有 Symbol 键 | 继承键 | 不可枚举键 |
+| --- | --- | --- | --- | --- |
+| `Object.keys()` | 是 | 否 | 否 | 否 |
+| `Object.values()` | 对应值 | 否 | 否 | 否 |
+| `Object.entries()` | 对应键值对 | 否 | 否 | 否 |
+| `Object.getOwnPropertyNames()` | 是 | 否 | 否 | 是 |
+| `Object.getOwnPropertySymbols()` | 否 | 是 | 否 | 是 |
+| `Reflect.ownKeys()` | 是 | 是 | 否 | 是 |
+| `for...in` | 是 | 否 | 是 | 否 |
+
+表中的「不可枚举键」表示该操作是否可能包含这类键。`Object.values()` 和 `Object.entries()` 与
+`Object.keys()` 使用相同键集合，只是返回形状不同。即使某个 Symbol 属性设为可枚举，前三个
+`Object` 方法仍会忽略它。
+
+`Object.hasOwn(object, key)` 只回答某个键是否为自有属性，不受可枚举性影响，也支持 Symbol。
+它比 `object.hasOwnProperty(key)` 更稳妥，因为目标可能覆盖该方法，或者根本没有
+`Object.prototype`。
+
+### 属性描述符控制行为
+
+每个自有属性都有一个<Term id="property-descriptor">属性描述符（property descriptor）</Term>。
+数据描述符使用 `value` 和 `writable`；访问器描述符使用 `get` 和 `set`。两类描述符都可以使用
+`enumerable` 与 `configurable`，但不能在同一描述符中同时指定数据字段和访问器字段。
+
+对象字面量或普通赋值创建的属性通常可写、可枚举、可配置。`Object.defineProperty()` 的省略值
+完全不同：未指定的布尔标志默认为 `false`。因此只写 `{ value: 1 }` 会得到不可写、不可枚举、
+不可配置的属性。
+
+`Object.getOwnPropertyDescriptor()` 返回一个描述符快照，修改返回对象不会改动原属性。
+`Object.getOwnPropertyDescriptors()` 返回全部自有字符串键与 Symbol 键的描述符，可与
+`Object.create()` 组合，建立保留自有属性行为与原型的新外层对象。
+
+### 复制与转换仍是浅层的
+
+`Object.assign(target, ...sources)` 从左到右读取每个来源的可枚举自有字符串键和 Symbol 键，
+再把值写入目标。后面的来源会覆盖前面的同名键，目标会被原地修改，返回值仍是该目标。
+
+该操作产生的是<Term id="shallow-copy">浅拷贝（shallow copy）</Term>。属性值若是对象，复制的
+只是同一个对象引用；嵌套对象不会递归合并。来源属性若是 getter，复制时还会执行 getter，目标
+得到的是本次读取的值，而不是原访问器描述符。
+
+`Object.entries()` 把对象投影为字符串键值对数组，便于使用数组方法过滤或映射；
+`Object.fromEntries(iterable)` 再从键值对构造普通对象。两者组合适合数据转换，但不是无损往返：
+Symbol 键、不可枚举属性、描述符和原型都不会由 `Object.entries()` 保留。
+
+### 完整性级别只约束一层
+
+`Object.preventExtensions()`、`Object.seal()` 与 `Object.freeze()` 都修改并返回传入对象。它们逐级
+限制对象自身的结构，但不会递归处理属性值所引用的对象。
+
+| 操作后的对象 | 新增属性 | 删除属性 | 重新配置属性 | 写入原本可写的数据属性 |
+| --- | --- | --- | --- | --- |
+| `preventExtensions()` | 否 | 是 | 是 | 是 |
+| `seal()` | 否 | 否 | 否 | 是 |
+| `freeze()` | 否 | 否 | 否 | 否 |
+
+`seal()` 会让所有自有属性不可配置；`freeze()` 还会让自有数据属性不可写。访问器属性没有
+`writable` 标志，所以冻结对象后 getter 仍可执行，已有 setter 也仍可能修改其他状态。
+「已冻结」因此是对象自身的完整性状态，不等于任意对象图都不可变。
+
+直接赋值、`delete` 与完整性限制冲突时，严格模式会抛出 `TypeError`，非严格脚本可能静默失败。
+`Reflect.set()` 和 `Reflect.deleteProperty()` 则用布尔值报告这类普通失败，适合在示例中明确展示结果。
+
+## 示例
+
+以下四个示例依次验证属性选择、键值转换、描述符复制与完整性级别。所有输出都来自本地
+Node 24.14.0。
+
+### 选择准确的属性集合
+
+这个对象同时包含继承属性、不可枚举属性和 Symbol 属性。把各类键放在一个样本中，能直接看出
+常用 API 的边界。
+
+<Depth level="quick">
+
+```javascript run title="inspect-profile.js"
+const token = Symbol('token');
+const baseProfile = { inheritedRole: 'reader' };
+const profile = Object.create(baseProfile);
+
+Object.defineProperties(profile, {
+  name: { value: 'Ada', enumerable: true },
+  internalId: { value: 17, enumerable: false },
+  [token]: { value: 'secret', enumerable: true },
+});
+
+console.log(JSON.stringify(Object.keys(profile)));
+console.log(JSON.stringify(Object.values(profile)));
+console.log(JSON.stringify(Object.entries(profile)));
+console.log(Reflect.ownKeys(profile).map(String).join(','));
+console.log(Object.hasOwn(profile, 'inheritedRole'));
+console.log('inheritedRole' in profile);
+```
+
+```text
+["name"]
+["Ada"]
+[["name","Ada"]]
+name,internalId,Symbol(token)
+false
+true
+```
+
+<TryToBreak items={['把 name 改为不可枚举属性', '增加第二个 Symbol 属性', '让对象直接拥有 inheritedRole']} />
+
+</Depth>
+
+`Object.keys()` 的结果只有 `name`，不是因为其他属性不存在，而是它们没有同时满足「自有、可枚举、
+字符串键」三个条件。`in` 会沿原型链查找，所以最后两行针对同一个键给出不同答案。
+
+当边界需要允许列表时，不要先取得「所有键」再删除已知危险项。直接按允许的字段名读取，并用
+`Object.hasOwn()` 区分缺失字段与继承字段，契约会更稳定。
+
+### 转换并合并普通数据
+
+第一个转换删除内部字段。接着的配置合并展示两个独立事实：后出现的来源覆盖前面的键，而且嵌套
+`limits` 对象整体替换，不会递归合并。
+
+```javascript run title="transform-config.js"
+const flags = {
+  checkout: true,
+  internalNote: 'remove',
+  retries: 0,
+};
+
+const publicFlags = Object.fromEntries(
+  Object.entries(flags).filter(([key]) => !key.startsWith('internal')),
+);
+console.log(JSON.stringify(publicFlags));
+
+const defaults = { theme: 'light', limits: { requests: 100 } };
+const input = { theme: 'dark', limits: { burst: 10 } };
+const merged = Object.assign({}, defaults, input);
+
+console.log(JSON.stringify(merged));
+console.log(merged === defaults, merged.limits === input.limits);
+
+const nestedMerge = {
+  ...defaults,
+  ...input,
+  limits: { ...defaults.limits, ...input.limits },
+};
+console.log(JSON.stringify(nestedMerge));
+```
+
+```text
+{"checkout":true,"retries":0}
+{"theme":"dark","limits":{"burst":10}}
+false true
+{"theme":"dark","limits":{"requests":100,"burst":10}}
+```
+
+把空对象作为 `Object.assign()` 的目标，避免了修改 `defaults`，但没有让嵌套值独立。第三行中的
+`true` 说明 `merged.limits` 与 `input.limits` 仍是同一个对象。
+
+显式展开 `limits` 适用于已经知道数据形状的配置。通用「深合并」必须另外定义数组、循环引用、
+访问器、危险键和不同对象类型的策略，不能从 `Object.assign()` 自然推导出来。
+
+### 定义并保留属性描述符
+
+这个示例先展示 `defineProperty()` 的默认标志，再比较普通赋值复制与描述符复制。来源 getter 的
+读取次数让副作用可见。
+
+```javascript run title="copy-descriptors.js"
+'use strict';
+
+const account = {};
+Object.defineProperty(account, 'id', {
+  value: 'A-17',
+  enumerable: true,
+});
+
+const idDescriptor = Object.getOwnPropertyDescriptor(account, 'id');
+console.log(JSON.stringify({
+  writable: idDescriptor.writable,
+  enumerable: idDescriptor.enumerable,
+  configurable: idDescriptor.configurable,
+}));
+
+let reads = 0;
+Object.defineProperty(account, 'balance', {
+  get() {
+    reads += 1;
+    return 42;
+  },
+  enumerable: true,
+  configurable: true,
+});
+
+const assigned = Object.assign({}, account);
+const exact = Object.create(
+  Object.getPrototypeOf(account),
+  Object.getOwnPropertyDescriptors(account),
+);
+
+console.log(assigned.balance, reads);
+console.log(typeof Object.getOwnPropertyDescriptor(assigned, 'balance').get);
+console.log(typeof Object.getOwnPropertyDescriptor(exact, 'balance').get);
+```
+
+```text
+{"writable":false,"enumerable":true,"configurable":false}
+42 1
+undefined
+function
+```
+
+`Object.assign()` 为了取得 `balance` 的值执行了一次 getter，并在目标上创建普通数据属性。
+`Object.getOwnPropertyDescriptors()` 读取的是访问器函数本身，所以建立 `exact` 时没有再次执行 getter。
+
+这里的 `exact` 只表示外层原型和自有属性描述符得到保留。属性值仍共享引用，带有内部槽或私有字段
+的内建对象与类实例也不能靠这段组合变成通用的精确克隆。
+
+### 比较三个完整性级别
+
+使用 `Reflect` 可以在不依赖严格模式报错文本的情况下观察每次操作是否成功。最后两行还验证了
+冻结只作用于外层对象。
+
+```javascript run title="integrity-levels.js"
+const extensible = { count: 1 };
+Object.preventExtensions(extensible);
+console.log(
+  Reflect.set(extensible, 'count', 2),
+  Reflect.set(extensible, 'extra', true),
+  Reflect.deleteProperty(extensible, 'count'),
+);
+
+const sealed = Object.seal({ count: 1 });
+console.log(
+  Reflect.set(sealed, 'count', 2),
+  Reflect.set(sealed, 'extra', true),
+  Reflect.deleteProperty(sealed, 'count'),
+);
+
+const preferences = { theme: 'light' };
+const frozen = Object.freeze({ count: 1, preferences });
+console.log(
+  Reflect.set(frozen, 'count', 2),
+  Reflect.deleteProperty(frozen, 'count'),
+  Object.isFrozen(frozen),
+);
+
+preferences.theme = 'dark';
+console.log(frozen.preferences.theme);
+console.log(Object.isFrozen(frozen.preferences));
+```
+
+```text
+true false true
+true false false
+false false true
+dark
+false
+```
+
+不可扩展对象仍能修改和删除现有属性；密闭对象仍能修改原本可写的值；冻结对象连这种写入也拒绝。
+三种操作都不跟随 `preferences` 引用，所以嵌套对象保持可变。
+
+调用 `Object.isFrozen()` 只能回答传入的那个对象是否冻结。若契约声称整个输入图不可变，测试必须
+继续检查每个相关嵌套对象，或者采用明确拥有不可变数据的建模方式。
+
+## 陷阱
+
+### 把 `Object.keys()` 当成所有属性
+
+> [!PITFALL]
+> `Object.keys()` 会忽略不可枚举属性、Symbol 属性和继承属性。调试器能显示某个字段，并不表示该字段会出现在 `Object.keys()`、对象展开或 JSON 输出中。
+
+**修复方法：** 按需求选择键集合。需要全部自有键时使用 `Reflect.ownKeys()`；需要判断单个自有键时
+使用 `Object.hasOwn()`；确实需要沿原型链枚举时，再明确使用 `for...in` 并过滤。
+
+### 让 `Object.assign()` 修改共享默认值
+
+> [!PITFALL]
+> `Object.assign(defaults, input)` 把 `defaults` 当作目标并原地修改。模块级默认配置随后会携带前一次请求的数据，而且后来的来源还可能触发目标上的 setter。
+
+**修复方法：** 普通数据合并使用新的目标，例如 `Object.assign({}, defaults, input)`，并单独处理需要
+合并的嵌套字段。若输入不可信，应按允许列表构造结果，而不是把所有可枚举键直接写入普通对象。
+
+### 把浅拷贝当成独立副本
+
+> [!PITFALL]
+> `Object.assign()`、对象展开和描述符复制都只创建新的外层对象。修改共享的嵌套数组或对象时，来源仍会变化。
+
+**修复方法：** 先写出哪些层级必须拥有独立标识，再只复制这些层级。需要复制一般对象图时使用
+符合数据类型契约的机制，并用共享引用、循环引用和不受支持的值测试它，而不是套用 JSON 往返。
+
+### 忘记描述符的默认值
+
+> [!PITFALL]
+> `Object.defineProperty(target, 'port', { value: 8080 })` 创建的属性默认不可写、不可枚举、不可配置。生成代码常只填 `value`，然后把后续赋值失败误判成冻结问题。
+
+**修复方法：** 显式写出业务依赖的每个标志，并用 `Object.getOwnPropertyDescriptor()` 断言结果。
+不可配置是很强的单向决定；设置前先确认后续是否需要改写描述符或删除属性。
+
+### 假设冻结会递归或阻止访问器
+
+> [!PITFALL]
+> `Object.freeze()` 不会冻结嵌套对象，也不会让 getter 变成固定值。冻结访问器属性后，getter 和已有 setter 仍可运行并读写对象之外的状态。
+
+**修复方法：** 把冻结描述为外层完整性约束，并测试嵌套标识与访问器副作用。若要递归冻结，先定义
+如何处理循环、Symbol 键、访问器、Proxy、类型化数组和带私有状态的实例。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常生成 `Object.assign(DEFAULTS, input)`，无意中让请求共享被污染的默认配置；也会用
+`{ ...input }` 加几次 `delete` 充当安全投影，使未来新增的凭据字段自动泄漏。另一类常见错误是对
+不可信对象调用 `input.hasOwnProperty()`，或把 `Object.freeze({ ...value })` 描述成深度不可变。
+当需求提到「完整复制」时，生成代码还常在不说明契约的情况下切换 `Object.assign()`、JSON 往返
+与 `structuredClone()`，忽略原型、描述符、getter 副作用和支持的数据类型各不相同。
+
+**让 AI 检查**
+
+- 为每个枚举或复制操作列出「自有／继承、可枚举／不可枚举、字符串／Symbol」选择矩阵。
+- 标出每个 `Object.assign()` 的目标对象、覆盖顺序、共享的嵌套引用，以及可能执行的 getter 或 setter。
+- 用 `Object.getOwnPropertyDescriptors()` 和对象标识测试，验证冻结、复制与安全投影的实际边界。
+
+**审查清单**
+
+- 给输入加入继承键、不可枚举键、Symbol 键和名为 `hasOwnProperty` 的自有键，再检查结果。
+- 在调用前后比较默认对象与嵌套对象的标识和值，确认没有跨请求修改或意外共享。
+- 检查返回字段是否来自允许列表，并确认 getter、setter 与不可配置属性不会制造隐藏副作用。
+
+**提示词词汇**
+
+使用准确术语：`own property`（自有属性）、`inherited property`（继承属性）、
+`enumerable property`（可枚举属性）、`symbol key`（Symbol 键）、`property descriptor`（属性描述符）、
+`data property`（数据属性）、`accessor property`（访问器属性）、`shallow copy`（浅拷贝）和
+`integrity level`（完整性级别）。要求模型输出键选择矩阵和对象标识关系，不要只说「安全地复制对象」。
+
+<Depth level="deep">
+
+## 属性顺序与往返边界
+
+普通自有键遵循确定的顺序。数组索引形式的字符串键先按数值升序出现，其他字符串键按创建顺序
+出现，Symbol 键最后按创建顺序出现。`Object.keys()`、`Object.values()`、`Object.entries()` 和
+`Reflect.ownKeys()` 在各自筛选范围内沿用这套顺序。
+
+「数组索引形式」不是「看起来像数字」的宽泛说法。`'2'` 与 `'10'` 会进入索引排序，而 `'01'`、
+`'-1'` 和普通名称留在字符串创建顺序中。依赖顺序时应使用能体现这些边界的测试数据。
+
+`Object.fromEntries()` 接受任意可迭代键值对，并把非 Symbol 键转换为字符串。重复键按迭代顺序
+覆盖，最后一个值留下；Symbol 键则可以直接成为结果的属性键。
+
+这也解释了 `Object.fromEntries(Object.entries(object))` 为什么不是一般对象的逆操作。
+`Object.entries()` 已经删除 Symbol、不可枚举属性、继承属性、描述符与原型信息，后一步无法凭空
+恢复它们。把这组组合称为「数据投影」比称为「对象克隆」更准确。
+
+`Object.keys()` 只选择键，不读取对应属性值，因此本身不会执行 getter。`Object.values()`、
+`Object.entries()`、对象展开和 `Object.assign()` 都要读取选中属性的值，getter 会在这一步运行。
+如果来源是 Proxy，相关内部操作还可能触发其陷阱，结果必须按代理契约单独检查。
+
+## 不同复制操作的可观察行为
+
+复制方法的差异不仅是语法。来源读取、目标写入、键集合和属性创建方式都可能被程序观察到。
+
+| 操作 | 来源键 | 来源 getter | 目标 setter | 保留描述符 |
+| --- | --- | --- | --- | --- |
+| `Object.assign(target, source)` | 可枚举自有字符串与 Symbol | 执行 | 可能执行 | 否 |
+| `{ ...source }` | 可枚举自有字符串与 Symbol | 执行 | 不执行已有目标 setter | 否 |
+| `Object.fromEntries(entries)` | 迭代器提供的键 | 取决于迭代器 | 否 | 否 |
+| `Object.create(proto, descriptors)` | 描述符对象提供的键 | 不读取来源属性值 | 否 | 是 |
+
+对象展开在新对象字面量上创建自有数据属性，不会像 `Object.assign()` 那样通过普通赋值写入一个
+已有目标。不过两者都会读取来源属性，所以不能用展开避免来源 getter 的副作用。
+
+描述符复制保留 getter、setter 和标志，而不是把 getter 的当前结果保存成数据属性。它仍会复用
+描述符中的对象值与访问器函数，也不会复制闭包状态、私有字段或内建对象的内部槽。
+
+因此，`Object.create(Object.getPrototypeOf(source), Object.getOwnPropertyDescriptors(source))`
+只能实现一个明确而有限的契约：保留外层原型与全部自有属性描述符。把它命名为
+`cloneWithDescriptors` 可以，把它命名为没有限定词的 `deepClone` 会误导调用方。
+
+`Object.assign()` 会忽略值为 `null` 或 `undefined` 的来源，但目标若是这两个值则会抛出
+`TypeError`。其他原始值会先转换成包装对象；除字符串字符外，它们通常没有可复制的可枚举自有属性。
+边界 API 若只接受普通记录，应主动验证输入，而不是依赖这些强制转换细节。
+
+## 完整性边界与递归冻结
+
+完整性方法作用于传入对象本身，并尝试调整其可扩展性与自有属性描述符。它们不是复制操作，变量
+仍指向同一个对象。`Object.freeze(value) === value` 因此总是成立。
+
+冻结数组会阻止元素写入、删除和改变 `length`，因为这些都由数组自身属性表示。但数组元素引用的
+对象仍可修改。相同的浅层边界适用于普通对象：冻结容器不等于冻结容器中的成员。
+
+一个可靠的递归冻结函数至少要记录已经访问的对象以处理循环，并通过 `Reflect.ownKeys()` 考虑
+Symbol 键。它还要检查描述符，以免为了遍历一个访问器属性而意外执行 getter。Proxy 可能拦截
+检查与冻结操作，不同内建对象也可能有额外限制。
+
+这正是短小的 `Object.values(value).forEach(deepFreeze)` 配方不适合被当作通用工具的原因。它会漏掉
+不可枚举值与 Symbol 值，不处理循环，还会在读取访问器时执行用户代码。若数据模型固定，可以为该
+模型实现并测试递归策略；否则应先缩小所谓「深度不可变」的契约。
+
+冻结也不是机密性或授权边界。读取权限没有被撤销，闭包、私有字段、WeakMap 或外部服务中的状态
+也不受对象自有描述符控制。安全审查必须跟踪数据暴露与权限检查，而不是把 `isFrozen()` 当成信任标记。
+
+## 无原型字典与原型选择
+
+`Object.create(null)` 创建没有 `Object.prototype` 的对象。它不会继承 `toString`、`constructor` 或
+`hasOwnProperty`，所以把实例方法当作所有对象共有能力的代码会失败。
+
+`Object.keys()`、`Object.entries()`、`Reflect.ownKeys()` 与 `Object.hasOwn()` 都能直接处理无原型
+对象。若字符串键来自外部输入，无原型字典还能避免与 `Object.prototype` 上的名称发生普通继承冲突。
+
+无原型对象仍不是 `Map` 的完全替代。需要任意类型的键、直接的 `size`、清晰的增删 API 或避免
+字符串键转换时，`Map` 往往更符合契约。选择依据应是键类型和接口，不是笼统地把某一种容器叫作更快。
+
+`Object.create(prototype)` 适合在创建时明确指定原型。`Object.setPrototypeOf()` 会改变已有对象的
+属性查找关系，也可能破坏调用方对对象类型的假设；业务代码通常应直接用预期原型创建对象，或用类
+表达公开接口，而不是在对象流转途中改换原型。
+
+</Depth>
+
+<Checkpoint id="javascript/object-methods" />
+
+## 延伸阅读
+
+- [MDN：`Object`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object)
+- [MDN：属性的可枚举性与所有权](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Enumerability_and_ownership_of_properties)
+- [MDN：`Object.defineProperty()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/defineProperty)
+- [MDN：`Object.freeze()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/freeze)
+- [ECMAScript 语言规范：Object 对象](https://tc39.es/ecma262/multipage/fundamental-objects.html#sec-object-objects)

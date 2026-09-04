@@ -1,0 +1,400 @@
+---
+title: 智能指针
+description: Rust 智能指针把间接访问与所有权、共享和析构规则组合起来；理解 Deref、Drop 与包装类型的真实边界。
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [smart-pointers, deref, drop, ownership, indirection]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/box-rc-arc, rust/refcell-cell, rust/pin, rust/raw-pointers]
+terms: [smart-pointer, reference-counting, interior-mutability, deref-coercion, drop-trait]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/smart-pointers
+sources:
+  - { title: 'The Rust Programming Language — Smart Pointers', url: 'https://doc.rust-lang.org/book/ch15-00-smart-pointers.html' }
+  - { title: 'The Rust Programming Language — Treating Smart Pointers Like Regular References with Deref', url: 'https://doc.rust-lang.org/book/ch15-02-deref.html' }
+  - { title: 'The Rust Programming Language — Running Code on Cleanup with Drop', url: 'https://doc.rust-lang.org/book/ch15-03-drop.html' }
+  - { title: 'Rust standard library — Deref', url: 'https://doc.rust-lang.org/std/ops/trait.Deref.html' }
+  - { title: 'Rust standard library — Drop', url: 'https://doc.rust-lang.org/std/ops/trait.Drop.html' }
+  - { title: 'The Rust Reference — Destructors', url: 'https://doc.rust-lang.org/reference/destructors.html' }
+origin: old/src/content/docs/rust/smart-pointers.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="smart-pointer">智能指针（smart pointer）</Term>是带有所有权或资源管理语义的指针式类型。`Box<T>` 表达单一所有权，`Rc<T>` 与 `Arc<T>` 表达共享所有权，`Weak<T>` 表达不延长生命周期的观察关系。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    包装器只解决它声明的那一层问题。`Arc<T>` 不会让 `T` 自动线程安全，`Deref` 不会把包装器变成子类型，引用计数也不会回收强引用环。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先画所有权和线程边界，再选最小的包装器。需要修改时另行选择普通可变借用、`RefCell`、锁或原子类型，并检查析构是否真的可达。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+普通引用 `&T` 和 `&mut T` 借用一个由别处拥有的值，借用不能比所有者活得更久。智能指针通常自己拥有或共同拥有目标，并在包装器中保存完成这项工作所需的状态。这个状态可能只是一个堆地址，也可能包含引用计数、分配器信息或其他元数据。
+
+「智能指针」是一个设计类别，不是 Rust 中必须实现的 marker trait。标准库文档常用 `Deref` 和 `Drop` 解释这类类型，因为它们分别提供引用式访问与离开生命周期时的清理行为；不过，不能反过来把「实现了 `Deref`」当作完整定义。API 的所有权契约才是判断依据。
+
+`Box<T>` 独占一个目标，适合递归类型、拥有型 trait 对象和确实需要堆间接层的值。`Rc<T>` 在单线程内维护多个强所有者，`Arc<T>` 用原子计数把相同的所有权模型带到线程之间。`Rc::downgrade()` 和 `Arc::downgrade()` 产生的 `Weak<T>` 不拥有目标，使用前必须调用 `upgrade()`。
+
+共享所有权与修改权是两个问题。`Rc<T>` 和 `Arc<T>` 让多个句柄负责同一个值的生命周期，却通常只给出共享访问。需要修改时，`Rc<RefCell<T>>` 在单线程运行时检查借用，`Arc<Mutex<T>>` 或其他同步原语则负责跨线程协调；这些组合各自增加新的失败模式。
+
+你会在递归语法树、GUI 对象图、回调注册表、线程共享配置和资源守卫中遇到智能指针。函数只在调用期间读取值时，参数仍应优先接收 `&T`，而不是强迫调用方交出或克隆某种智能指针。只有函数需要保留、降级或转移句柄时，包装器类型才应出现在接口上。
+
+下面这张表先按所有权选择，再单独处理修改方式。它故意不把 `Cell<T>` 和 `RefCell<T>` 说成引用计数指针：它们提供<Term id="interior-mutability">内部可变性（interior mutability）</Term>，并不增加所有者。
+
+| 需求 | 常见类型 | 它保证什么 | 它不保证什么 |
+| --- | --- | --- | --- |
+| 单一所有者需要间接层 | `Box<T>` | 拥有目标并负责析构 | 地址固定或代码更快 |
+| 单线程内有多个所有者 | `Rc<T>` | 非原子的强弱引用计数 | 跨线程共享或可变访问 |
+| 多线程间有多个所有者 | `Arc<T>` | 原子的强弱引用计数 | `T` 自身的同步 |
+| 不拥有目标的链接 | `Weak<T>` | 可尝试升级为强句柄 | 目标在使用时仍存活 |
+| 共享引用下修改 | `Cell<T>`、`RefCell<T>` | 受控的内部修改 | 多个所有者或跨线程同步 |
+
+## 工作原理
+
+### 所有权、访问与销毁
+
+移动 `Box<T>` 会转移唯一所有权。对于普通非零大小的 `T`，移动包装器通常只移动指针，堆上的目标仍在原分配中；但 `Box<T>` 本身不承诺固定地址，因为安全代码仍可能替换或移出满足条件的目标。需要固定语义时应使用 `Pin`，而不是从当前地址碰巧不变推导保证。
+
+克隆 `Rc<T>` 或 `Arc<T>` 会克隆拥有句柄并增加强计数，不会克隆内部的 `T`。最后一个强句柄销毁时，目标开始析构；如果还有 `Weak<T>`，控制信息会继续存在，使后续 `upgrade()` 稳定地返回 `None`。最后一个弱句柄也消失后，剩余控制信息才可释放。
+
+这套机制叫作<Term id="reference-counting">引用计数（reference counting）</Term>。它能准确响应句柄的创建与销毁，却不会发现由强边组成的环。如果父节点强拥有子节点，而子节点也强拥有父节点，外部根句柄消失后，环内的强计数仍不会降到零。
+
+`Arc` 的原子操作只保护引用计数协议。`Arc<T>` 是否实现 `Send` 与 `Sync` 仍取决于 `T` 的相应约束，所以 `Arc<RefCell<T>>` 不会成为合法的跨线程共享修改方案。对只读不可变数据，`Arc<T>` 往往已经够用，不应无条件再套一层锁。
+
+### `Deref` 与 `Drop`
+
+实现 `Deref<Target = U>` 后，`deref(&self)` 返回 `&U`。显式表达式 `*pointer` 会使用这个方法，而方法查找和某些期待引用的上下文还可以应用<Term id="deref-coercion">解引用强制转换（deref coercion）</Term>。它借用目标，不会移动目标、克隆目标或增加引用计数。
+
+解引用强制转换可以连续经过多层，例如 `&NamedBox<String>` 变成 `&String`，再变成 `&str`。这种隐式行为会扩大类型的公开 API，因此自定义类型不应只为省几个字符就实现 `Deref`。当包装器需要像目标一样透明使用，并且该关系长期稳定时，实现才合理。
+
+<Term id="drop-trait">`Drop` trait</Term>让类型在值离开生命周期时执行清理。不能直接调用 `value.drop()`，因为编译器仍会在作用域末尾再次安排销毁；需要提前结束生命周期时，把值移动给 `std::mem::drop(value)`。`drop()` 之后原绑定已经被移动，不能继续使用。
+
+`Drop::drop(&mut self)` 没有返回值，因此不适合报告可能失败且必须由业务处理的关闭操作。数据库提交、文件刷新或远程确认应有显式的 `finish()`、`flush()` 或 `close()` 结果；`Drop` 只负责不能再交给调用方处理的兜底清理。
+
+## 示例
+
+下面四个程序逐步展示拥有型间接层、共享生命周期、跨线程共享和自定义包装器。每个输出块都来自本地 `rustc 1.94.0` 编译并运行对应文件；所用 API 在目标版本 Rust 1.98 中仍是稳定接口。
+
+### 用 `Box` 终止递归大小计算
+
+`Plan::Sequence` 若直接保存两个 `Plan`，编译器无法算出枚举的有限大小。`Box<Plan>` 把递归位置变成固定大小的拥有型指针，同时保留清晰的父子所有权。
+
+<Depth level="quick">
+
+```rust title="boxed_plan.rs"
+#[derive(Debug)]
+enum Plan {
+    Task(&'static str),
+    Sequence(Box<Plan>, Box<Plan>),
+}
+
+impl Plan {
+    fn task_count(&self) -> usize {
+        match self {
+            Plan::Task(_) => 1,
+            Plan::Sequence(left, right) => left.task_count() + right.task_count(),
+        }
+    }
+
+    fn first_task(&self) -> &'static str {
+        match self {
+            Plan::Task(name) => name,
+            Plan::Sequence(left, _) => left.first_task(),
+        }
+    }
+}
+
+fn main() {
+    let release = Plan::Sequence(
+        Box::new(Plan::Task("build")),
+        Box::new(Plan::Sequence(
+            Box::new(Plan::Task("test")),
+            Box::new(Plan::Task("deploy")),
+        )),
+    );
+
+    println!("first: {}", release.first_task());
+    println!("tasks: {}", release.task_count());
+}
+```
+
+```text
+first: build
+tasks: 3
+```
+
+<TryToBreak items={['删除一个 Box 层', '把空计划加入枚举', '在计算后移动 release']} />
+
+</Depth>
+
+匹配发生在 `&self` 上，所以 `left` 与 `right` 是对盒装子节点的借用。方法调用会自动解引用到 `Plan`，不需要写出 `(**left).task_count()`。这里的 `Box` 表达结构，而不是微优化。
+
+根节点离开作用域时，两个盒子拥有的子树会递归析构。代码没有引用计数，因为每个子节点只有一个拥有路径。如果业务后来要求一个子计划属于多个发布计划，所有权模型才需要重新设计。
+
+### 观察最后一个 `Rc` 所有者
+
+`owner` 与 `worker` 是同一分配的两个强所有者，`observer` 是一个弱观察者。程序明确丢弃两个强句柄，以显示目标何时执行 `Drop`。
+
+```rust title="rc_lifetime.rs"
+use std::rc::Rc;
+
+struct Session {
+    name: &'static str,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        println!("drop: {}", self.name);
+    }
+}
+
+fn main() {
+    let owner = Rc::new(Session { name: "checkout" });
+    let observer = Rc::downgrade(&owner);
+    let worker = Rc::clone(&owner);
+
+    println!("strong: {}", Rc::strong_count(&owner));
+    println!("weak: {}", Rc::weak_count(&owner));
+
+    drop(owner);
+    println!("alive after owner: {}", observer.upgrade().is_some());
+
+    drop(worker);
+    println!("alive after worker: {}", observer.upgrade().is_some());
+}
+```
+
+```text
+strong: 2
+weak: 1
+alive after owner: true
+drop: checkout
+alive after worker: false
+```
+
+`Rc::clone(&owner)` 只增加强计数。`owner` 被丢弃后，`worker` 仍让 `Session` 存活；`worker` 被丢弃时强计数归零，因此析构输出出现在第二次存活检查之前。弱句柄仍存在，但不能复活已经析构的值。
+
+`strong_count()` 适合这里受控的单线程观察，不应成为业务正确性的前置检查。若代码需要目标存活，应直接持有升级成功得到的 `Rc<T>`；先读计数再执行其他操作只会制造脆弱的检查后使用逻辑。
+
+### 用 `Arc` 在线程间共享只读数据
+
+每个线程拥有一个 `Arc<Vec<i32>>` 句柄，并只读取向量。工作线程返回结果，主线程按句柄创建顺序打印，因此调度不会改变输出顺序。
+
+```rust title="arc_reports.rs"
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let readings = Arc::new(vec![4, 6, 9, 12]);
+
+    let handles: Vec<_> = [2, 3]
+        .into_iter()
+        .map(|divisor| {
+            let readings = Arc::clone(&readings);
+            thread::spawn(move || {
+                let total: i32 = readings
+                    .iter()
+                    .copied()
+                    .filter(|value| value % divisor == 0)
+                    .sum();
+                (divisor, total)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (divisor, total) = handle.join().unwrap();
+        println!("divisible by {divisor}: {total}");
+    }
+
+    println!("owners: {}", Arc::strong_count(&readings));
+}
+```
+
+```text
+divisible by 2: 22
+divisible by 3: 27
+owners: 1
+```
+
+线程闭包使用 `move` 取得各自句柄的所有权，不是取得整个向量的独立副本。全部线程完成后，这些句柄被销毁，主线程只剩一个强所有者。内部数据没有修改，所以此处加入 `Mutex` 只会改变接口和失败模式，没有提供所需的新语义。
+
+若线程需要更新同一状态，应先确认直接共享是否真的优于消息传递或每线程局部结果。确实需要时，再选择锁或原子类型，并明确中毒、阻塞和临界区边界。`Arc` 只解决状态能活多久，不回答谁能在何时写入。
+
+### 为透明包装器实现 `Deref` 与 `Drop`
+
+`NamedBox<T>` 保存标签和一个值。它把共享解引用转给内部 `T`，并在析构时记录包装器标签；`announce(&customer)` 展示两次连续的解引用强制转换。
+
+```rust title="named_box.rs"
+use std::ops::Deref;
+
+struct NamedBox<T> {
+    label: &'static str,
+    value: T,
+}
+
+impl<T> NamedBox<T> {
+    fn new(label: &'static str, value: T) -> Self {
+        Self { label, value }
+    }
+}
+
+impl<T> Deref for NamedBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T> Drop for NamedBox<T> {
+    fn drop(&mut self) {
+        println!("drop: {}", self.label);
+    }
+}
+
+fn announce(value: &str) {
+    println!("value: {value}");
+}
+
+fn main() {
+    let customer = NamedBox::new("customer", String::from("Ada"));
+    announce(&customer);
+    println!("bytes: {}", customer.len());
+    drop(customer);
+    println!("after explicit drop");
+}
+```
+
+```text
+value: Ada
+bytes: 3
+drop: customer
+after explicit drop
+```
+
+`&NamedBox<String>` 先通过自定义 `Deref` 变成 `&String`，再通过 `String` 的实现变成 `&str`。`customer.len()` 的方法查找也使用自动解引用。两个操作都只是借用；它们不取得 `String` 的所有权。
+
+`drop(customer)` 把包装器移动进标准库的 `drop()` 函数，析构发生在下一行之前。真实资源类型不应在析构函数中无条件写标准输出，这里只为显示顺序。生产代码还要保证 `drop()` 不 panic，并把可恢复的失败放在显式 API 中。
+
+## 陷阱
+
+### 用包装器堆叠掩盖所有权设计
+
+> [!PITFALL]
+> 生成代码常把借用错误改成 `Arc<Mutex<Rc<RefCell<Box<T>>>>>`。它可能仍然不能跨线程编译，还引入动态借用、锁中毒、死锁和更多间接访问。
+
+**修复方法：** 写出谁拥有 `T`、共享是否跨线程、是否真的需要原地修改。每个包装层都必须回答一个独立需求；说不出作用的层应删除，并用领域标识或消息传递替代不必要的共享对象图。
+
+### 把句柄克隆当作深复制
+
+> [!PITFALL]
+> `Rc::clone()` 和 `Arc::clone()` 创建的是同一分配的新所有者。通过内部可变性或锁修改目标时，其他句柄会观察到同一变化；它们不是独立快照。
+
+**修复方法：** 先决定需要共享身份还是复制值。共享时用显式的 `Rc::clone(&handle)` 或 `Arc::clone(&handle)` 表达增加所有者；需要独立值时，克隆内部 `T`，并说明复制是浅层、深层还是按领域重建。
+
+### 用强引用组成环
+
+> [!PITFALL]
+> `Rc` 与 `Arc` 不包含环检测。树的父子双向链接或注册表与订阅者互相强持有时，外部句柄全部消失后，环内目标仍不会析构。
+
+**修复方法：** 按领域画出拥有边，把父链接、缓存观察者和其他非拥有反向边改成 `Weak`。测试应丢弃外部根所有者，并断言保留的弱句柄无法升级，而不是只观察某一刻的计数。
+
+### 为领域包装器滥用 `Deref`
+
+> [!PITFALL]
+> 给 `UserId`、`ValidatedPath` 或 `Secret` 实现 `Deref<Target = String>`，会让字符串的全部方法隐式成为包装器 API。调用方可能绕过领域操作，代码也更难看出何时发生自动解引用。
+
+**修复方法：** 默认提供名称明确的方法，例如 `as_str()`、`expose()` 或受限的领域操作。只有包装器确实要透明替代目标、方法冲突策略可接受且该关系不会改变时，才实现 `Deref`。
+
+### 把 `Drop` 当作可靠的业务提交
+
+> [!PITFALL]
+> `Drop::drop()` 不能返回错误，而且强引用环、`mem::forget()`、进程中止和泄漏都会让预期清理不发生或不及时。把事务提交、持久化或远程确认只放在析构函数中，会丢失失败信息。
+
+**修复方法：** 为必须确认成功的动作提供返回 `Result` 的显式方法，并让 `Drop` 做幂等的本地兜底清理。测试提前 `drop()`、普通作用域退出和错误路径；不要把进程退出当作资源协议。
+
+### 用 `Box::leak` 修补生命周期错误
+
+> [!PITFALL]
+> 模型有时用 `Box::leak` 把拥有值变成 `'static` 引用，只为让编译器停止报告生命周期错误。除非程序有明确的进程期分配设计，这会把所有权问题变成永久内存增长。
+
+**修复方法：** 让长期任务拥有 `Box`、`Arc` 或领域对象，或者缩短借用范围。只有目标确实应存活到进程结束、分配次数有界且泄漏属于接口契约时，才考虑 `Box::leak`。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型倾向于把 `Arc<Mutex<_>>` 当作通用编译修复，然后让锁守卫跨过回调或 `.await`。它也会生成 `Arc<RefCell<T>>` 并声称内部值已经线程安全，或者在父子和订阅关系两端都保存强句柄。自定义包装器中常见的另一类错误是随意实现 `Deref`、直接调用 `.drop()`、记录敏感内部值，或用 `Box::leak` 伪造 `'static` 生命周期。
+
+**让 AI 检查**
+
+- 为每个 `Box`、`Rc`、`Arc`、`Weak` 和可变性包装层写出它解决的具体需求，并标出线程边界。
+- 画出所有强边与弱边，证明外部根句柄消失后每个析构函数仍可达。
+- 列出所有隐式解引用、显式 `drop()`、`Box::leak` 和跨回调或 `.await` 的守卫生命周期。
+
+**审查清单**
+
+- 删除没有独立语义的包装层，并重新检查 `Send`、`Sync` 与可变访问条件。
+- 让弱句柄过期、让最后一个强句柄销毁，再观察升级结果和资源清理。
+- 检查 `Drop` 是否只做不可失败的兜底清理，敏感值是否会被日志、克隆或泄漏。
+
+**提示词词汇**
+
+使用准确术语：`owning pointer`（拥有型指针）、`shared ownership`（共享所有权）、`strong reference cycle`（强引用环）、`weak back edge`（弱反向边）、`deref coercion`（解引用强制转换）、`drop glue`（析构胶水）、`guard lifetime`（守卫生命周期）、`interior mutability`（内部可变性）。要求模型给出所有权图和析构可达性证明；「修好 borrow checker 错误」不足以约束包装器选择。
+
+<Depth level="deep">
+
+## 解引用强制转换的边界
+
+`Deref` 的关联类型 `Target` 决定共享解引用得到的目标。编译器看到期待 `&U` 的位置时，可以把 `&T` 沿 `T: Deref<Target = U>` 转换；若下一层仍实现 `Deref`，转换可以继续。`DerefMut` 为独占借用提供对应能力，但共享引用绝不能因此变成可变引用。
+
+| 起点 | 所需实现 | 可得到的引用 |
+| --- | --- | --- |
+| `&T` | `T: Deref<Target = U>` | `&U` |
+| `&mut T` | `T: DerefMut<Target = U>` | `&mut U` |
+| `&mut T` | `T: Deref<Target = U>` | `&U` |
+| `&T` | 任何安全 `Deref` 实现 | 不能得到 `&mut U` |
+
+函数参数是最容易观察的场景。函数接收 `&str` 时，调用方可以传 `&String`、`&Box<str>`，也可以传示例中的 `&NamedBox<String>`。转换发生在引用上，调用方继续拥有原包装器；若函数需要保留共享所有权，签名应明确接收 `Rc<T>` 或 `Arc<T>`。
+
+方法调用还会执行自动解引用与自动借用，所以 `customer.len()` 能找到 `String` 或 `str` 上的方法。关联函数不会以同样方式变成包装器的方法：`Rc::downgrade()`、`Arc::get_mut()` 和 `Box::into_raw()` 仍应通过容器类型调用。这一区别能帮助审查者判断代码操作的是目标还是所有权容器。
+
+自定义 `Deref` 应保持便宜、可预测且没有业务副作用，因为调用点可能看不出它被执行。实现不应取得锁后做长时间工作、触发网络访问或改变领域状态。即使类型系统允许，这些行为也会破坏读者对普通方法调用的判断。
+
+`DerefMut` 更强，因为它把对包装器的独占借用投影成对目标的独占借用。包装器若必须维持验证、规范化或审计不变量，暴露 `DerefMut` 往往让调用方绕过这些边界。此时应提供受控修改方法，或者采用修改后重新校验的显式 API。
+
+## 析构顺序与清理边界
+
+Rust 在值的销毁作用域结束时运行析构。若类型实现 `Drop`，先调用它的 `drop(&mut self)`，随后编译器生成的析构逻辑继续销毁字段。应用代码不应手动销毁字段后又让默认流程再次处理它们；需要复杂的部分初始化或手动销毁时，通常已经进入 `MaybeUninit` 等不安全代码的范围。
+
+局部变量按声明的相反顺序销毁，结构体字段按声明顺序销毁。把正确性建立在相邻局部变量的隐式顺序上通常很脆弱；依赖顺序时，用嵌套作用域或显式 `drop()` 把边界写进控制流，并为顺序建立测试。
+
+移动会转移析构责任。一个不能实现 `Copy` 的资源包装器移动到新绑定后，旧绑定不能再用，最终只会从新位置析构一次。`Rc<T>` 与 `Arc<T>` 的每个句柄都会被销毁，但内部 `T` 只在最后一个强所有者消失时析构一次。
+
+析构期间发生 panic 很危险，尤其是线程已经因另一个 panic 展开栈时，第二个 panic 可能中止进程。`Drop` 实现应短小，不依赖外部服务，并避免使用可能因普通运行状态而失败的 `unwrap()`。可以记录不变量破坏，但不要把析构变成主要错误处理通道。
+
+安全 Rust 也允许故意不运行析构，例如 `mem::forget(value)` 消费值后不调用 `Drop`。因此，内存安全的 `Drop` 实现不能把「析构一定发生」作为安全前提；标准库对不安全资源抽象也要求考虑泄漏。业务层同样应把析构看作常见清理路径，而不是不可违背的交付保证。
+
+资源拥有关系最终应能回答两个问题：谁触发正常关闭，遗漏关闭时会留下什么。文件句柄和锁守卫适合由 RAII 在离开作用域时释放；需要向调用方报告失败的持久化动作则应显式完成。智能指针能自动连接生命周期与清理，但不能替你定义业务成功。
+
+</Depth>
+
+<Checkpoint id="rust/smart-pointers" />
+
+## 延伸阅读
+
+- [Rust 程序设计语言：智能指针](https://doc.rust-lang.org/book/ch15-00-smart-pointers.html)
+- [Rust 程序设计语言：用 `Deref` 把智能指针当作普通引用](https://doc.rust-lang.org/book/ch15-02-deref.html)
+- [Rust 程序设计语言：用 `Drop` 执行清理代码](https://doc.rust-lang.org/book/ch15-03-drop.html)
+- [Rust 标准库：`Deref`](https://doc.rust-lang.org/std/ops/trait.Deref.html)
+- [Rust 标准库：`Drop`](https://doc.rust-lang.org/std/ops/trait.Drop.html)
+- [Rust 参考：析构函数](https://doc.rust-lang.org/reference/destructors.html)

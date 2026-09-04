@@ -1,0 +1,407 @@
+---
+title: Go maps
+description: Go maps index values by key; comparability, zero values, sharing, unordered iteration, and concurrency boundaries determine whether their use is correct.
+track: go
+section: types-interfaces
+difficulty: intermediate
+tags: [maps, hash-table, comparable, comma-ok]
+prerequisites: [go/fundamentals]
+related: [go/slices, go/structs, go/interfaces, go/sync]
+terms: [hash-table, zero-value, comparable-type, comma-ok-idiom]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/maps
+sources:
+  - { title: 'The Go Programming Language Specification - Map types', url: 'https://go.dev/ref/spec#Map_types' }
+  - { title: 'The Go Programming Language Specification - For statements', url: 'https://go.dev/ref/spec#For_statements' }
+  - { title: 'Go built-in functions - clear', url: 'https://pkg.go.dev/builtin#clear' }
+  - { title: 'Go maps package', url: 'https://pkg.go.dev/maps' }
+  - { title: 'Go FAQ - atomic maps', url: 'https://go.dev/doc/faq#atomic_maps' }
+  - { title: 'Go sync package - WaitGroup.Go', url: 'https://pkg.go.dev/sync#WaitGroup.Go' }
+origin: old/src/content/docs/go/maps.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `map[K]V` is a built-in type that indexes values by unique keys. Keys must be comparable; reads, writes, and deletes all use the same key equality rules.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A missing key yields the value type's zero value, and iteration order is unspecified. Copies of a map still share data, and an ordinary map cannot be accessed concurrently with a write.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Use comma-ok to distinguish missing keys from zero values, sort keys for stable output, and coordinate writes with a mutex or one owning goroutine.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A Go map is a built-in associative container. The type `map[K]V` maps keys of type `K` to values of type `V`, with at most one entry for a given key. The language specification calls it an unordered group, so a map represents lookup relationships rather than positions or sequence.
+
+Maps fit indexes, counters, sets, and groups keyed by an identifier. For example, `map[string]int` can hold inventory counts, while `map[UserID]Profile` can index profiles by user ID. Choose a slice when consecutive integer positions matter. When stable order matters, store that order separately or sort the keys before producing output.
+
+Implementations generally use a structure in the <Term id="hash-table">hash table</Term> family, but the layout is not part of the Go language contract. Application code should depend only on specified comparison, access, deletion, and iteration behavior. Explanations and code tied to private runtime buckets can become wrong when the implementation changes.
+
+A map key must have a <Term id="comparable-type">comparable type</Term>. Booleans, numbers, strings, pointers, and channels can be keys. Arrays and structs qualify only when all of their components are comparable. Slices, maps, and functions cannot be keys.
+
+The value type has no such restriction. A value may be a slice, another map, a function, an interface, or a large struct, but those choices affect copying and ownership. An entry in `map[string][]byte` is found by a string even though its byte slice may still share a backing array with other code.
+
+## How it works
+
+### Types, keys, and entries
+
+In `map[string]int`, every key is a `string` and every value is an `int`. This catches type mistakes earlier than an assorted `map[string]any` and avoids type assertions after lookup. Use interface values only when the data is genuinely dynamic.
+
+A key's `==` behavior also decides whether two keys name the same entry. Struct keys compare field by field, array keys compare element by element, and pointer keys compare addresses. Domain types can stop identifiers with the same representation but different meanings from being mixed: `map[UserID]Profile` does not accept a `ProductID`.
+
+An interface type is statically comparable, but it can hold a dynamic value that is not. Putting `[]int` into `any` and then using it as a key in `map[any]V` panics at runtime. A public API that accepts arbitrary interface keys moves what could have been a compile-time constraint to runtime.
+
+### Initialization and nil maps
+
+A map variable with no explicit initializer has the <Term id="zero-value">zero value</Term> `nil`. A nil map has length zero; lookup returns the value type's zero value, `range` has no iterations, and both `delete` and `clear` are safe. Only adding or updating an entry panics.
+
+A map literal and `make` both create writable, non-nil maps:
+
+| Form | Initial state | Writable |
+| --- | --- | --- |
+| `var counts map[string]int` | Nil, length `0` | No |
+| `counts := map[string]int{}` | Non-nil, length `0` | Yes |
+| `counts := make(map[string]int)` | Non-nil, length `0` | Yes |
+| `counts := make(map[string]int, 100)` | Non-nil, with a capacity hint | Yes |
+
+The second argument to `make` is only an initial capacity hint. It does not cap the number of entries, and there is no `cap` operation for maps. Whether to provide a hint should come from a known size and measurements, not from a correctness rule.
+
+### Lookup, presence, and updates
+
+The expression `value := m[key]` always produces a value. It yields the stored value when the key exists. When the key is absent or `m` is nil, it yields the zero value of `V`. A single-value lookup therefore cannot answer whether the key exists.
+
+The two-value form `value, ok := m[key]` also returns a boolean. `ok` is `true` when the entry exists, even if `value` happens to be `0`, `false`, `""`, or `nil`. This form is commonly called the <Term id="comma-ok-idiom">comma-ok idiom</Term>.
+
+The assignment `m[key] = value` adds an entry or replaces its current value. `m[key]++` is also valid: a missing integer value is first read as zero, incremented, and written back. `delete(m, key)` does nothing when the key is absent, while `clear(m)` removes every entry.
+
+### Sharing semantics
+
+Map variables are assigned and passed by value, but a non-nil map value refers to implementation-managed data. `alias := original` does not copy all entries; a write through `alias` is visible through `original`. Function parameters behave the same way, so a function receiving `map[K]V` can change entries observed by its caller.
+
+The standard library's `maps.Clone` creates a new top-level map, but the clone is shallow. Keys and values are copied using ordinary assignment. If a value is a slice, map, or pointer, the original and clone may still share data one level down. A truly independent copy must follow the domain's structure further.
+
+Map elements are generally not addressable. You can replace `profiles[id]` as a whole, but you cannot write `profiles[id].Name = "Lin"` directly. Read the struct, modify the copy, and store it back, or deliberately use pointer values. The pointer form introduces shared mutable objects, so its ownership must be explicit.
+
+### Iteration and order
+
+`for key, value := range m` visits the entries, but the specification does not define their order and does not promise that two iterations of one map agree. Tests, non-JSON text output, signature input, and migration files that require stable order should collect and sort the keys first.
+
+Deleting an entry not yet reached during iteration has defined behavior: that entry will not be produced. An entry added during iteration may be produced or skipped, and the choice can differ for each new entry. Filtering by deletion is valid; adding entries and relying on whether the same loop sees them is not.
+
+### Concurrency boundaries
+
+Several goroutines may read a map concurrently, including by lookup and `range`, as long as no goroutine modifies it. Once writes are possible, every map access that may overlap needs synchronization. The data race is itself the defect; a fatal error that the runtime sometimes reports is not a synchronization mechanism.
+
+A general-purpose container can put a `sync.Mutex` or `sync.RWMutex` beside the map in one struct. Another design lets one goroutine own the map while other goroutines send operations over a channel. `sync.Map` is optimized for specific concurrency patterns, not automatic thread-safe syntax for every `map[K]V`.
+
+## Examples
+
+These four programs progress through presence checks, stable iteration, copying boundaries, and synchronized writes. Save and run each one separately with `go run filename`; the output shown here came from Go 1.27.0.
+
+### Distinguish a missing key from a zero value
+
+The inventory deliberately stores `"orange": 0`. Direct lookup returns `0` for both `orange` and the absent `grape`; only the second comma-ok result distinguishes them.
+
+<Depth level="quick">
+
+```go run title="inventory.go"
+package main
+
+import "fmt"
+
+func main() {
+	inventory := map[string]int{
+		"apple":  12,
+		"orange": 0,
+	}
+
+	fmt.Println("orange direct:", inventory["orange"])
+	fmt.Println("grape direct:", inventory["grape"])
+
+	count, ok := inventory["orange"]
+	fmt.Printf("orange: count=%d present=%t\n", count, ok)
+	_, ok = inventory["grape"]
+	fmt.Println("grape present:", ok)
+
+	delete(inventory, "apple")
+	fmt.Println("entries after delete:", len(inventory))
+	clear(inventory)
+	fmt.Println("entries after clear:", len(inventory))
+}
+```
+
+```text
+orange direct: 0
+grape direct: 0
+orange: count=0 present=true
+grape present: false
+entries after delete: 1
+entries after clear: 0
+```
+
+</Depth>
+
+Do not substitute `inventory[item] != 0` for a presence check; it misclassifies zero inventory as missing. A single-value lookup is sufficient only when the domain contract explicitly says that the zero value means absence.
+
+### Produce a report in stable order
+
+The order from `range` must not leak into an observable contract. This program obtains the key sequence with `maps.Keys` and sorts it with `slices.Sorted`, so the output does not depend on where this iteration starts.
+
+```go run title="sorted_report.go"
+package main
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+)
+
+func main() {
+	prices := map[string]int{
+		"notebook": 7,
+		"marker":   3,
+		"eraser":   2,
+	}
+
+	for _, item := range slices.Sorted(maps.Keys(prices)) {
+		fmt.Printf("%s=%d\n", item, prices[item])
+	}
+}
+```
+
+```text
+eraser=2
+marker=3
+notebook=7
+```
+
+Sorting keys defines only key order. If the requirement is to sort by values or resolve tied values, convert entries to a struct slice and state the complete comparison rule. Do not let accidental map order serve as a tie-breaker.
+
+### See the shallow-copy boundary
+
+Ordinary assignment makes `alias` and `original` refer to the same map. `maps.Clone` separates the top-level entries, but the slice value inside still shares its backing array, so an element mutation crosses the clone boundary.
+
+```go run title="clone_map.go"
+package main
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+)
+
+func main() {
+	original := map[string][]string{
+		"admin": {"read", "write"},
+	}
+	alias := original
+	alias["guest"] = []string{"read"}
+
+	clone := maps.Clone(original)
+	clone["admin"][0] = "audit"
+	clone["admin"] = slices.Clone(clone["admin"])
+	clone["admin"][1] = "approve"
+
+	fmt.Println("alias added guest:", len(original))
+	fmt.Println("original admin:", original["admin"])
+	fmt.Println("clone admin:", clone["admin"])
+}
+```
+
+```text
+alias added guest: 2
+original admin: [audit write]
+clone admin: [audit approve]
+```
+
+The first element mutation happens before cloning the inner slice, so the original map also sees `"audit"`. After `slices.Clone` separates that value, the second mutation affects only the clone. A deep copy must match the actual nested shape; no general map assignment syntax copies recursively.
+
+### Protect reads and writes with a lock
+
+`Counter` keeps its lock and map in one value. Every access goes through a method, so a reviewer does not have to guess at call sites whether a particular lookup or update is protected.
+
+```go run title="safe_counter.go"
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+type Counter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func NewCounter() *Counter {
+	return &Counter{counts: make(map[string]int)}
+}
+
+func (c *Counter) Add(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[key]++
+}
+
+func (c *Counter) Get(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[key]
+}
+
+func main() {
+	counter := NewCounter()
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Go(func() {
+			for range 250 {
+				counter.Add("accepted")
+			}
+		})
+	}
+	workers.Wait()
+	fmt.Println("accepted:", counter.Get("accepted"))
+}
+```
+
+```text
+accepted: 1000
+```
+
+`WaitGroup.Go` joined the standard library in Go 1.25 and handles starting the function together with its counter bookkeeping. It does not make the map safe automatically; correctness still comes from every `Counter` method taking the same lock. A real package should also run `go test -race ./...` so the race detector exercises concurrent paths.
+
+## Pitfalls
+
+### Writing to a nil map
+
+> [!PITFALL]
+> A struct's map field may look fine on reads when it was never initialized, then panic on the first assignment. Tests that cover only read paths easily miss this.
+
+**Fix:** initialize with `make` in the constructor, decoding boundary, or before the first write. If the type should be useful at its zero value, a write method can initialize lazily. If nil means "not loaded" in the domain, preserve and document that contract.
+
+### Treating the zero value as absence
+
+> [!PITFALL]
+> `if counts[key] == 0` cannot tell an absent key from a present key whose value is zero. Booleans, strings, pointers, and interface values have the same ambiguity.
+
+**Fix:** use `value, ok := counts[key]` whenever presence affects control flow. Tests need both an absent key and a key explicitly mapped to the zero value. Positive values alone hide the bug.
+
+### Depending on range order
+
+> [!PITFALL]
+> Map iteration order is unspecified. Stable-looking output from one local run does not turn that order into a language guarantee.
+
+**Fix:** sort keys before serialization, snapshot tests, hashing input, or user-facing text. If order is part of the data, record it in a slice or choose a data structure that explicitly guarantees it.
+
+### Misreading mutation during iteration
+
+> [!PITFALL]
+> "Never delete while ranging" is not a Go rule. Removing an unreached entry prevents it from appearing; adding entries is the operation with unspecified visibility in that loop.
+
+**Fix:** delete unwanted entries directly inside `range`. If newly added entries must be processed, use a second phase instead of relying on the current traversal to observe them.
+
+### Updating a field of a struct value directly
+
+> [!PITFALL]
+> `profiles[id].Name = "Lin"` does not compile because a map index expression is not an addressable struct variable. Models often confuse it with slice indexing.
+
+**Fix:** read the struct, modify it, and store the whole value back. Change to `map[ID]*Profile` only when shared identity is intentional, then handle nil pointers, aliases, and concurrent mutation too.
+
+### Copying a map with assignment
+
+> [!PITFALL]
+> `backup := source` copies only the map value, so both variables share entries. Even `maps.Clone` does not recursively copy nested slices, maps, or pointers.
+
+**Fix:** define the required depth of independence first. Use `maps.Clone` for top-level entries, copy deeper objects according to the domain shape, and mutation-test that changing the copy leaves the source alone.
+
+### Writing concurrently without synchronization
+
+> [!PITFALL]
+> When one goroutine writes a map, a potentially overlapping read, write, delete, or iteration in another goroutine creates a data race. A program that does not fail immediately is still incorrect.
+
+**Fix:** use one lock for every access or give the map to a single owning goroutine. Run the race detector, and check whether methods returning maps leak internal mutable state outside the lock.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Generated code often omits comma-ok and treats a valid `0` or `nil` value as missing. It may return an internal map directly or claim that `copy := original` made a snapshot. Other recurring mistakes include depending on `range` for stable JSON, updating a struct field through a map index, and letting several goroutines write one ordinary map. Models may also repeat bucket layouts from old runtime articles as if they were Go 1.27 language guarantees.
+
+**Ask your AI to check**
+
+- List every map lookup and state whether the caller must distinguish a missing key from the value type's zero value.
+- Trace the owner and aliases of each map and nested value, identifying whether a returned value leaks mutable internal state.
+- Enumerate reads, iterations, deletes, and writes that may overlap a write, then name the lock or single owner protecting each one.
+
+**Review checklist**
+
+- Test nil maps, absent keys, explicit zero-valued keys, and interface keys with non-comparable dynamic values.
+- Mutation-test snapshots and clones, then repeat ordering tests on every path that promises stable output.
+- Run `go test -race ./...` on concurrent paths and confirm that locks cover the whole access lifetime of the map and nested mutable values.
+
+**Prompt vocabulary**
+
+Use the exact terms `map key comparability`, `comma-ok idiom`, `zero value on missing key`, `unspecified iteration order`, `map element addressability`, `shallow clone`, and `concurrent map access`. Ask the model to account for ownership, presence, and synchronization boundaries one by one. That exposes more than a vague request to "check whether this map is safe."
+
+<Depth level="deep">
+
+## Comparability and shared semantics
+
+### Comparable does not mean suitable as a key
+
+A permitted key type is not necessarily a good domain key. Floating-point values are comparable and therefore allowed, but `NaN` is not equal to itself; looking up an entry just inserted with it does not behave like an ordinary key. A struct key containing a floating-point field inherits that equality behavior.
+
+Pointers are also comparable, but they compare addresses rather than the contents of their targets. Two separately allocated objects with equal fields form two keys. When domain identity comes from content, construct a stable value key such as a normalized string or a struct containing only explicit comparable fields.
+
+An interface key incorporates both its dynamic type and value into equality. `int(1)` and `int64(1)` are separate keys, while insertion or lookup panics if the dynamic value is not comparable. The flexibility of `map[any]V` therefore often weakens an API contract.
+
+### Copy boundaries of a map value
+
+The specification describes a non-nil map value as a reference to an implementation-specific data structure. Assignment, parameter passing, and return still copy the map value, but those copies refer to the same entry data. Assigning a different map to one variable changes only that variable; updating an entry through any alias is visible through the others.
+
+Keys and values are stored according to their ordinary assignment semantics. A struct or array key is copied, so later changes to the original variable do not rewrite the stored key. Data reached through a pointer, slice, map, or interface may remain shared, which requires reasoning one level at a time.
+
+Returning a "read-only map" is only a documentation convention; the type system cannot stop the caller from writing. For a real snapshot, return a copy at the required depth. When data is small and fixed in shape, a value struct or a sorted slice of entries can express the boundary more clearly.
+
+### Capacity and implementation are not API
+
+`make(map[K]V, n)` accepts a capacity hint, but the specification exposes no map capacity and promises no bucket count, load factor, growth threshold, or entries per bucket. None of those can be a correctness premise for an application algorithm.
+
+Go's runtime implementation evolves. Copying a private `hmap` or bucket layout from old source can be wrong on a newer release and ties code to `unsafe` and garbage-collector details. Explain language behavior from the specification and public package APIs. Explain performance only from measurements on the target Go version and workload.
+
+A preallocation hint may affect allocation behavior for some workloads, but "always pass the final length" is not a general rule. An oversized hint has a cost too. Optimize the hint only after benchmarks or memory profiles show map construction to be a bottleneck.
+
+### Exact rules for mutation during iteration
+
+Deletion has a defined result: when an unreached entry is removed, that entry is not produced during the current iteration. An entry already visited is not retroactively undone. This rule makes in-place filtering valid without first copying keys into a slice.
+
+Insertion is different. An entry added during the loop may appear or may be skipped, and the choice can differ by entry and iteration. If an algorithm must process newly added work, use an explicit queue or staged loops instead of treating map iteration as a work queue.
+
+`clear(m)` deletes all entries and is safe on a nil map. It does not replace the map for other aliases, so callers holding the same map value all observe a length of zero. By contrast, `m = make(map[K]V)` points only the current variable at a new map; old aliases still see the old entries.
+
+### Synchronization must cover aliases
+
+Putting a mutex beside the map is only the first step. If a method returns the internal map, a slice value from it, or a pointer value, the caller may mutate shared data outside the lock. Every container method can appear locked while the overall program still races.
+
+A safe read API can return scalars, value copies, or clones at the appropriate depth. If it must return a shared object, the caller has to join the same synchronization protocol, and the lock and lifetime rules need documentation. Narrowing the shared boundary is usually easier to verify than adding more locks.
+
+`sync.RWMutex` is better than `sync.Mutex` only when measurements show a benefit. Whichever you choose, the lock should protect a clear invariant rather than one line of map syntax. A compound "check, then create if absent" operation must remain in one critical section.
+
+</Depth>
+
+<Checkpoint id="go/maps" />
+
+## Further reading
+
+- [Go language specification: map types](https://go.dev/ref/spec#Map_types)
+- [Go language specification: `for` statements and map iteration](https://go.dev/ref/spec#For_statements)
+- [Built-in `clear` function](https://pkg.go.dev/builtin#clear)
+- [Standard `maps` package](https://pkg.go.dev/maps)
+- [Go FAQ: concurrent map access](https://go.dev/doc/faq#atomic_maps)
+- [`sync.WaitGroup.Go` documentation](https://pkg.go.dev/sync#WaitGroup.Go)

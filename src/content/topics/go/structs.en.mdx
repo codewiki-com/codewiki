@@ -1,0 +1,437 @@
+---
+title: Structs
+description: Go structs group related fields into values; zero values, copying, comparability, embedding, and tags determine whether that value behaves as intended.
+track: go
+section: basics
+difficulty: beginner
+tags: [structs, composite-literals, embedding, struct-tags]
+prerequisites: [go/fundamentals]
+related: [go/methods, go/interfaces, go/json, go/reflect]
+terms: [zero-value, shallow-copy, struct-tag, field-promotion, method-set]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/structs
+sources:
+  - { title: 'The Go Programming Language Specification - Struct types', url: 'https://go.dev/ref/spec#Struct_types' }
+  - { title: 'The Go Programming Language Specification - Composite literals', url: 'https://go.dev/ref/spec#Composite_literals' }
+  - { title: 'The Go Programming Language Specification - Comparison operators', url: 'https://go.dev/ref/spec#Comparison_operators' }
+  - { title: 'The Go Programming Language Specification - Method sets', url: 'https://go.dev/ref/spec#Method_sets' }
+  - { title: 'Go reflect package - StructTag', url: 'https://pkg.go.dev/reflect#StructTag' }
+  - { title: 'Go sync package - Mutex', url: 'https://pkg.go.dev/sync#Mutex' }
+origin: old/src/content/docs/go/structs.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A struct is a value type made from a fixed set of fields. Each field has a name and type, and a struct value stores all of their values together.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Copying a struct copies each field, but slice, map, and pointer fields may still refer to shared data; a value receiver also operates on a receiver copy.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Prefer keyed literals, make field ownership explicit, and use pointer receivers for methods that must modify state.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A struct is a composite value type that describes one concept with a fixed set of fields. Its fields can have different types: an order might contain a string ID, an integer quantity, and a boolean payment state. `type Order struct { ... }` declares a named type, while `struct { ... }` writes an unnamed struct type directly.
+
+Structs solve the problem of values that belong together. A function can accept or return one `Order`, a map can store `Order` values, and methods can be attached to the named type. The type fixes the field set, so misspelled field names and values of the wrong type are rejected at compile time.
+
+A Go struct is not a class. It has no constructor, inheritance hierarchy, or hidden runtime dispatch; methods are declared separately from a named type, and interface implementation follows method sets. Embedding can promote fields and methods, but it does not create a parent-child type relationship.
+
+A field identifier that starts with a Unicode uppercase letter is exported and can be selected by another package. A lowercase field is visible only inside its declaring package. This boundary also affects reflection and encoding: `encoding/json`, for example, processes exported fields by default, and a tag cannot make an unexported field encodable.
+
+You will meet structs in domain values, configuration, message payloads, and table-driven tests. A named struct works well when the field set evolves or needs methods; an anonymous struct can suit a result or test row used in one small scope. Wrapping a single piece of data in a struct usually adds nothing.
+
+This topic covers declarations, literals, field selection, copying, comparison, embedding, and tags. The related topics cover the full method rules, interface design, JSON boundaries, and reflection APIs.
+
+## How it works
+
+### Fields and the zero value
+
+A struct declaration lists ordered fields, each with a name and type. Adjacent fields of the same type can share a declaration, as in `X, Y int`. Field order contributes to type identity and determines how an unkeyed literal maps values, so it is not an arbitrary formatting choice.
+
+A variable declared without an initializer receives its type's <Term id="zero-value">zero value</Term>. A struct's zero value consists of the zero value of every field: numbers use `0`, booleans use `false`, strings use `""`, and pointer, slice, and map fields use `nil`. The struct zero value is always a valid value, but a nil map inside it still cannot be written to directly.
+
+Whether that zero value is immediately useful is an API design decision. The zero value of `sync.Mutex` is an unlocked mutex, and the zero value of `bytes.Buffer` is ready to use. A type that requires a non-empty address or an allocated map may need an initialization function. The fact that a type is a struct does not, by itself, require a `New` call.
+
+### Struct literals
+
+A keyed composite literal looks like `Order{ID: "A-104", Quantity: 2}`. Field order does not matter, and omitted fields receive their zero values. Existing keyed literals keep compiling after a field is added and show exactly what the caller chose to set.
+
+An unkeyed literal supplies every field in declaration order, as in `Point{3, 4}`. It cannot omit a value or mix keyed and unkeyed elements. If two fields have the same type, reordering them may silently swap their meanings while the literal still compiles, so this form belongs only to small, stable, local types.
+
+Outside the package that declares a struct, an unkeyed literal cannot supply values for unexported fields. Even if a library currently has only exported fields, adding an unexported field later breaks that form. Construct cross-package values with keyed literals or a constructor supplied by the package.
+
+`new(Order)` returns a pointer to a zero-valued `Order`. `&Order{}` also returns a pointer to a new zero value and makes it easier to add fields later. Neither form runs user-defined construction logic because Go has no such implicit mechanism.
+
+### Field selection and pointers
+
+The selector `order.ID` reads a field; if the variable is assignable, `order.ID = "A-105"` updates it. A function that accepts a struct value receives a copy of the whole struct. Assigning to a field of that copy does not replace the caller's outer value.
+
+For a struct pointer named `pointer`, Go lets you write `pointer.ID` with the same meaning as `(*pointer).ID`. This automatic dereference only simplifies a selector; it does not turn a value parameter into a reference parameter. A function that must replace or update the caller's struct still needs a pointer or must return a new value.
+
+Selecting a field through a nil struct pointer panics at runtime. Generated code sometimes treats the missing explicit `*` in selector syntax as automatic nil handling. A method's contract must say whether a nil receiver is meaningful.
+
+### Copying happens field by field
+
+Assignment, parameter passing, and returning a struct copy the value of every field. Copies whose fields are integers, booleans, strings, or arrays without reference-bearing elements can be modified independently. Go does not silently substitute object-reference semantics for this copy.
+
+A field value can itself describe or point to other storage. Copying a slice copies only its descriptor, copying a map preserves the same map, and copying a pointer still points at the same target. The outer structs differ while underlying data remains shared; this is a <Term id="shallow-copy">shallow copy</Term>.
+
+There is no one built-in definition of a deep copy for every struct. You must copy slices and maps according to the ownership contract, then decide whether pointer targets are shared, cloned, or rebuilt. For an interface field, inspect whether its dynamic value still refers to mutable data.
+
+Some fields must not be copied after use. The `sync.Mutex` documentation says a mutex must not be copied after first use; embedding one in a struct and then passing that struct by value or declaring value-receiver methods can copy the lock. The copylocks analysis in `go vet` catches some of these mistakes.
+
+### Comparability comes from every field
+
+A struct type is comparable if all of its field types are comparable. Comparing two values of the same struct type with `==` compares corresponding non-blank fields in source order; such a struct can also be a map key. Integers, strings, booleans, pointers, channels, and arrays with comparable elements are common comparable fields.
+
+Slices, maps, and functions are not comparable, so a struct containing one of them cannot use `==` or serve as a map key. Do not make `reflect.DeepEqual` the default definition of business equality: nil and empty values, functions, unexported state, and domain rules often call for an explicit comparison function.
+
+Interface types are comparable, so a struct with an `any` field can pass the static comparability check. If both interfaces hold the same non-comparable dynamic type, such as `[]int`, comparing them still panics at runtime. A key type that needs stable equality should not hide arbitrary dynamic values.
+
+### Embedding and field promotion
+
+An embedded field writes a type name without a separate field name, such as `Contact` inside `Customer`. That field still has a name: the unqualified type name `Contact` is its field name. A composite literal must initialize it as `Contact: Contact{...}`; it cannot use promoted `Email` as a literal field of `Customer`.
+
+If `customer.Contact.Email` is a valid path and no shallower field has the same name, the selector can be shortened to `customer.Email`. This convenience is <Term id="field-promotion">field promotion</Term>. Promotion does not physically copy `Contact`'s fields into `Customer`; the explicit path remains available.
+
+If several candidates with the same name occur at the same shallowest depth, the short selector is ambiguous and the compiler rejects it. A field or method declared on the outer type shadows deeper candidates, but the embedded value remains accessible through its explicit path. These are static selection rules, not runtime virtual-method lookup.
+
+Methods of an embedded type may also enter the outer type's <Term id="method-set">method set</Term>, allowing the outer value to satisfy an interface. The outer value is still not assignable to a variable of the inner type. Calling embedding "inheritance" hides both the composition relationship and selector ambiguity.
+
+### Tags are strings interpreted by other packages
+
+A <Term id="struct-tag">struct tag</Term> is a string literal after a field declaration. The language and compiler do not automatically interpret `json:"display_name,omitempty"` as a validation, database, or encoding rule; the package that reads a tag defines its keys, options, and conflict behavior.
+
+`encoding/json` reads the `json` key to rename or omit exported fields. `json:"-"` always ignores a field, while `omitempty` follows that package's definition of an empty value. A tag cannot export a lowercase field or validate field contents.
+
+Reflection represents a tag as `reflect.StructTag`. `Lookup("json")` distinguishes an absent key from a present key with an empty value, while `Get("json")` can return an empty string in either case. Tools that need to preserve that distinction should use `Lookup`.
+
+Tags contribute to the identity of unnamed struct types, so two anonymous structs with the same field names and types but different tags still have different types. Changing a public struct's tag can also change its serialization contract even when its Go callers still compile.
+
+## Examples
+
+The next four programs build from zero values and literals to copy boundaries, embedded selectors, and JSON tags. Save each program separately and run it with `go run filename`; the output shown came from the local Go toolchain.
+
+### Build an order from its zero value
+
+Every field of `empty` has its zero value. `submitted` sets only the ID and quantity, so `Paid` also starts as `false` before an assignable selector updates it.
+
+<Depth level="quick">
+
+```go run title="order.go"
+package main
+
+import "fmt"
+
+type Order struct {
+	ID       string
+	Quantity int
+	Paid     bool
+}
+
+func main() {
+	var empty Order
+	submitted := Order{
+		ID:       "A-104",
+		Quantity: 2,
+	}
+
+	fmt.Printf("empty=%+v\n", empty)
+	fmt.Printf("submitted=%+v\n", submitted)
+
+	submitted.Paid = true
+	fmt.Println("paid:", submitted.Paid)
+}
+```
+
+```text
+empty={ID: Quantity:0 Paid:false}
+submitted={ID:A-104 Quantity:2 Paid:false}
+paid: true
+```
+
+</Depth>
+
+The keyed literal exposes the caller's intent and lets `Paid` use its zero value. If the zero value cannot represent a valid order, enforce that rule in a constructor or input boundary rather than expect struct syntax to run validation.
+
+### See what a shallow copy shares
+
+Assigning `aliasCopy` copies the `Team`. Its name is an independent string value, but the two `Members` slice values still address the same backing array; `slices.Clone` gives the element slots independent storage.
+
+```go run title="copy.go"
+package main
+
+import (
+	"fmt"
+	"slices"
+)
+
+type Team struct {
+	Name    string
+	Members []string
+}
+
+func main() {
+	original := Team{
+		Name:    "Platform",
+		Members: []string{"Chen", "Imani"},
+	}
+
+	aliasCopy := original
+	aliasCopy.Name = "Operations"
+	aliasCopy.Members[0] = "Lin"
+
+	independent := Team{
+		Name:    original.Name,
+		Members: slices.Clone(original.Members),
+	}
+	independent.Members[1] = "Noor"
+
+	fmt.Println("original:", original)
+	fmt.Println("alias copy:", aliasCopy)
+	fmt.Println("independent:", independent)
+}
+```
+
+```text
+original: {Platform [Lin Imani]}
+alias copy: {Operations [Lin Imani]}
+independent: {Platform [Lin Noor]}
+```
+
+The slice elements here are strings, so cloning the slice is enough. If they were `*Member` values, corresponding elements in both slices would still point to the same members; whether those objects must also be copied depends on the ownership requirement.
+
+### Keep the explicit path to an embedded value
+
+`Contact` is an embedded field of `Customer`. Both `Email` and `Label` can use promoted short selectors or the full path through the field name.
+
+```go run title="embedding.go"
+package main
+
+import "fmt"
+
+type Contact struct {
+	Email string
+}
+
+func (contact Contact) Label() string {
+	return "email=" + contact.Email
+}
+
+type Customer struct {
+	Name string
+	Contact
+}
+
+func main() {
+	customer := Customer{
+		Name: "Mina",
+		Contact: Contact{
+			Email: "mina@example.com",
+		},
+	}
+
+	fmt.Println(customer.Email)
+	fmt.Println(customer.Contact.Email)
+	fmt.Println(customer.Label())
+
+	customer.Email = "support@example.com"
+	fmt.Println(customer.Contact.Email)
+}
+```
+
+```text
+mina@example.com
+mina@example.com
+email=mina@example.com
+support@example.com
+```
+
+The final assignment still modifies `customer.Contact.Email`. The outer struct did not gain another copy of `Email`; `customer.Email` is just shorthand for a valid selector.
+
+### Define a JSON boundary with tags
+
+`encoding/json` encodes exported fields and follows the names and omission rules in their `json` tags. `PasswordHash` is exported, but `json:"-"` keeps it out of output and prevents input from filling it.
+
+```go run title="json_tags.go"
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+)
+
+type Account struct {
+	ID           int      `json:"id"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	PasswordHash string   `json:"-"`
+	Roles        []string `json:"roles,omitempty"`
+}
+
+func main() {
+	account := Account{
+		ID:           7,
+		PasswordHash: "local-hash",
+	}
+
+	data, err := json.Marshal(account)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(data))
+
+	input := []byte(`{"id":9,"display_name":"Mina","password_hash":"ignored","roles":["reader"]}`)
+	var decoded Account
+	if err := json.Unmarshal(input, &decoded); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%+v\n", decoded)
+}
+```
+
+```text
+{"id":7}
+{ID:9 DisplayName:Mina PasswordHash: Roles:[reader]}
+```
+
+The tag describes an `encoding/json` boundary, not a general secrecy mechanism. Other encoders may read other tags, and directly formatting the struct for a log does not automatically hide a field marked `json:"-"`.
+
+## Pitfalls
+
+### Using positional literals across packages
+
+> [!PITFALL]
+> `library.Record{1, "ready"}` depends on field count, order, and visibility. Adding or reordering fields can stop the code from compiling; swapping same-typed fields can preserve compilation while changing meaning.
+
+**Fix:** use keyed literals for non-local types, and prefer a package constructor when it maintains invariants. Reserve positional literals for small, stable types with a clear convention, such as `image.Point{3, 4}`.
+
+### Treating struct assignment as a deep copy
+
+> [!PITFALL]
+> `snapshot := state` copies the outer struct, but mutable data in slice, map, pointer, and interface fields may remain shared. A change through one copy can appear through the other.
+
+**Fix:** write the copy policy field by field and prove independence with a mutation test: modify nested data after copying and assert that the source remains unchanged. If read-only sharing is intentional, state it in the API contract instead of making callers infer it.
+
+### Mutating state through a value receiver
+
+> [!PITFALL]
+> `func (account Account) Rename(...)` changes a receiver copy. The method can return normally while the caller's `account` stays unchanged; if the struct contains a lock, the receiver also copies that lock.
+
+**Fix:** use a pointer receiver when a method modifies the receiver, preserves identity, or must avoid copying non-copyable fields. Run `go vet ./...` on types containing `sync.Mutex`, and avoid passing, returning, or storing such a value by value after first use.
+
+### Treating promotion as inheritance
+
+> [!PITFALL]
+> Embedding `Contact` does not make `Customer` a `Contact`. A promoted selector can be shadowed by an outer declaration or become ambiguous when several candidates occur at the same depth.
+
+**Fix:** design the API as composition and use an explicit path such as `customer.Contact.Email` where ownership or ambiguity matters. Check separately whether the method sets of `T` and `*T` implement the target interfaces.
+
+### Assuming every struct is comparable
+
+> [!PITFALL]
+> Adding a slice or map field makes a previously comparable struct unusable with `==` or as a map key. An `any` field can let comparison compile and still panic when it holds a non-comparable dynamic value.
+
+**Fix:** write a named comparison function for domain equality and compare only the fields required by its contract. For map keys, design a dedicated key type made from strings, numbers, booleans, pointers, or other fields with stable comparability.
+
+### Trusting tags to validate or redact
+
+> [!PITFALL]
+> A tag has no behavior by itself. `validate:"required"` matters only when its library reads and executes it, and `json:"-"` constrains only encoders that honor that key.
+
+**Fix:** call the actual validation or encoding API at the boundary and test emitted bytes, logs, and error paths. Sensitive fields usually belong outside the response DTO rather than relying on one tag to prevent every form of leakage.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate a value-receiver mutator that compiles, changes a field inside the method, and loses every change on return. They also claim `copy := original` creates a snapshot while slice, map, or pointer fields remain shared, or generate value receivers and by-value copy helpers for a type containing `sync.Mutex`. With embedding and JSON, a model may guess that fields always flatten and miss same-depth name conflicts that cause fields to disappear without an encoding error.
+
+**Ask your AI to check**
+
+- For every struct assignment, argument, and return, list the copied result field by field and mark shared slice backing arrays, maps, pointer targets, and interface dynamic values.
+- Compute the method sets of `T` and `*T`; find value receivers that try to mutate state and every path that copies a lock after first use.
+- Interpret each tag according to the actual encoding package and show tests for zero values, sensitive fields, embedded-field conflicts, and unknown input fields.
+
+**Review checklist**
+
+- Construct external types with keyed literals and confirm that every omitted field's zero value preserves the type's invariants.
+- Mutate each reference-bearing field after a copy and verify that the source-copy sharing relationship matches the contract.
+- Run `go vet ./...`, focused unit tests, and serialization-boundary tests; compilation alone is not a sufficient review.
+
+**Prompt vocabulary**
+
+Use the exact terms `struct type`, `composite literal`, `zero value`, `shallow copy`, `embedded field`, `promoted field`, `method set`, `pointer receiver`, `struct tag`, and `comparable type`. Ask for a field-ownership table and the method sets of `T` and `*T`; "check this struct" is too vague to expose copy and promotion boundaries.
+
+<Depth level="deep">
+
+## Type identity, promotion, and method sets
+
+### Named and unnamed types
+
+Two separately declared named types are always distinct, even when their underlying structs have exactly the same fields. `type Billing struct { ID int }` and `type Shipping struct { ID int }` are not directly assignable to each other. An explicit conversion can work when the underlying structures meet the conversion rules, but it runs no validation or construction logic.
+
+Unnamed structs are identical only when their field order, names, types, tags, and embedded status correspond. Unexported field names from different packages are always different. These rules let precisely matching small anonymous structs be assignable while making a seemingly incidental tag part of the type.
+
+A type alias does not create a new type. `type PublicOrder = internalOrder` adds another name for the same type, whereas `type PublicOrder internalOrder` declares a new named type. Generated migration code must distinguish renaming from establishing a new type boundary or explicitly converting existing values.
+
+A struct conversion copies corresponding field values; it does not rename fields from tags, recursively map data, or call a constructor. Storage and API models rarely keep exactly the same field meaning as they evolve, so an explicit mapping is usually more durable than relying on matching underlying structure.
+
+### The shallowest unique selector wins
+
+Promoted selectors are searched by embedding depth. A name is usable when it has one candidate at the shallowest depth; several candidates at that same depth make the selector invalid. Deeper candidates neither break the tie nor let the compiler choose arbitrarily.
+
+An outer declaration can shadow a promoted field without removing the original from the embedded value. Adding a same-named field during a refactor can therefore change the target of existing short selectors. Public types should not use a large embedding tree as a namespace trick; an explicit path is longer but records the boundary in source.
+
+A promoted field cannot be a field name in an outer struct's composite literal. Even when `customer.Email` is a valid selector, `Customer{Email: "a@example.com"}` is invalid; write `Customer{Contact: Contact{Email: "a@example.com"}}`. The literal constructs actual fields, not the selector view.
+
+Embedding a pointer brings its nil state into the selection path. If an outer zero value contains a nil `*Contact`, selecting `customer.Email` still requires dereferencing that pointer and can panic. Embedding a value is often easier when the outer zero value should work immediately, though sharing and method-set requirements determine the final choice.
+
+### Method sets decide interface implementation
+
+The method set of a named type `T` contains methods whose receiver is `T`; the method set of `*T` contains methods whose receiver is `T` or `*T`. For an addressable variable, the compiler can rewrite `value.PointerMethod()` as `(&value).PointerMethod()`, but this call convenience does not add pointer-receiver methods to `T`'s method set.
+
+Interface assignment checks method sets. An addressable value may therefore call a pointer method without being assignable to an interface that requires it. Generated code can compile at a direct call and reveal the difference only when the value is placed in an interface, a map element, or a temporary expression.
+
+When `S` embeds `T`, both `S` and `*S` promote methods with receiver `T`, while only `*S` also includes promoted methods with receiver `*T`. When `S` embeds `*T`, the method sets of both `S` and `*S` include promoted methods with receiver `T` or `*T`. These rules directly decide whether the outer type implements an interface.
+
+Receiver choice also expresses ownership. Small immutable values suit value receivers; types that mutate state, contain locks, need stable identity, or should not be copied suit pointer receivers. Before mixing receiver forms on one type, inspect method sets and interface behavior rather than seeking surface consistency.
+
+### Tag and reflection boundaries
+
+The conventional tag format is a sequence of space-separated `key:"value"` pairs. `reflect.StructTag.Get` and `Lookup` parse only conventionally formed entries; whether a package rejects a malformed tag, ignores it, or falls back to default behavior belongs to that package. `go vet` can flag common format errors but cannot prove the business meaning of a third-party key.
+
+Serialization field selection relates to Go selectors but need not be identical. For candidates at the same shallowest level, `encoding/json` applies an additional preference for tagged fields; if several candidates still remain, it ignores all of them without returning a conflict error. Test the actual JSON bytes after changing embedding or tags instead of checking only whether a selector compiles.
+
+Struct tags are often part of a public protocol. Changing `json:"display_name"` to `json:"name"` leaves the Go field type alone but changes the key clients receive. Schema generators, database mappers, and validators each have their own contracts; behavior under one tag key says nothing about another tool.
+
+A reflection tool must decide how to handle unexported fields, embedded paths, duplicate keys, and empty tags. Reading a string is the easy part; turning visibility, conflicts, and errors into stable rules is the real work. If the requirement concerns one known struct, ordinary field access is usually clearer than a general reflection mapper.
+
+### Comparison and copy boundaries
+
+Struct comparison uses field values, not padding bytes or a raw in-memory byte representation. Comparing a whole struct through `unsafe` or a byte conversion introduces layout, padding, and pointer-representation assumptions and still fails to express most domain equality.
+
+Using a comparable struct as a map key copies the key value. Mutating the original variable later does not change the stored key; a lookup must build an equal new value. If a field is a pointer, equality compares pointer values rather than pointed-to contents, so separate objects with equal contents form different keys.
+
+Copying a struct copies all elements of an array field by value, but an array element can itself be a pointer or another shared descriptor. Calling a struct a "value type" explains only the outer passing rule, not whether its whole object graph is independent. Review field types recursively until reaching the ownership boundary.
+
+A struct containing a lock also needs a lifetime rule. Copying an unused zero-value lock during construction is not the same as copying it after first use, but APIs that rely on that timing are hard to maintain. Prefer pointer use for an object that owns synchronization, and expose a separate snapshot type that contains data without locks.
+
+</Depth>
+
+<Checkpoint id="go/structs" />
+
+## Further reading
+
+- [Go language specification: struct types](https://go.dev/ref/spec#Struct_types)
+- [Go language specification: composite literals](https://go.dev/ref/spec#Composite_literals)
+- [Go language specification: comparison operators](https://go.dev/ref/spec#Comparison_operators)
+- [Go language specification: method sets](https://go.dev/ref/spec#Method_sets)
+- [Go `reflect.StructTag` documentation](https://pkg.go.dev/reflect#StructTag)
+- [Go `sync.Mutex` documentation](https://pkg.go.dev/sync#Mutex)

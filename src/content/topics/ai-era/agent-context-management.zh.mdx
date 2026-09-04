@@ -1,0 +1,424 @@
+---
+title: '智能体上下文管理'
+description: '持续选择并及时更新仓库上下文，使智能体能够依据相关代码、约束条件和最新证据进行推理和判断。'
+track: ai-era
+section: working-with-agents
+difficulty: beginner
+tags: [agent-context, retrieval, freshness, evidence]
+prerequisites: [ai-era/ai-coding-agents]
+related: [ai-era/agent-instructions-and-mcp, ai-era/agent-task-planning, ai-era/code-provenance-and-verification, ai-era/unfamiliar-code-reading]
+terms: [context-window, conversation-state, api-contract, architecture-boundary, decision-log]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: ai-era/agent-context-management
+sources:
+  - { title: 'OpenAI Codex Docs - AGENTS.md', url: 'https://learn.chatgpt.com/docs/agent-configuration/agents-md' }
+  - { title: 'GitHub Docs - Adding repository custom instructions for GitHub Copilot', url: 'https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions' }
+  - { title: 'Claude Code Docs - How Claude remembers your project', url: 'https://code.claude.com/docs/en/memory' }
+  - { title: 'Git documentation - git-status', url: 'https://git-scm.com/docs/git-status' }
+  - { title: 'Git documentation - git-diff', url: 'https://git-scm.com/docs/git-diff' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    智能体上下文管理是一个反复选择、标注和更新仓库证据的过程，智能体依据这些证据作出下一步判断。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    上下文很大也可能出错：检索可能漏掉调用方，摘要可能过期，生成文件或日志还可能挤掉真正起约束作用的信息。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    从任务和项目规则出发，沿具体代码关系扩展，记录来源，并在编辑或宣告完成前重新读取可变来源。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+智能体上下文是编程智能体为一次决策获得的有限工作集（working set）。其中可以包含任务、仓库指令、源文件、测试、配置、搜索结果、命令结果和先前对话。上下文管理决定哪些内容进入工作集、哪些留在外部，哪些陈述是观察或推断，以及何时必须更新旧条目。
+
+工作集不等于仓库本身。它只是放进模型<Term id="context-window">上下文窗口（context window）</Term>的临时视图；窗口容量有限，也不天然保证内容完整或新鲜。磁盘上的文件可能没有进入本次请求，而已经纳入的片段也可能来自旧版本。
+
+这一区别解释了一种常见失败：智能体信心十足，局部推理也前后一致，却分析了错误的代码。它可能修改名字相近但没有启用的适配器，保留已经废弃的测试假设，或遗漏当前目录上层保存的项目规则。增加 token 数量并不能纠正选取边界错误。
+
+有效上下文应提供足以选择下一步操作的证据，而不是收集以后也许会用到的所有事实。面对失败的结算测试，初始集合可以包含任务契约、适用指令、失败输出、测试和被测符号。数据库迁移、公共 API 改动或跨包重构需要更宽的集合，因为它们的<Term id="architecture-boundary">架构边界（architecture boundary）</Term>和使用方也是正确性的一部分。
+
+上下文需要在整个任务期间持续管理，不能只在开始时组装一次。搜索产生候选项，文件读取确认当前内容，执行增加观察结果，编辑使旧快照失效，新错误则指向另一项依赖。工作集应随证据变化而扩展和收缩。
+
+### 上下文、记忆与仓库事实
+
+对话历史属于<Term id="conversation-state">会话状态（conversation state）</Term>，不是持久的仓库事实。它记录请求、选择和早先的观察，但模型可能概括它，宿主可能截断它，仓库也可能独立变化。可以用历史定位证据，随后仍要在来源处确认可变事实。
+
+项目指令文件是一类特殊上下文。它可以定义命令、风格、目录级约束和必需的审查步骤。其作用域与优先级取决于智能体宿主的规则，而且它绝不能突破宿主策略，额外授予文件系统、网络或部署权限。
+
+源码展示当前实现行为，测试展示被断言的行为，模式与规范展示预期契约，Issue 文本解释所请求的改动。它们没有一种永远高于其他来源。发生冲突时，应记录冲突，并依据任务负责人或仓库明文规定的权威关系解决，不能默默选择最方便修改的文件。
+
+摘要是导航工具。它可以说明 `src/tax.js` 负责管辖区规则，并指向确切路径、符号和版本。如果下一步依赖某个精确条件、默认值、类型或错误消息，摘要就不能取代文件本身。
+
+### 初始工作集应包含什么
+
+先纳入同时约束范围和行为的证据：
+
+1. 确切任务、验收条件、允许路径和明确的非目标。
+2. 适用的仓库级与目录级指令。
+3. 基线版本、工作目录、分支或 worktree，以及原有未提交文件。
+4. 失败命令及其未经改写的输出，或另一项具体起始观察。
+5. 与该观察直接相关的最小源码、测试、配置和契约集合。
+
+凭据、依赖目录、构建产物、压缩 bundle、大型二进制 fixture 和无关日志通常应留在外部。排除这些内容既能节省容量，也能降低意外暴露秘密的风险。如果其中某项后来变得相关，应提取所需的狭窄事实，而不是整目录灌入。
+
+初始集合只是对相关性的假设。它应当容易解释，也应当便于修改。把「这些就是相关文件」看成临时清单，不要承诺间接使用方一定不存在。
+
+## 工作原理
+
+上下文管理形成一个循环：锚定、选择、检查、操作、观察、更新。每轮都应留下足够的来源信息，以区分当前仓库事实与模型结论。下一轮复用稳定约束，同时重新取得因中间操作而失效的事实。
+
+### 锚定任务与权威关系
+
+广泛搜索前先写出任务契约。明确预期行为、复现方法、允许的改动范围、必需检查和非目标。这个锚点能防止一个看似可信的搜索结果，或 Issue 中嵌入的命令，悄悄重新定义任务。
+
+按照宿主明文规定的规则，从仓库根目录向目标目录解析适用指令，并记录所用路径。如果两条指令冲突或作用域不清楚，应停止对应分支并暴露冲突，不能把它们混成一条新规则。
+
+还要记录赋予路径和输出具体含义的环境。至少确认仓库根目录、当前版本、worktree 状态、包目录和声明的运行时。缺少目录与版本的测试结果证据很弱，因为同一命令可能运行另一个包或另一份源码。
+
+### 根据具体信号选择
+
+先使用精度高的信号：失败测试路径、堆栈帧、诊断位置、具名符号、变更路径或明确的<Term id="api-contract">API 契约（API contract）</Term>。搜索定义和引用，再检查导入、调用点、配置读取和相邻测试。只看文件名经常会遇到歧义。
+
+所选集合应包含不同角色。指令说明约束，实现提供机制，测试给出示例与断言，配置选择运行时行为，命令输出报告观察到的状态。来自同一角色的十个片段，也无法弥补缺失的关键契约。
+
+记录每个条目进入上下文的原因。「堆栈中出现 `calculateTotal`，因此匹配到它」比「看起来相关」更有用。有了原因，审查者才能质疑路径、替换弱匹配，并在假设不成立时删除该条目。
+
+### 沿代码关系扩展
+
+仓库内的代码关系比主题相似度更可靠。沿目标实际使用的导入模块、调用方、类型定义、路由注册、模式使用方或测试 fixture 前进。搜索要覆盖两个方向：目标依赖什么，以及什么依赖目标。
+
+每次围绕一个问题扩展。如果税费断言失败，就读取足以判断问题属于算术、管辖区配置、舍入还是测试预期的内容。在提出这个问题前就加载所有结算文件，只会增加噪声，并不能保证覆盖完整。
+
+当前决策获得足够支持后就停止扩展。局部编辑前，需要理解实现契约、相关调用方、边界情况和验证路径。公共接口改动的停止条件更宽，因为所有使用方和兼容性要求都很重要。
+
+### 区分事实与推断
+
+把仓库读取和命令结果标为观察，并记录来源与取得时点。把架构结论、疑似原因和修复方案标为推断。把用户要求与仓库规则标为约束。
+
+证据冲突时，这种区分尤其重要。「格式化工具通过」是观察；「补丁正确」则是格式化工具无法支持的推断。「不存在调用方」只有在记录搜索范围与方式、并考虑动态查找后，才可能有充分支持。
+
+可以用小型证据账本追踪这些差异：
+
+| 条目 | 类别 | 来源 | 更新触发条件 |
+| --- | --- | --- | --- |
+| 允许修改的文件 | 约束 | 任务契约 | 用户改变范围 |
+| 函数体 | 观察 | 路径、行、摘要值 | 文件或分支变化 |
+| 可能的根因 | 推断 | 支持它的条目 | 出现矛盾的新证据 |
+| 测试结果 | 观察 | 命令、目录、退出码 | 相关代码或环境变化 |
+
+### 在关键推理前更新
+
+只要发生可能影响某个条目的变化，就要更新它。一次编辑会让早先的片段与符号摘要变得可疑；切换分支会使路径到内容的对应关系失效；安装依赖可能使构建输出失效；即使代码不变，新的用户约束也可能使计划失效。
+
+打补丁前，重新读取目标以及补丁依赖的精确指令或契约。准备应用基于旧快照计算的补丁时，应比较当前文本或摘要值，不匹配就拒绝应用。摘要值只能检测差异，不能证明内容安全或正确。
+
+打补丁后检查实际差异，不要依赖预期中的编辑。随后重新运行所有受代码、配置、依赖或环境变化影响的检查。旧的绿色输出只是历史证据，不是当前验收证据。
+
+### 压缩时保留决策依据
+
+长会话最终需要压缩。应保留确切验收条件、当前权限、适用指令、已改文件、未解决假设和原始工具输出的引用。这些细节会约束后续操作，一旦重建错误，代价很高。
+
+可以更大幅度压缩已经走完的探索岔路。像「路由注册表选择 `src/checkout.js`，因此排除旧适配器」这样的短注释，保留了决定及其原因。一旦有可追溯来源保存了有效结论，重复搜索列表和已被取代的解释就可以移出工作集。
+
+跨越多个包或把工作交给另一会话时，<Term id="decision-log">决策日志（decision log）</Term>很有帮助。它应记录决定、证据、被拒绝的替代方案和更新条件。它不能用流畅的措辞把不确定猜测写成既定事实。
+
+## 示例
+
+下面的 JavaScript 示例模拟智能体周围由宿主管理的记录逻辑；它们不调用模型，也不规定唯一的检索算法。每个文件都在本地使用 Node 24 执行，紧随其后的 `text` 代码块是实际输出。
+
+### 构建小型上下文清单
+
+第一个示例为候选项指定角色和明确优先级，排除生成的 bundle，并纳入四项内容。在真实仓库中，候选项来自搜索与依赖工具；这份可见清单让选择过程可以接受审查。
+
+<Depth level="quick">
+
+```javascript run title="context_manifest.js"
+const candidates = [
+  { path: "AGENTS.md", role: "rules", priority: 0 },
+  { path: "tests/checkout.test.js", role: "failure", priority: 1 },
+  { path: "src/checkout.js", role: "symbol owner", priority: 2 },
+  { path: "src/money.js", role: "direct dependency", priority: 3 },
+  { path: "README.md", role: "background", priority: 7 },
+  { path: "dist/app.js", role: "generated", priority: 99 },
+];
+
+const budget = 4;
+const selected = candidates
+  .filter((file) => file.role !== "generated")
+  .sort((left, right) => left.priority - right.priority)
+  .slice(0, budget);
+
+for (const [index, file] of selected.entries()) {
+  console.log(`${index + 1}. ${file.path} — ${file.role}`);
+}
+console.log(`excluded: ${candidates.length - selected.length}`);
+```
+
+```text
+1. AGENTS.md — rules
+2. tests/checkout.test.js — failure
+3. src/checkout.js — symbol owner
+4. src/money.js — direct dependency
+excluded: 2
+```
+
+<TryToBreak items={['预算为零', '两个候选项优先级相同', '失败信息点名了一个生成文件']} />
+
+</Depth>
+
+输出解释了每条纳入路径存在的原因。这里并没有把 `README.md` 判为无用；它只是排在更能约束当前决策的证据之后。`dist/app.js` 继续排除，因为应该找到并编辑它的来源。
+
+数字优先级只是一种示例策略，不是判断相关性的预言机。生产选择器还应验证路径范围、指令优先级、文件大小、敏感性，以及候选项是否仍然存在。即使所有条目都由人选择，清单仍然有价值。
+
+### 从具体线索扩展
+
+下一个示例从失败测试开始沿依赖边前进。初始的一层视图会到达实现；后来出现税费行为线索，才有理由进一步遍历并纳入协作模块与管辖区配置。
+
+```javascript run title="context_expansion.js"
+const imports = new Map([
+  ["tests/checkout.test.js", ["src/checkout.js"]],
+  ["src/checkout.js", ["src/money.js", "src/tax.js"]],
+  ["src/tax.js", ["config/jurisdictions.json"]],
+]);
+
+function expand(start, maxDepth) {
+  const queue = [{ path: start, depth: 0 }];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current.path) || current.depth > maxDepth) continue;
+    seen.add(current.path);
+    for (const dependency of imports.get(current.path) ?? []) {
+      queue.push({ path: dependency, depth: current.depth + 1 });
+    }
+  }
+
+  return [...seen];
+}
+
+console.log("initial:", expand("tests/checkout.test.js", 1));
+console.log("after tax clue:", expand("tests/checkout.test.js", 3));
+```
+
+```text
+initial: [ 'tests/checkout.test.js', 'src/checkout.js' ]
+after tax clue: [
+  'tests/checkout.test.js',
+  'src/checkout.js',
+  'src/money.js',
+  'src/tax.js',
+  'config/jurisdictions.json'
+]
+```
+
+遍历过程带有已访问集合，因此遇到循环也不会无限运行。深度只是教学控制手段。真实扩展应沿能够回答当前问题的关系前进，还应根据语言机制检查反向引用、注册关系、生成映射和运行时配置。
+
+真正重要的变化是扩展理由：出现了税费线索。没有这个线索，更长的列表只代表更多文字。有了它，新文件才能确认或否定一个具体假设。
+
+### 拒绝过期快照
+
+最后一个示例在 `src/retry.js` 进入上下文时记录简短的 SHA-256 摘要值。另一个参与者在编辑前修改了仓库映射。保护逻辑发现快照已经过期，并重新取得当前文本。
+
+```javascript run title="freshness_guard.js"
+import { createHash } from "node:crypto";
+
+const repository = new Map([
+  ["src/retry.js", "export const retryLimit = 3;\n"],
+]);
+
+function digest(text) {
+  return createHash("sha256").update(text).digest("hex").slice(0, 10);
+}
+
+function readSnapshot(path) {
+  const text = repository.get(path);
+  return { path, text, digest: digest(text) };
+}
+
+let context = readSnapshot("src/retry.js");
+console.log(`selected ${context.path} @ ${context.digest}`);
+
+repository.set("src/retry.js", "export const retryLimit = 5;\n");
+
+const currentDigest = digest(repository.get(context.path));
+if (currentDigest !== context.digest) {
+  console.log(`stale ${context.digest} -> ${currentDigest}`);
+  context = readSnapshot(context.path);
+}
+
+console.log(`ready ${context.path} @ ${context.digest}`);
+console.log(context.text.trim());
+```
+
+```text
+selected src/retry.js @ bb31e24fcc
+stale bb31e24fcc -> 4394708645
+ready src/retry.js @ 4394708645
+export const retryLimit = 5;
+```
+
+这个保护逻辑可以防止基于 `retryLimit = 3` 的编辑覆盖较新的值。生产补丁工具通常通过要求旧文本完全匹配或指定基线版本，获得同样的性质。如果前置条件失败，就重新读取并计算，不能强行把旧补丁套到新内容上。
+
+十个字符的摘要值适合生成易读的演示输出，不适用于对抗性完整性检查或身份判断。需要抗碰撞能力时，应使用仓库版本标识符或完整且合适的摘要。无论采用哪一种方式，新鲜度都不同于正确性：当前文件仍然可能有缺陷。
+
+## 陷阱
+
+### 整个仓库全部装入
+
+> [!PITFALL]
+> 发送所有可达文件，会让依赖树、生成输出、第三方代码和重复文档耗尽上下文预算。凭据或无关的命令式文字也更可能进入模型请求。
+
+**修复：**定义默认排除项，从任务信号出发，并为每个纳入条目记录角色与原因。只有具体线索要求时才检查被忽略内容或生成内容，并尽可能选择它们的原始来源。
+
+### 把检索结果当作当前事实
+
+> [!PITFALL]
+> 向量索引、IDE 缓存、复制的片段或先前工具结果，可能指向正确文件，却包含旧版本。依据这种快照应用编辑，可能擦掉其他改动，或修复已经不再运行的代码。
+
+**修复：**用检索寻找候选项，再在编辑前重新读取权威文件。为计算得到的补丁附加版本、摘要值或精确文本前置条件；不匹配时更新推理。
+
+### 只读取最显眼的目标
+
+> [!PITFALL]
+> 一个局部函数看起来可能有错，但调用方也许依赖当前行为，模式也许约束其输出，配置也可能选择了另一份实现。修改第一个匹配文件，会得到局部连贯却没有检查影响范围的补丁。
+
+**修复：**双向搜索定义与引用。读取相关契约、调用方、测试和运行时选择点，再说明已经检查哪些关系、哪些动态关系仍然不确定。
+
+### 把摘要变成证据
+
+> [!PITFALL]
+> 流畅的会话摘要可能丢掉一个否定词、混合两个版本，或把疑似原因写成既定事实。后续轮次不断重复这份摘要，会让缺乏支持的结论显得越来越权威。
+
+**修复：**区分约束、观察与推断。保留路径、符号、版本、命令、退出码和原始输出引用，并重新取得控制下一次编辑或完成声明的任何精确事实。
+
+### 失效后仍复用证据
+
+> [!PITFALL]
+> 补丁前通过的测试、安装依赖前取得的类型信息，或来自另一个 worktree 的状态，都不能描述当前产物。会话越长，这种时间错位越容易被忽略。
+
+**修复：**把观察与环境及更新触发条件关联起来。发生相关编辑或环境变化后，检查当前差异，并从记录的目录重新运行受影响的检查，然后才能宣告任务完成。
+
+## AI 时代
+
+**生成代码在这里容易出什么错**
+
+上下文不完整时，模型可能修改生成的客户端而不是它的模式，因检索遗漏已有辅助函数而重复实现，或只更新一个调用点并留下损坏的间接使用方。上下文过期时，它可能覆盖队友编辑，引用补丁之前的测试结果，或保留用户已经替换的要求。大型日志转储还会引入另一种失败：不可信输出中类似指令的文字分散模型注意力，而真正的错误和仓库规则落在活动窗口之外。
+
+**让 AI 检查什么**
+
+- 生成上下文清单，列出每条路径的角色、选择原因、作用域和新鲜度标记。
+- 列出待改符号的定义、直接与间接调用方、适用指令、契约、运行时选择点和测试。
+- 分开记录观察事实与推断，再列出最新编辑后已经失效并需要重跑的观察。
+
+**审查清单**
+
+- 确认智能体读取的是当前目标和起约束作用的指令，而不只是检索片段或摘要。
+- 沿每个变化的接口追踪使用方，并把每项正确性声明映射到当前命令输出或人工决定。
+- 检查最终差异中是否出现意外路径、生成产物、弱化测试、携带秘密的上下文和未解决假设。
+
+**提示词词汇**
+
+使用这些确切术语：`context window`（上下文窗口）、`working set`（工作集）、`source of truth`（事实来源）、`authoritative source`（权威来源）、`context provenance`（上下文来源信息）、`freshness marker`（新鲜度标记）、`invalidation trigger`（失效触发条件）、`retrieval query`（检索查询）、`definition and references`（定义与引用）、`call site`（调用点）、`dependency edge`（依赖边）、`blast radius`（影响范围）、`raw observation`（原始观察）和 `context manifest`（上下文清单）。要求生成「路径、角色、原因、版本、更新触发条件」表；「读取相关文件」没有定义何谓相关，也没有说明新鲜度。
+
+<Depth level="deep">
+
+## 上下文来源与失效
+
+只要每个重要条目都能回答两个问题，上下文就更可靠：它来自哪里，什么变化会让它过期？来源信息支持检查结论背后的来源；失效规则则防止某项观察悄悄越过使它过时的变化。
+
+### 来源记录
+
+有效记录不需要复制整个文件，但要提供足以重新取得并判断条目的信息：
+
+- 标识：仓库、worktree、路径、符号或行定位信息。
+- 取得过程：工具、查询或命令，工作目录，以及时刻或序列号。
+- 版本：提交、worktree 状态、内容摘要、依赖状态或运行时版本。
+- 分类：约束、观察、推断、决定或未解决假设。
+- 生命周期：要求更新或移除该条目的事件。
+
+仅有行号并不稳固，因为符号上方的编辑会移动它。行号应与路径和符号、精确片段或摘要配对。对于有未提交改动的 worktree，只记录提交哈希同样不够，因为当前内容可能已经不同于该提交。
+
+来源信息不会自动让来源变得权威。复制来的 Issue 评论可以带有完整路径与时间戳，但仍然可能不可信或有错误。权威关系来自任务与仓库治理；来源信息只是明确告诉你正在判断什么。
+
+### 失效会传播
+
+一次变化可能让多个派生条目过期。编辑 `src/tax.js` 会使旧片段、舍入分支摘要和执行过旧函数体的测试结果失效。依赖该分支得出的根因推断也可能因此变弱。
+
+不同事件的失效范围不同：
+
+| 事件 | 需要重新检查的条目 |
+| --- | --- |
+| 编辑目标文件 | 片段、符号摘要、补丁和依赖它的测试结果 |
+| 编辑指令 | 范围、命令、风格决定和完成条件 |
+| lockfile 或环境变化 | 构建、类型、lint 和测试观察 |
+| 切换分支或 worktree | 路径、摘要、脏状态假设和旧差异 |
+| 新任务约束 | 计划、所选文件、被拒绝方案和批准范围 |
+
+失效条目不一定已经错误，只是未经新状态检查就不再构成充分证据。区分这两种情况，既能避免盲目复用，也能避免无谓删除有用历史。
+
+### 感知依赖的新鲜度
+
+每次编辑后更新所有文件很安全，却十分浪费。应该追踪哪些观察依赖哪些输入。仅修改文档无需使解析器单元测试失效，而修改共享模式则应使所有由它生成的客户端和兼容性检查失效。
+
+这张依赖图不只包含导入。构建标志、环境变量、路由注册表、插件发现、代码生成输入、数据库模式和基于字符串的查找，都可能在没有静态调用边的情况下选择行为。如果仓库存在这些机制，应把它们记录为明确的不确定项，或者增加能解析它们的仓库自有查询。
+
+测试新鲜度取决于被测产物。记录命令、目录、相关环境、退出码，以及版本或脏工作树状态。输出被截断时也要保留这一事实；即使可见行看起来正常，缺失的尾部仍可能藏着失败摘要。
+
+### 安全的压缩层次
+
+可以把长会话上下文分成四层。固定约束包含任务、权限和适用指令；活动工作集包含下一次决策所需代码与测试；证据账本包含可追溯的观察与决定；可丢弃探索包含已经被取代的列表与假设。
+
+压缩时应以不同方式保留前三层。关键约束保持原文，活动源码保持新鲜，不做过度概括；只有在来源与状态仍然保留时，才能压缩账本条目。可丢弃探索不再解释当前决定后即可移除。
+
+交接记录应说明基线与当前脏状态、已改文件、带退出码的已运行检查、现在已经失效的检查、未解决假设和确切的下一项决策。「继续修复结算」不足以重建范围或证据。
+
+### 更新协议
+
+执行实质性编辑前：
+
+1. 确认仓库根目录、worktree、当前状态和适用指令路径。
+2. 重新打开目标、精确契约，以及编辑所依赖的调用方或测试。
+3. 比较当前内容与计算补丁时使用的快照。
+
+编辑后：
+
+1. 检查从基线到当前状态的差异，包括删除内容和意外文件。
+2. 根据实际变化的文本更新或否定早先推断。
+3. 重新运行输入已经变化的检查，并记录命令、目录、退出码和截断状态。
+
+完成前，把每条验收条件映射到新鲜证据。有些条件，例如产品措辞或迁移风险，需要人工决定，不能由命令回答。应明确标出这个缺口，不能把旁边某项自动化检查拔高成证明。
+
+### 为覆盖面分配预算
+
+上下文容量是约束，不是目标。小而关系明确的工作集，可能比一大包主题相似片段更完整地覆盖相关行为。判断选择质量时，应看下一项决策所需的约束、实现、使用方和验证器是否都得到体现。
+
+容量紧张时，保留确切任务和关键规则，再保留控制下一步操作的狭窄源码片段与原始失败证据。对稳定背景做带来源的概括，删除重复项、生成副本、已经成功排除的岔路，以及与当前失败无关的输出。
+
+如果一项关键契约和受影响的实现无法同时放入上下文，应把工作拆成明确阶段。每个边界都要重新取得共享契约，并验证中间产物。静默截断不是阶段边界，因为没人知道哪个假设消失了。
+
+### 把上下文作为审查产物
+
+即使最终补丁很小，上下文清单也有助于审查。它展示智能体认为什么具有权威性、主动排除了什么，以及遗漏的调用方或过期观察可能在何处影响结果。
+
+清单不必暴露私有提示词或每次探索读取。它应公开复现决策所需的工程事实：相关路径与角色、基线、适用规则、命令、新鲜度状态和已知缺口。敏感值应在取得时就删除，不能先复制再隐藏。
+
+良好的上下文管理不能保证补丁正确。它建立一条从任务到证据再到改动的可追溯路径，让测试与审查者能够定位推理在哪里偏离。真正有用的标准不是模型是否看见一切，而是决定性的上下文是否相关、当前且可检查。
+
+</Depth>
+
+<Checkpoint id="ai-era/agent-context-management" />
+
+## 延伸阅读
+
+- [OpenAI Codex 文档：`AGENTS.md`](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+- [GitHub 文档：为 GitHub Copilot 添加仓库自定义指令](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions)
+- [Claude Code 文档：Claude 如何记住项目](https://code.claude.com/docs/en/memory)
+- [Git 文档：`git status`](https://git-scm.com/docs/git-status)
+- [Git 文档：`git diff`](https://git-scm.com/docs/git-diff)

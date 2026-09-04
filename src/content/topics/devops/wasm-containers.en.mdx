@@ -1,0 +1,402 @@
+---
+title: WebAssembly Containers
+description: WebAssembly containers deliver Wasm modules as OCI artifacts; learn the boundaries among WASI capabilities, containerd shims, and RuntimeClass.
+track: devops
+section: containers
+difficulty: advanced
+tags: [webassembly, wasi, oci, containerd, kubernetes]
+prerequisites: [devops/docker-guide]
+related: [devops/kubernetes-guide, devops/serverless, devops/platform-engineering]
+terms: [webassembly-module, wasi, component-model, oci-artifact, runtime-class, containerd-shim]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: devops/wasm-containers
+sources:
+  - { title: 'WebAssembly Core Specification', url: 'https://webassembly.github.io/spec/core/' }
+  - { title: 'Node.js 24 WebAssembly API', url: 'https://nodejs.org/docs/latest-v24.x/api/globals.html#webassembly' }
+  - { title: 'WebAssembly Component Model', url: 'https://component-model.bytecodealliance.org/' }
+  - { title: 'OCI Image Format Specification', url: 'https://specs.opencontainers.org/image-spec/' }
+  - { title: 'CNCF Wasm OCI Artifact layout', url: 'https://tag-runtime.cncf.io/wgs/wasm/deliverables/wasm-oci-artifact/' }
+  - { title: 'runwasi demos', url: 'https://runwasi.dev/getting-started/demos.html' }
+origin: old/src/content/docs/devops/wasm-containers.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A WebAssembly container is a module or component distributed through OCI and executed by a Wasm runtime. “Container” describes its delivery and orchestration, not the presence of a Linux user space.
+  </TLDRCell>
+  <TLDRCell label="when">
+    Consider it when a workload compiles to a supported WASI or component world and needs a small artifact, explicit host capabilities, or delivery across CPU architectures.
+  </TLDRCell>
+  <TLDRCell label="how">
+    Pin the Wasm and WASI contract, build and inspect the OCI descriptors, then configure the containerd shim and Kubernetes RuntimeClass to select a matching runtime on the right nodes.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A <Term id="webassembly-module">WebAssembly module</Term> is compact, validated binary code instantiated by a host runtime. It can use its own instructions and memory plus imports supplied by the host; it cannot issue arbitrary system calls like a native Linux process. Core Wasm defines the computation model, but not files, sockets, environment variables, or clocks.
+
+“WebAssembly container” is not another Linux container format. It usually means a Wasm module or component placed in an OCI image or artifact, then executed by an engine such as Wasmtime and a specialized shim connected to containerd. Registries, content digests, Kubernetes Pods, and deployment controllers remain useful, but the execution boundary changes from a native process to a Wasm instance.
+
+<Term id="wasi">WASI, the WebAssembly System Interface</Term>, adds standardized host interfaces. A runtime can provide interfaces for filesystems, randomness, clocks, command lines, or HTTP, and it can withhold them. A WASI application starts with no ambient authority and can use only capabilities the host explicitly grants.
+
+This model fits narrowly interfaced workloads with a clear portability need, such as event handlers, plug-ins, edge functions, and policy evaluators. It is not a transparent acceleration switch for an existing container image. Applications that depend on `fork`, arbitrary dynamic libraries, Linux devices, shell scripts, or unported native extensions should usually stay in ordinary containers or undergo a bounded porting assessment first.
+
+| Dimension | Linux container | Wasm container workload |
+| --- | --- | --- |
+| Executable content | Native process targeting an OS and CPU architecture | Module or component targeting Wasm and particular host interfaces |
+| System access | Constrained by the kernel, namespaces, cgroups, and security policy | Constrained by runtime-provided imports, possibly inside an outer container boundary |
+| Distribution | OCI image with filesystem layers | `.wasm` in a conventional OCI image, or an OCI artifact with Wasm media types |
+| Orchestration choice | Default CRI runtime | Configured shim and `RuntimeClass` |
+| Compatibility risks | libc, kernel, CPU, and image platform | Core Wasm features, WASI version, world, host extensions, and runtime |
+
+## How it works
+
+The delivery chain has three independent contracts. The compile contract determines whether the result is a core module or component and whether it targets `wasip1`, `wasip2`, or another host interface. The distribution contract defines how an OCI manifest, config, and layers are stored by digest. The execution contract determines which shim, engine, and configuration supply the imports declared by the module.
+
+```mermaid
+flowchart LR
+    A[Source] --> B[Compiler and component tooling]
+    B --> C[Wasm module or component]
+    C --> D[OCI manifest and blobs]
+    D --> E[Registry]
+    E --> F[containerd and CRI]
+    F --> G[Wasm shim and runtime]
+    G --> H[Granted WASI and host interfaces]
+```
+
+A core module encodes dependencies as imports and callable functionality as exports. During instantiation, the host must satisfy every import with a value whose name and type match, or instantiation fails. That linking mechanism explains why host access is absent by default, but complete capability security still depends on how the runtime constructs the WASI context, which directories it preopens, and which network destinations it permits.
+
+The <Term id="component-model">Component Model</Term> adds typed interfaces and composition rules over core modules. WIT describes interfaces and a world's imports and exports; component tools generate language bindings and Canonical ABI adapters. A `wasip1` core module and a `wasip2` component that imports `wasi:http` do not have the same execution contract, and the file extension cannot prove they are compatible.
+
+OCI provides content-addressed distribution, not execution. The CNCF Wasm OCI Artifact layout uses an OCI image manifest, an `application/vnd.wasm.config.v0+json` config, and an `application/wasm` layer; layer digests in the config must follow manifest order. runwasi also demonstrates a compatibility path that stores the `.wasm` file inside a conventional OCI filesystem image. Choose between them based on common support across the registry, builder, scanner, containerd version, and shim.
+
+A <Term id="containerd-shim">containerd shim</Term> maps containerd's task lifecycle to a particular Wasm host. After Kubernetes submits a Pod through CRI, a <Term id="runtime-class">RuntimeClass</Term> `handler` must correspond to CRI runtime configuration on every eligible node. A Pod references the RuntimeClass `metadata.name`, not the shim binary name directly.
+
+## Examples
+
+### Instantiate a module with no imports
+
+The first sample contains a real core Wasm module that exports `double`. The byte array keeps the sample independent of a WAT compiler; production builds should have a language toolchain generate `.wasm` rather than hand-writing bytecode.
+
+<Depth level="quick">
+
+```javascript run title="inspect_core.mjs"
+const bytes = Uint8Array.from([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x0a, 0x01, 0x06, 0x64, 0x6f, 0x75, 0x62,
+  0x6c, 0x65, 0x00, 0x00,
+  0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x41,
+  0x02, 0x6c, 0x0b,
+]);
+
+const module = await WebAssembly.compile(bytes);
+const instance = await WebAssembly.instantiate(module);
+
+console.log(`valid: ${WebAssembly.validate(bytes)}`);
+console.log(`imports: ${WebAssembly.Module.imports(module).length}`);
+console.log(`exports: ${WebAssembly.Module.exports(module)[0].name}`);
+console.log(`double(21): ${instance.exports.double(21)}`);
+```
+
+```text
+valid: true
+imports: 0
+exports: double
+double(21): 42
+```
+
+</Depth>
+
+Successful validation proves only that the bytes satisfy core Wasm rules. `imports: 0` means the module requires no host functions, so Node 24 can instantiate it directly. It is not yet a WASI application and was not started from an OCI artifact; those three stages need separate checks.
+
+### Satisfy a host import explicitly
+
+The second module imports `host.audit` and calls it from `run`. The first instantiation supplies no import and produces the observed `TypeError` in Node 24; only the second gives the module a narrow function.
+
+```javascript run title="grant_import.mjs"
+const bytes = Uint8Array.from([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x05, 0x01, 0x60, 0x01, 0x7f, 0x00,
+  0x02, 0x0e, 0x01, 0x04, 0x68, 0x6f, 0x73, 0x74,
+  0x05, 0x61, 0x75, 0x64, 0x69, 0x74, 0x00, 0x00,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00,
+  0x01,
+  0x0a, 0x08, 0x01, 0x06, 0x00, 0x20, 0x00, 0x10,
+  0x00, 0x0b,
+]);
+
+const module = await WebAssembly.compile(bytes);
+const required = WebAssembly.Module.imports(module)[0];
+console.log(`requires: ${required.module}.${required.name} (${required.kind})`);
+
+try {
+  await WebAssembly.instantiate(module, {});
+} catch (error) {
+  console.log(`without grant: ${error.name}`);
+}
+
+const imports = { host: { audit: value => console.log(`audit: ${value}`) } };
+const instance = await WebAssembly.instantiate(module, imports);
+instance.exports.run(7);
+```
+
+```text
+requires: host.audit (function)
+without grant: TypeError
+audit: 7
+```
+
+This code demonstrates import linking; it does not pretend to implement full WASI. A real runtime must also constrain the import implementation, including paths reachable through directory handles, hosts reachable through an HTTP client, and the time or memory a call may consume. The absence of an import inside the module does not revoke Pod permissions granted elsewhere to the host.
+
+### Build a content-addressed OCI layout
+
+The third sample writes the same module into a local OCI image layout. It computes real digests for the module, Wasm config, and manifest, then points `index.json` at the manifest; the five output files are three blobs, `oci-layout`, and the index.
+
+```javascript run title="build_oci_layout.mjs"
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+
+const root = "double-oci";
+const wasm = Buffer.from([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x06, 0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x0a, 0x01, 0x06, 0x64, 0x6f, 0x75, 0x62,
+  0x6c, 0x65, 0x00, 0x00,
+  0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x41,
+  0x02, 0x6c, 0x0b,
+]);
+const encode = value => Buffer.from(JSON.stringify(value));
+const digest = data => `sha256:${createHash("sha256").update(data).digest("hex")}`;
+const descriptor = (mediaType, data) => ({ mediaType, digest: digest(data), size: data.length });
+
+await mkdir(`${root}/blobs/sha256`, { recursive: true });
+const put = async data => writeFile(`${root}/blobs/sha256/${digest(data).slice(7)}`, data);
+const layer = descriptor("application/wasm", wasm);
+const configBytes = encode({ architecture: "wasm", os: "wasip1", layerDigests: [layer.digest] });
+const config = descriptor("application/vnd.wasm.config.v0+json", configBytes);
+const manifestBytes = encode({
+  schemaVersion: 2,
+  mediaType: "application/vnd.oci.image.manifest.v1+json",
+  config,
+  layers: [layer],
+});
+const manifest = descriptor("application/vnd.oci.image.manifest.v1+json", manifestBytes);
+manifest.annotations = { "org.opencontainers.image.ref.name": "double:v1" };
+
+await Promise.all([put(wasm), put(configBytes), put(manifestBytes)]);
+await writeFile(`${root}/oci-layout`, encode({ imageLayoutVersion: "1.0.0" }));
+await writeFile(`${root}/index.json`, encode({ schemaVersion: 2, manifests: [manifest] }));
+
+console.log(`layer: ${layer.digest} (${layer.size} bytes)`);
+console.log(`config: ${config.mediaType}`);
+console.log(`manifest: ${manifest.digest}`);
+console.log("files: 5");
+```
+
+```text
+layer: sha256:45eb05dbe0a0a2df47788f382ba1d87adab365e30c522c7bc86e0d0e705b1395 (43 bytes)
+config: application/vnd.wasm.config.v0+json
+manifest: sha256:8572cf38f180477993582dc7bd712ea50f8382e201d4799e417af28952c78725
+files: 5
+```
+
+Here `wasip1` denotes a plain core module under the artifact specification; the sample has no WASI imports. A component needs `wasip2` and `component` metadata containing its actual imports, exports, and optional target. Do not copy these example digests to another module or change a blob after writing the manifest; any content change requires recalculating that descriptor and every parent manifest digest.
+
+### Check the RuntimeClass mapping
+
+The last sample checks three names that are easy to confuse: the Pod selects a RuntimeClass name, the RuntimeClass points to a CRI handler, and a custom node label narrows scheduling. The node label states that the host has the runtime installed; it does not misrepresent the host CPU architecture as `wasm32`.
+
+```javascript run title="check_runtime_class.mjs"
+const runtimeClass = {
+  apiVersion: "node.k8s.io/v1",
+  kind: "RuntimeClass",
+  metadata: { name: "wasm-wasmtime" },
+  handler: "wasmtime",
+  scheduling: {
+    nodeSelector: { "runtime.codewiki.dev/wasmtime": "true" },
+  },
+};
+
+const pod = {
+  metadata: { name: "receipt-worker" },
+  spec: {
+    runtimeClassName: "wasm-wasmtime",
+    containers: [{ name: "worker", image: "registry.example/receipt:v1" }],
+  },
+};
+
+const configuredHandlers = new Set(["runc", "wasmtime"]);
+const eligibleNodes = [
+  { name: "worker-a", labels: { "runtime.codewiki.dev/wasmtime": "true" } },
+  { name: "worker-b", labels: {} },
+].filter(node =>
+  Object.entries(runtimeClass.scheduling.nodeSelector)
+    .every(([key, value]) => node.labels[key] === value),
+);
+
+console.log(`class selected: ${pod.spec.runtimeClassName === runtimeClass.metadata.name}`);
+console.log(`handler configured: ${configuredHandlers.has(runtimeClass.handler)}`);
+console.log(`eligible nodes: ${eligibleNodes.map(node => node.name).join(", ")}`);
+```
+
+```text
+class selected: true
+handler configured: true
+eligible nodes: worker-a
+```
+
+This local check cannot prove that a cluster installed the shim. Before deployment, inspect containerd's CRI configuration, the shim binary, runtime version, and image-format support on every node class, then create a real Pod. If the cluster uses another handler name, change the RuntimeClass and node configuration; business manifests should not guess binary paths.
+
+## Pitfalls
+
+### Treating Wasm as an ordinary Linux image
+
+> [!PITFALL]
+> Generated Dockerfiles and Pods often assume a Wasm artifact contains `/bin/sh`, `curl`, a package manager, and Linux signal handlers. A pure `application/wasm` layer supplies none of those files.
+
+**Fix:** determine whether the shim accepts a conventional filesystem image containing `.wasm` or a Wasm OCI artifact. Validate probes, command overrides, and debugging procedures against that runtime. When you need sidecar tooling, deploy it as a separate Linux container instead of assuming it can enter the Wasm instance's filesystem.
+
+### Treating an import declaration as a grant
+
+> [!PITFALL]
+> Listing a filesystem, HTTP, or randomness import in WIT or a core module says that the component needs an interface. It neither restricts the resources reachable by the host implementation nor configures least privilege automatically.
+
+**Fix:** grant preopened directories, network destinations, environment variables, and secrets individually in runtime configuration, then test that unauthorized access fails. Review the Kubernetes ServiceAccount, volumes, Pod network, and node permissions too, because the Wasm sandbox sits inside those outer permissions.
+
+### Mixing WASI generations and component worlds
+
+> [!PITFALL]
+> An old tutorial builds a `wasm32-wasi` or `wasm32-wasip1` command module while generated deployment code assumes a `wasip2` component with `wasi:http` imports. Both files end in `.wasm`, but their linking contracts differ.
+
+**Fix:** record the target, component world, and WIT dependency versions in build output, then inspect imports on the target runtime. Do not infer format from the extension. When the compiler, binding generator, or runtime changes, rerun compatibility tests on the same artifact instead of checking only that source code compiles.
+
+### Faking a node architecture or handler
+
+> [!PITFALL]
+> `kubernetes.io/arch: wasm32` misstates the node's real CPU, while an invented `handler: spin` or `handler: wasmtime` does not install and configure the corresponding shim.
+
+**Fix:** preserve the CPU labels reported by kubelet and add a separately managed runtime-capability label. Have the platform team create RuntimeClasses centrally and verify each handler in CRI configuration on all matching nodes. Deployment tests must cover scheduling failure, image-pull failure, and shim startup failure, not merely YAML validation.
+
+### Equating a sandbox with supply-chain trust
+
+> [!PITFALL]
+> Wasm validation does not establish artifact provenance or eliminate runtime and shim vulnerabilities. A runwasi Wasmtime shim flaw disclosed in 2026 allowed malicious precompiled OCI layers to bypass the Wasm sandbox; affected versions were `<= 0.6.0`, and `0.6.1` fixed it.
+
+**Fix:** pin and update the shim and engine, deploy signed artifacts by digest under admission checks, and do not accept untrusted native precompiled cache entries from image layers. Keep outer container isolation, read-only mounts, network policy, and a minimal ServiceAccount even when the inner module is constrained by Wasm.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models commonly join three similar names into a plausible manifest that cannot run: the Pod's `runtimeClassName`, the RuntimeClass name, and the CRI handler all become one guessed value, followed by a fictitious `wasm32` node architecture. They also combine the old `wasm32-wasi` target, a Preview 1 command module, and a Preview 2 HTTP component, or label raw Wasm bytes as a standard OCI filesystem layer that requires a tar archive. On security, generated configuration often claims that “Wasm is secure by default” while mounting host directories, injecting every secret, and permitting arbitrary egress.
+
+**Ask your AI to check**
+
+- List whether the artifact is a core module or component, its WASI target and world, every import, and how the target runtime satisfies or denies each one.
+- Trace actual names from Pod `runtimeClassName` through RuntimeClass `metadata.name`, `handler`, containerd CRI configuration, and the shim binary.
+- Parse the OCI manifest and recalculate every blob's size and SHA-256 digest, then check whether both the registry and runtime support each media type.
+
+**Review checklist**
+
+- Execute the artifact in the target runtime and retain failing tests for missing imports and denied directory or network access.
+- Confirm that scheduling is blocked on nodes without the Wasm shim, then prove that a real Pod starts and its probes work on an eligible node.
+- Check shim and engine versions, artifact digests, and outer Pod permissions; do not substitute the Wasm sandbox for supply-chain and cluster controls.
+
+**Prompt vocabulary**
+
+Use the exact terms `core Wasm module`, `WebAssembly component`, `WASI world`, `WIT imports and exports`, `ambient authority`, `OCI descriptor`, `containerd shim`, `CRI runtime handler`, and `RuntimeClass`. Ask the AI for a compatibility matrix across build, artifact, and runtime; “deploy it as a Wasm container” does not identify any interface version or permission boundary.
+
+<Depth level="deep">
+
+## Modules, components, and WASI versions
+
+A core Wasm binary consists of sections: the type section defines function signatures, the import section declares external dependencies, and the export section exposes functions, memories, tables, or globals. Validation checks binary structure, instruction types, and control flow, but it does not know where `host.audit` should record data. Linking and instantiation place host values into those import slots.
+
+WASI 0.1, also called Preview 1, primarily serves command-style core modules. WASI 0.2, or Preview 2, is based on the Component Model and WIT interfaces; WASI 0.3 adds native asynchronous interfaces. The existence of a release does not mean the selected language SDK, binding generator, and production runtime implement the same proposals, so a deployable unit must pin its actual world and dependency versions.
+
+Components can exchange higher-level types such as strings, records, variants, and resources; the Canonical ABI lowers them to representations that core modules can exchange. A composer can connect one component's export to another component's import. That removes some custom JSON or HTTP boundaries, but not version management: matching interface names with different versions or resource semantics may still fail to compose.
+
+| Value to verify | Build stage | Artifact inspection | Runtime check |
+| --- | --- | --- | --- |
+| Wasm form | Core module or component | Binary encoding and config metadata | Engine support for that form |
+| System interface | `wasip1`, `wasip2`, `wasip3`, or custom | Imports, exports, and world | Host implementation and allowlist |
+| CPU features | Wasm features enabled by the compiler | Target features and artifact metadata | Engine feature switches |
+| Resource boundary | Application expectation | Not inferable from OCI alone | Memory, fuel, epoch, timeout, and concurrency limits |
+
+## An OCI artifact is not an execution contract
+
+An <Term id="oci-artifact">OCI artifact</Term> is a content graph made from descriptors. A descriptor records a media type, byte count, and content digest; a manifest points to a config and layers, and an index can point to one or more manifests. A registry's ability to store and copy unknown content does not prove that a node's snapshotter, client, or shim can interpret it.
+
+The CNCF v0 Wasm layout places the entry point in the first layer and requires consumers to reject a multilayer representation in this version. `layerDigests` makes config identity change with the layer set. For components, imports, exports, and target in the config are metadata for indexing and early rejection by an incompatible host; the runtime should still inspect the real binary rather than trust publisher-supplied JSON alone.
+
+A conventional filesystem image offers a more compatible fallback: place `.wasm` in a tar layer and let the shim open it from the OCI bundle. The cost is that the image platform, entry path, and command convention become shim-specific. A Wasm-specific artifact avoids pretending the module is a filesystem, but exposes old registries and clients that do not support custom config and layer media types.
+
+After pushing, a release pipeline should pull the manifest again, compare its digest, size, media types, and platform fields, then start it with the same containerd and shim combination used in production. Tags are for human navigation, not immutable identity. Deployment manifests should record a digest and make the update workflow replace it explicitly.
+
+## Two security boundaries
+
+The Wasm engine first validates a module, then links only host interfaces allowed by configuration. This inner boundary controls what the module can call. The runtime process, shim, and host functions remain native code outside that inner boundary; a vulnerability there can carry an attacker as far as the outer container boundary.
+
+The outer boundary comes from containerd, the kernel, Kubernetes, and node configuration. It controls the mounts, credentials, network, devices, and system calls visible to the shim process. If the outer layer grants the host root or a powerful ServiceAccount, even an inner interface named “read config” may expose far more data than intended.
+
+Capability review must therefore trace each module import to a host resource. Record the caller, host implementation, resource scope, failure behavior, audit signal, and revocation path for each capability. Negative tests are more reliable than configuration screenshots: actually attempt to read an unpreopened path, connect to a forbidden host, exhaust the compute budget, and call a missing interface, then confirm failure stays inside the boundary.
+
+Production upgrades must also treat the shim as a security-critical dependency. Validate a new version with existing artifacts in an isolated node pool, then roll nodes and check RuntimeClass coverage. If you retain an ordinary-container fallback, specify which workloads may use it; silently switching to default `runc` may fail outright or execute the wrong artifact under a different permission model.
+
+## Production verification matrix
+
+A `.wasm` that runs on a development machine is not yet a publishable workload. Production evidence must cover the builder, artifact repository, node runtime, and workload policy, with a repeatable command or test result at every layer. Tool-version screenshots alone cannot prove that one digest crossed the whole path.
+
+### Build gate
+
+The build stage should create the module in a clean environment and inspect its real imports and exports. For a component, also confirm that its world and WIT dependencies match locked versions. Then build the OCI artifact, recalculate its descriptors, and pull the same digest back from the target registry.
+
+- Record the compiler, target triple, component tools, and dependency lockfiles.
+- Run a validator and import-export inspection on the final binary, not only checks on source code.
+- Generate an SBOM and provenance statement, then associate them with the immutable digest.
+- Push and pull with the production client, comparing every blob's byte count and digest.
+
+### Node gate
+
+Node validation concerns host capability, not business code. Every node covered by a RuntimeClass should report the same CRI handler and compatible shim and engine versions. Rerun a smoke artifact after node upgrades so a stale label cannot hide a missing binary or configuration.
+
+- Make installation or compliance automation maintain node labels; workloads must not declare them.
+- Confirm that the handler in containerd configuration resolves to the expected shim and that service reload completed.
+- Validate registry authentication, image media types, content pulling, and cache cleanup.
+- Use one artifact that should succeed and one with a missing import to check positive and negative outcomes.
+
+### Workload gate
+
+Workload tests must use the final Pod specification because this is where volumes, secrets, networking, and resource limits combine. A health check should observe the interface the application actually provides, not depend on a shell absent from the artifact. Failure tests must also prove that restart, eviction, and node movement cannot silently select another runtime.
+
+- Check `runtimeClassName`, the artifact digest, ServiceAccount, and network policy.
+- Test startup, readiness, graceful termination, timeout, and resource-exhaustion behavior.
+- Preserve one workload identity across application logs, shim logs, and kubelet events.
+- Disable the RuntimeClass or remove the node capability label and confirm that deployment fails diagnostically.
+
+Even after these gates pass, treat an upgrade as a compatibility change. Start with a small share of artifact and node combinations, observe instantiation failures, capability denials, restarts, and resource-limit signals, then expand. A rollback target must include both the artifact digest and runtime version; rolling back only one can preserve an incompatible pairing.
+
+### Release evidence
+
+Associate these results with one immutable digest and retain the generation time, tool versions, and execution environment. Incident responders can then distinguish an application regression, artifact corruption, node drift, and a runtime upgrade without reconstructing deployed content from a mutable tag.
+
+</Depth>
+
+<Checkpoint id="devops/wasm-containers" />
+
+## Further reading
+
+- [WebAssembly Core Specification](https://webassembly.github.io/spec/core/)
+- [Node.js 24 WebAssembly API](https://nodejs.org/docs/latest-v24.x/api/globals.html#webassembly)
+- [WebAssembly Component Model](https://component-model.bytecodealliance.org/)
+- [OCI Image Format Specification](https://specs.opencontainers.org/image-spec/)
+- [CNCF Wasm OCI Artifact layout](https://tag-runtime.cncf.io/wgs/wasm/deliverables/wasm-oci-artifact/)
+- [runwasi demos and artifact formats](https://runwasi.dev/getting-started/demos.html)

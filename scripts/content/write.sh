@@ -31,7 +31,7 @@ STATE_FILE='reports/polish/state.json'
 
 usage() {
   cat <<'EOF'
-usage: pnpm content:write --kind quiz|kata|interview|path|cheatsheet --id <id>
+usage: pnpm content:write --kind topic|quiz|kata|interview|path|cheatsheet --id <id>
                           [--id <id> ...] [--n 4] [--dry-run]
 
   --kind KIND  output kind to write
@@ -45,7 +45,7 @@ while (($# > 0)); do
   case "$1" in
     --kind)
       KIND="${2:-}"
-      case "$KIND" in quiz | kata | interview | path | cheatsheet) ;; *) echo "unknown kind: $KIND" >&2; exit 2 ;; esac
+      case "$KIND" in topic | quiz | kata | interview | path | cheatsheet) ;; *) echo "unknown kind: $KIND" >&2; exit 2 ;; esac
       shift 2
       ;;
     --id)
@@ -84,6 +84,13 @@ brief() {
 if ((DRY_RUN)); then
   printf '=== selected (%d) ===\n%s\n\n' "${#IDS[@]}" "${IDS[*]}"
   for id in "${IDS[@]}"; do
+    if [[ $KIND == topic ]]; then
+      topic_state="$(pnpm exec tsx scripts/content/lib/write-brief.ts --kind topic --id "$id" --status)"
+      if [[ $topic_state == reviewed ]]; then
+        printf 'skip topic %s: already reviewed\n\n' "$id"
+        continue
+      fi
+    fi
     printf '=== %s brief for %s ===\n' "$KIND" "$id"
     brief "$id"
     printf '\n=== codex command ===\n'
@@ -115,8 +122,17 @@ flat_of() {
   printf '%s' "${value//:/__}"
 }
 
+journal_key() {
+  if [[ $KIND == topic ]]; then
+    printf '%s' "$1"
+  else
+    printf 'write:%s:%s' "$KIND" "$1"
+  fi
+}
+
 finish_failed() {
-  local id="$1" flat="$2" reason="$3" key="write:$KIND:$1"
+  local id="$1" flat="$2" reason="$3" key
+  key="$(journal_key "$id")"
   if ! mark fail "$key" polished "$reason"; then
     log "error $id: the failure could not be recorded"
   fi
@@ -125,10 +141,21 @@ finish_failed() {
 }
 
 write_one() {
-  local id="$1" flat dir key last reason status detail codex_pid check_failed
+  local id="$1" flat dir key last reason status detail codex_pid check_failed topic_state
+  local -a check_command=()
   flat="$(flat_of "$id")"
   dir="$WRITE_ROOT/$KIND/$flat"
-  key="write:$KIND:$id"
+  if [[ $KIND == topic ]]; then
+    if ! topic_state="$(pnpm exec tsx scripts/content/lib/write-brief.ts --kind topic --id "$id" --status)"; then
+      log "finish topic $id failed: could not look up the approved topic"
+      return 0
+    fi
+    if [[ $topic_state == reviewed ]]; then
+      log "skip topic $id: already reviewed"
+      return 0
+    fi
+  fi
+  key="$(journal_key "$id")"
   reason=''
   mkdir -p "$dir"
   printf '%s\n' "$id" >"$INFLIGHT_DIR/$flat"
@@ -151,6 +178,9 @@ write_one() {
   wait "$codex_pid" || status=$?
   rm -f "$INFLIGHT_DIR/$flat.pid"
   last="$(grep -v '^[[:space:]]*$' "$dir/codex.log" 2>/dev/null | tail -n 1 || true)"
+  # Codex sometimes wraps the protocol line in backticks; compare the bare text.
+  last=${last//\`/}
+  last=${last%"${last##*[![:space:]]}"}
   if ((status == 124)); then
     reason="codex timed out after ${CODEX_TIMEOUT}s"
   elif ((status != 0)); then
@@ -163,7 +193,12 @@ write_one() {
 
   check_failed=0
   detail=''
-  if ! pnpm --silent content:check --kind "$KIND" "$id" >"$dir/check.log" 2>&1; then
+  if [[ $KIND == topic ]]; then
+    check_command=(pnpm --silent content:check "$id")
+  else
+    check_command=(pnpm --silent content:check --kind "$KIND" "$id")
+  fi
+  if ! "${check_command[@]}" >"$dir/check.log" 2>&1; then
     check_failed=1
     detail="$(grep -m 3 '^  ' "$dir/check.log" | tr '\n' ';' || true)"
   fi
@@ -175,7 +210,17 @@ write_one() {
     finish_failed "$id" "$flat" "codex failed: $reason; content:check passed but codex never reported done"
     return 0
   fi
-  if ! mark ok "$key" polished; then
+  if [[ $KIND == topic ]]; then
+    if ! pnpm --silent content:extract "$id" >"$dir/extract.log" 2>&1; then
+      finish_failed "$id" "$flat" "content:extract failed, see $dir/extract.log"
+      return 0
+    fi
+    if ! mark ok "$key" polished || ! mark ok "$key" aligned || ! mark ok "$key" extracted; then
+      rm -f "$INFLIGHT_DIR/$flat"
+      log "finish topic $id failed: content passed, but the polish journal is unwritable"
+      return 0
+    fi
+  elif ! mark ok "$key" polished; then
     rm -f "$INFLIGHT_DIR/$flat"
     log "finish $KIND $id failed: content passed, but the journal is unwritable"
     return 0
@@ -198,6 +243,7 @@ commit_batch() {
       [[ -n $file && $file != '# '* ]] && add+=("$file")
     done <"$OK_DIR/$flat"
   done
+  if [[ $KIND == topic && -e src/content/glossary ]]; then add+=(src/content/glossary); fi
   [[ -e $STATE_FILE ]] && add+=("$STATE_FILE")
   if ((${#add[@]} == 0)); then
     log "warn no produced files found for ${ids[*]}"
@@ -277,7 +323,7 @@ on_signal() {
   for file in "$INFLIGHT_DIR"/*; do
     [[ -e $file && $file != *.pid ]] || continue
     id="$(<"$file")"
-    mark fail "write:$KIND:$id" polished interrupted || true
+    mark fail "$(journal_key "$id")" polished interrupted || true
     rm -f "$file"
   done
   commit_successes || true

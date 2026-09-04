@@ -1,0 +1,425 @@
+---
+title: 'Dates and time'
+description: 'Model instants, civil time, time zones, durations, and calendar arithmetic without hiding context in ambiguous conversions.'
+track: foundations
+section: text-numbers
+difficulty: intermediate
+tags: [dates, time, time-zones, calendar-arithmetic]
+prerequisites: []
+related: [foundations/i18n, foundations/linux, foundations/floating-point-arithmetic]
+terms: [instant, unix-epoch, time-zone, daylight-saving-time]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: foundations/dates-and-time
+sources:
+  - { title: 'Python 3.14 documentation - datetime', url: 'https://docs.python.org/3.14/library/datetime.html' }
+  - { title: 'Python 3.14 documentation - zoneinfo', url: 'https://docs.python.org/3.14/library/zoneinfo.html' }
+  - { title: 'Python 3.14 documentation - time.monotonic', url: 'https://docs.python.org/3.14/library/time.html#time.monotonic' }
+  - { title: 'IANA time zone database - Theory and pragmatics', url: 'https://data.iana.org/time-zones/tzdb/theory.html' }
+  - { title: 'RFC 3339 - Date and Time on the Internet', url: 'https://www.rfc-editor.org/rfc/rfc3339.html' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    An instant says when something happened; civil fields, a calendar, and a time zone say how people name that point locally.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A UTC offset is not a time zone, a calendar day is not always 24 elapsed hours, and some local times occur twice or not at all.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Preserve each value's meaning, convert only at explicit boundaries, and use a monotonic clock for durations and deadlines.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Date-and-time data answers several different questions. An <Term id="instant">instant</Term> identifies one point on the timeline. Civil time supplies human calendar fields such as `2026-11-01 01:30`, while a <Term id="time-zone">time zone</Term> supplies the rules that relate those fields to the timeline.
+
+A duration answers how much time elapsed. Calendar arithmetic answers a different question, such as "the same local time tomorrow" or "the last day of next month." These meanings coincide on ordinary days, which is why a design can look correct until a month end or clock transition reaches production.
+
+The <Term id="unix-epoch">Unix epoch</Term> gives timestamp systems a common numeric origin. A count since that origin can identify an instant when its unit and time scale are known. The number does not remember the source time zone, the calendar wording entered by a user, or whether a schedule should retain local wall time when rules change.
+
+You meet these distinctions in audit logs, booking systems, token expiry, billing periods, recurring jobs, age checks, telemetry, and user interfaces. A payment already made usually needs an instant. A birthday usually needs a calendar date without any time or zone.
+
+A store opening every day at `09:00` needs local clock fields and a named zone. A request that must time out after five seconds needs a duration and a monotonic clock. One generic `timestamp` field cannot state all four contracts.
+
+Name the domain value before choosing a representation:
+
+| Domain fact | Preserve | Do not silently add |
+| --- | --- | --- |
+| Recorded event | Instant and precision | Host-local zone |
+| Birthday or invoice date | Calendar fields | Midnight or UTC |
+| Zoned appointment | Local fields, zone, resolution policy | Current offset as a permanent rule |
+| Expiry after an interval | Starting instant or monotonic deadline, plus duration | Calendar-day semantics |
+| Monthly recurrence | Calendar rule and zone when time-of-day matters | Fixed seconds per month |
+
+This separation prevents lossy round trips. If a birthday becomes UTC midnight, displaying it west of UTC may produce the previous date. If a New York appointment keeps only `-04:00`, the value cannot apply winter rules or later time-zone database changes.
+
+Formatting is straightforward compared with deciding which context owns the conversion and what to do when local fields are ambiguous or invalid. That policy belongs in the data contract, not in whichever helper happens to parse the value.
+
+## How it works
+
+### Instants and civil fields
+
+An instant has no inherent year, month, hour, or weekday. Those are projections through a calendar and zone rule set. UTC is a useful projection with zero offset, but a UTC rendering is still a rendering of the instant rather than extra state inside it.
+
+Civil time runs in the other direction. Fields such as year, month, day, hour, and minute describe what a clock and calendar show. To resolve them to an instant, you also need a calendar, a named zone or fixed offset, and sometimes a choice for a transition edge.
+
+The two directions have different behavior:
+
+| Operation | Input | Output | Can be ambiguous? |
+| --- | --- | --- | --- |
+| Project | Instant plus zone | Local calendar fields and offset | No, for a defined rule set |
+| Resolve | Local fields plus zone | Instant | Yes, at gaps and overlaps |
+| Format | Structured temporal value plus locale | Human-readable text | Not a safe parse format |
+| Parse | Contracted text grammar | Structured temporal value | Yes, if fields or offset are omitted |
+
+Projecting an instant into a zone produces one result because the instant fixes which rule applies. Resolving local fields may produce zero, one, or two candidate instants. An API that exposes only `local_time` and `zone` but no resolution policy has left a business decision implicit.
+
+### Offsets and named zones
+
+An offset such as `+08:00` is one numeric relationship to UTC. It is enough to identify an instant when attached to complete local date-time fields. It does not describe past or future changes.
+
+A named IANA zone such as `Europe/Paris` or `America/New_York` identifies a maintained history and rule set. Its offset depends on the instant being considered. Governments can change these rules, so deployed applications also depend on a time-zone database version.
+
+Abbreviations such as `CST` are poor interchange identifiers. The same letters are used for different zones, and a short label may change seasonally. Use an IANA identifier for regional rules and an explicit numeric offset in an instant-bearing wire value.
+
+<Term id="daylight-saving-time">Daylight saving time</Term> causes some rule changes. Historical offset changes and government decisions create transitions too. Code should reason about zone rules rather than assuming every transition follows a familiar one-hour seasonal pattern.
+
+### Gaps, overlaps, and `fold`
+
+When clocks move forward, a range of local times is skipped. A local value inside that gap has no matching instant. When clocks move backward, a range repeats and each local value has two matching instants.
+
+Python's `zoneinfo.ZoneInfo` applies IANA rules to aware `datetime` objects. During an overlap, `datetime.fold` selects the pre-transition offset with `0` or the post-transition offset with `1`. The flag matters only where the two interpretations differ.
+
+Attaching `ZoneInfo` with the constructor or `replace(tzinfo=...)` does not validate that local fields exist. Python will create an aware object for a gap as well. If input begins as civil fields, validation requires a stated gap policy and a round trip through UTC or a scheduling library that exposes resolution directly.
+
+### Aware and naive values
+
+Python calls a `datetime` aware when it has usable offset information; otherwise it is naive. A naive value does not carry a reliable promise that it means UTC, host-local time, or an unfinished civil value. That meaning exists only in surrounding code and is easily lost.
+
+Use `datetime.now(UTC)` for a current UTC instant rather than `datetime.utcnow()`, which returns a naive result and is deprecated. Parse external instants into aware values at the boundary. Keep calendar-only values as `date`, and keep unresolved local schedules in a structure whose zone and policy are explicit.
+
+`replace(tzinfo=zone)` relabels existing fields. It does not move an instant from one zone to another. `astimezone(zone)` preserves the instant and changes the projected fields, so the two operations are not interchangeable.
+
+### Durations and calendar arithmetic
+
+An elapsed duration can be represented in seconds, nanoseconds, or a `timedelta`, subject to the precision the system needs. To add exactly 24 elapsed hours across a regional clock change, do timeline arithmetic in UTC and then project the result into the display zone.
+
+Calendar arithmetic operates on fields and rules. "Tomorrow at noon" advances the local date and retains noon, even if only 23 or 25 hours pass on the timeline. "One month later" also needs an overflow rule because the target month may not contain the original day number.
+
+Python arithmetic has a sharp same-zone rule. Adding a `timedelta` to an aware local `datetime` performs field arithmetic with the same `tzinfo`; subtracting two aware values that share that exact `tzinfo` ignores their offsets. Convert both endpoints to UTC or subtract their timestamps when the requirement is actual elapsed time.
+
+Do not use wall-clock readings for an in-process timeout. Network synchronization or an operator can adjust system time, so successive UTC readings may jump. `time.monotonic()` cannot move backward and has no civil meaning, which is exactly what interval measurement needs.
+
+### Storage and boundaries
+
+For recorded events, a documented RFC 3339 profile with an explicit, known offset or a documented integer epoch unit can cross a service boundary. Validate the grammar, range, precision, and unit. A bare integer called `timestamp` invites seconds-versus-milliseconds mistakes.
+
+Store a named zone separately when later behavior depends on regional rules. A calendar service may need the original local fields, the IANA zone, the chosen overlap or gap policy, and the resolved instant. Keeping the instant as well supports ordering and audit without discarding scheduling intent.
+
+Formatting belongs at the presentation edge. Supply the locale and zone explicitly rather than inheriting host defaults. Formatted output is for people; it is usually not a stable interchange format and should not be parsed back into domain data.
+
+Database types differ. Some preserve an instant, some preserve fields without a zone, and names such as `timestamp` are product-specific. Read the database's exact type contract and driver conversion behavior before mapping it to a language type.
+
+## Examples
+
+The examples use Python 3.14's standard `datetime`, `zoneinfo`, and `time` modules. Every output below was produced with Python 3.14.3 and the local IANA time-zone data.
+
+### Projecting one instant
+
+The release value has an explicit UTC offset, so it identifies one instant. Each `astimezone()` call preserves that instant and changes only its civil projection.
+
+<Depth level="quick">
+
+```python run title="instant_views.py"
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+release = datetime.fromisoformat("2026-11-01T05:30:00+00:00")
+
+for zone_name in ["America/New_York", "Asia/Shanghai"]:
+    local = release.astimezone(ZoneInfo(zone_name))
+    print(f"{zone_name}: {local:%Y-%m-%d %H:%M %z} fold={local.fold}")
+
+print(f"epoch seconds: {release.timestamp():.0f}")
+```
+
+```text
+America/New_York: 2026-11-01 01:30 -0400 fold=0
+Asia/Shanghai: 2026-11-01 13:30 +0800 fold=0
+epoch seconds: 1793511000
+```
+
+<TryToBreak items={['replace the UTC offset with no offset', 'format in Europe/Paris', 'pass an unknown zone name']} />
+
+</Depth>
+
+New York's `01:30` is the first occurrence on the day its clock moves back, so `fold` is `0`. Shanghai has no overlap at that instant. Both lines still correspond to epoch second `1793511000`.
+
+This direction is deterministic for the loaded rule set: start with an instant, then project. The inverse needs a policy because New York will show `01:30` again one elapsed hour later.
+
+### Resolving a repeated local time
+
+The next program constructs both interpretations of the same New York wall-clock fields. `fold` changes the selected offset and therefore the UTC instant.
+
+```python run title="ambiguous_time.py"
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+
+new_york = ZoneInfo("America/New_York")
+first = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=0)
+second = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=1)
+
+for candidate in [first, second]:
+    print(
+        f"fold={candidate.fold} "
+        f"offset={candidate.utcoffset()} "
+        f"utc={candidate.astimezone(UTC).isoformat()}"
+    )
+
+print(f"same wall fields: {first.replace(tzinfo=None) == second.replace(tzinfo=None)}")
+print(f"elapsed: {(second.timestamp() - first.timestamp()) / 3600:.0f} hour")
+```
+
+```text
+fold=0 offset=-1 day, 20:00:00 utc=2026-11-01T05:30:00+00:00
+fold=1 offset=-1 day, 19:00:00 utc=2026-11-01T06:30:00+00:00
+same wall fields: True
+elapsed: 1 hour
+```
+
+The unusual negative `timedelta` display means UTC−04:00 and UTC−05:00. Removing `tzinfo` makes the fields compare equal, but their timestamps are one hour apart. A booking system must choose, reject, or ask rather than accepting whichever default the library supplies.
+
+Do not infer `fold` from the hour alone. It is meaningful only with a date and zone whose rules create an overlap. Persist the resolved instant or the explicit choice when later reconstruction must return the same occurrence.
+
+### Calendar intent versus elapsed time
+
+New York advances its clock on the morning of March 8 in this example. One operation keeps local noon on the next date; the other advances exactly 24 elapsed hours.
+
+```python run title="calendar_vs_elapsed.py"
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+
+new_york = ZoneInfo("America/New_York")
+start = datetime(2026, 3, 7, 12, 0, tzinfo=new_york)
+
+# Calendar intent keeps 12:00; elapsed intent keeps 24 hours.
+same_wall_time_tomorrow = start + timedelta(days=1)
+after_twenty_four_hours = (
+    start.astimezone(UTC) + timedelta(hours=24)
+).astimezone(new_york)
+
+print(f"start:    {start:%Y-%m-%d %H:%M %z}")
+print(f"calendar: {same_wall_time_tomorrow:%Y-%m-%d %H:%M %z}")
+print(f"elapsed:  {after_twenty_four_hours:%Y-%m-%d %H:%M %z}")
+print(f"calendar seconds: {same_wall_time_tomorrow.timestamp() - start.timestamp():.0f}")
+print(f"elapsed seconds:  {after_twenty_four_hours.timestamp() - start.timestamp():.0f}")
+```
+
+```text
+start:    2026-03-07 12:00 -0500
+calendar: 2026-03-08 12:00 -0400
+elapsed:  2026-03-08 13:00 -0400
+calendar seconds: 82800
+elapsed seconds:  86400
+```
+
+The calendar result is 82,800 elapsed seconds later because the local clock skipped an hour. The elapsed result appears at `13:00`, one wall-clock hour later than the starting hour. Neither result is generally correct; the requirement selects one.
+
+The code uses timestamps for the elapsed comparison. Writing `(after_twenty_four_hours - start).total_seconds()` would report the same-zone wall-field difference instead, which is 25 hours for those displayed fields. That result answers a different question.
+
+### Building a monotonic deadline
+
+A deadline can be stored as a reading on a monotonic clock. Injecting the clock gives the test exact readings without pretending that a calendar timestamp controls an interval.
+
+```python run title="monotonic_deadline.py"
+import time
+
+
+class SequenceClock:
+    def __init__(self, readings):
+        self._readings = iter(readings)
+
+    def __call__(self):
+        return next(self._readings)
+
+
+def make_deadline(timeout_seconds, clock=time.monotonic):
+    expires_at = clock() + timeout_seconds
+
+    def remaining():
+        return max(0.0, expires_at - clock())
+
+    return remaining
+
+
+# Injecting the clock keeps this deadline test deterministic.
+clock = SequenceClock([100.0, 101.25, 106.0])
+remaining = make_deadline(5.0, clock)
+
+print(f"remaining: {remaining():.2f}")
+print(f"remaining: {remaining():.2f}")
+```
+
+```text
+remaining: 3.75
+remaining: 0.00
+```
+
+The numeric readings cannot be converted to dates and should not be serialized for another process as universal timestamps. They are meaningful only for differences measured by a compatible clock in the current runtime. That narrow contract prevents calendar corrections from extending or shortening the timeout.
+
+The `max()` clamp makes an expired budget report zero rather than a negative value. Real wait loops must still pass the current remaining budget to each blocking operation and stop when it reaches zero.
+
+## Pitfalls
+
+### Treating naive values as UTC
+
+> [!PITFALL]
+> A generated helper parses `2026-06-01T09:00:00` and later assumes the naive result is UTC. Another machine treats the same fields as local time, so serialization changes the instant without an error.
+
+**Fix:** require an explicit offset for instant-bearing input and convert it to an aware value at the boundary. Model unresolved civil input separately; never use a comment or variable name as its only time-zone contract.
+
+### Relabeling instead of converting
+
+> [!PITFALL]
+> `value.replace(tzinfo=ZoneInfo("UTC"))` keeps every field and merely gives it a new label. If `value` described Paris wall time, this silently creates a different instant.
+
+**Fix:** use `astimezone()` to preserve an existing instant. Use `replace(tzinfo=...)` only when the fields are intentionally being resolved as local civil time, followed by gap and overlap handling.
+
+### Storing an offset as a zone
+
+> [!PITFALL]
+> Saving `-04:00` for a New York recurrence captures one offset, not New York's rules. The schedule drifts by an hour in winter and cannot adapt to later rule changes.
+
+**Fix:** store the IANA zone identifier with the recurrence fields and define how rule-database updates affect future occurrences. Keep an explicit offset on resolved wire timestamps so each transmitted instant remains unambiguous.
+
+### Letting the library choose a transition policy
+
+> [!PITFALL]
+> Attaching `ZoneInfo` to `02:30` in a spring gap creates an object rather than rejecting the nonexistent local time. During an autumn overlap, the default `fold=0` silently selects the first occurrence.
+
+**Fix:** detect zero or two candidates by round-tripping through UTC, then apply a named product policy: reject, shift forward, choose earlier, choose later, or ask the user. Test real transitions in every supported scheduling zone.
+
+### Mixing calendar and elapsed arithmetic
+
+> [!PITFALL]
+> "Add one day" is implemented as fixed seconds in one path and same-zone field arithmetic in another. Both pass ordinary-date tests but disagree at clock changes, and month arithmetic adds a separate overflow question.
+
+**Fix:** put the semantic choice in the operation name and tests, such as `expires_after_hours` or `next_local_occurrence`. Assert both the resulting local fields and the timeline difference at transitions, month ends, leap days, and reverse moves.
+
+### Timing with the wall clock
+
+> [!PITFALL]
+> A timeout computes `datetime.now(UTC) - started_at`. Clock synchronization can move that source forward or backward, causing an early, late, or negative duration.
+
+**Fix:** use `time.monotonic()` or `time.monotonic_ns()` for elapsed work and deadlines. Record a separate UTC instant when logs need a civil timestamp; do not convert monotonic readings into dates.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often collapse every temporal value into a timestamp, append `Z` to naive text, or replace `tzinfo` when conversion was required. Generated recurrence code commonly stores the current offset, adds `86_400` seconds per day, accepts nonexistent local times, and never tests the second occurrence of an overlap. Timeout helpers also reach for wall-clock `datetime.now()` because its output looks familiar.
+
+**Ask your AI to check**
+
+- Classify every field as an instant, civil date, civil date-time, named-zone schedule, elapsed duration, or monotonic deadline.
+- Trace every parse, `replace`, `astimezone`, arithmetic operation, and serialization step; state which context is gained or discarded.
+- Generate boundary tests from the named zone's actual gap and overlap, plus a month end, leap day, negative interval, and clock adjustment.
+
+**Review checklist**
+
+- Every instant-bearing boundary specifies grammar, offset, precision, range, and integer unit.
+- Every local-time resolution names its IANA zone and its gap and overlap policy.
+- Every duration or deadline uses a suitable clock, and calendar operations assert local fields as well as elapsed time.
+
+**Prompt vocabulary**
+
+Use the exact terms `instant`, `civil time`, `aware datetime`, `naive datetime`, `UTC offset`, `IANA time zone`, `tzdata version`, `DST gap`, `DST overlap`, `fold`, `calendar arithmetic`, `elapsed duration`, `wall clock`, and `monotonic clock`. Ask for a temporal-type table and a conversion-boundary trace; "handle dates correctly" gives a model no testable contract.
+
+<Depth level="deep">
+
+## Resolving local time without guessing
+
+### Candidate instants
+
+Treat local-time resolution as a search for candidate instants, not as string parsing followed by a zone label. Start with validated calendar fields and a named zone. Try each supported overlap interpretation, project the candidate through UTC back into the zone, and keep it only if every local field returns unchanged.
+
+For an ordinary time, both `fold` attempts may collapse to the same instant; deduplicate by timeline value and keep one candidate. A gap yields no candidates because neither attempted instant round-trips to the requested fields. An overlap yields two distinct candidates with the same projected fields.
+
+This candidate count gives policy code a clean input:
+
+| Candidate count | Meaning | Policy choices |
+| --- | --- | --- |
+| `0` | Local time does not exist | Reject or shift by a documented rule |
+| `1` | Local time is unique | Accept |
+| `2` | Local time repeats | Choose earlier, choose later, or ask |
+
+"Shift forward" still needs a definition. It might move by the size of the offset change or select the first valid instant after the gap. Those policies can differ for unusual historical transitions, so the operation should state which one it implements.
+
+### Equality and ordering
+
+An aware `datetime` is not automatically safe to compare without checking the contract. If two operands have the same `tzinfo` object, Python comparison ignores `tzinfo` and `fold`, so the two repeated `01:30` values in the example compare equal despite representing different instants. Their timestamps do not compare equal.
+
+For timeline identity, normalize valid values to UTC or compare documented epoch units. For same civil fields, compare the date and time fields in an explicitly chosen zone. These are separate predicates and deserve separate names.
+
+Sorting audit events requires instant semantics. Sorting shop appointments shown on one local day may require civil order plus an occurrence tie-breaker during an overlap. A bare datetime comparison hides which ordering the caller wanted.
+
+### Precision, ranges, and time scales
+
+An epoch number needs a unit. Ten decimal digits often suggest seconds near the present and thirteen often suggest milliseconds, but magnitude guessing is not validation. Declare the unit in the schema and field name, reject values outside the domain range, and convert once.
+
+Precision also belongs to the contract. Python `datetime` stores microseconds, while databases and protocols may store fewer or more fractional digits. Define truncation or rounding before using timestamp equality, signatures, cache keys, or idempotency checks.
+
+Most civil application APIs, including Python `datetime`, do not represent leap seconds as a field value of `60`. UTC timestamps exchanged by different systems may also follow documented smear policies. Systems that need scientific time scales must name them explicitly rather than assuming Unix-like seconds provide that model.
+
+### Time-zone database changes
+
+Named zones are rules, and those rules have versions. Updating tzdata can change the resolved instant for a future appointment without changing its saved civil fields and zone. That may be the intended correction, or it may violate a published commitment.
+
+Choose a policy for future schedules: recompute using current rules, pin a rule-set version where the platform permits it, or persist the previously resolved instant and surface a conflict when rules change. The right choice depends on whether the promise was "09:00 local" or "this exact instant."
+
+Past event instants should remain stable across a database update. Their displayed historical offset may change if corrected rules are loaded, so an audit system that must reproduce exactly what a user saw may also preserve the rendered record or rule-set provenance.
+
+### Recurrence is a rule, not a list of seconds
+
+A recurrence combines fields, a calendar frequency, exceptions, a named zone when time-of-day matters, and transition policies. Expanding occurrences too far ahead creates stale instants after rule changes. Expanding too late may be unsuitable for reminders and capacity planning.
+
+Generate a bounded window, retain the recurrence rule, and make regeneration behavior explicit. Deduplicate by occurrence identity rather than formatted label because an overlap can produce two equal labels. A skipped occurrence needs an observable status instead of silently disappearing.
+
+Month and year recurrences need overflow rules. January 31 plus one month might clamp to February's end, skip February, or reject the recurrence. February 29 plus one year has the same policy question; a generic duration cannot answer it.
+
+### Test design
+
+Temporal tests should control every environmental input: current instant, locale, IANA zone, tzdata source where reproducibility requires it, and monotonic clock readings. Avoid expected values derived by the same helper under test. Use independently calculated instants or published transition data.
+
+Build a small boundary matrix:
+
+1. One ordinary unique local time.
+2. One time inside a real gap.
+3. Both occurrences inside a real overlap.
+4. A month-end or leap-day calendar move.
+5. A negative or already-expired duration.
+
+For each resolved schedule, assert the saved civil fields, zone identifier, selected policy, UTC instant, and round trip. For elapsed operations, assert the underlying duration separately from the displayed endpoints. This catches code that looks right in one representation while answering the wrong question.
+
+Property tests can add useful invariants. Projecting a valid instant into a zone and resolving those fields with the returned `fold` should recover the original instant within supported precision. Adding a duration and then subtracting it on the timeline should also round-trip unless an explicit range boundary intervenes.
+
+Operational diagnostics should log enough structured context to reconstruct a decision: input fields, zone identifier, offset, `fold` or named resolution policy, resolved UTC instant, and tzdata provenance when available. Avoid logging free-form user text merely because it accompanied a scheduling error.
+
+</Depth>
+
+<Checkpoint id="foundations/dates-and-time" />
+
+## Further reading
+
+- [Python `datetime` documentation](https://docs.python.org/3.14/library/datetime.html)
+- [Python `zoneinfo` documentation](https://docs.python.org/3.14/library/zoneinfo.html)
+- [Python `time.monotonic()` documentation](https://docs.python.org/3.14/library/time.html#time.monotonic)
+- [IANA time zone database theory](https://data.iana.org/time-zones/tzdb/theory.html)
+- [RFC 3339: Date and Time on the Internet](https://www.rfc-editor.org/rfc/rfc3339.html)

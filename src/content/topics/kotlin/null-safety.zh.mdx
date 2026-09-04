@@ -1,0 +1,404 @@
+---
+title: Kotlin 空安全
+description: 用可空类型、智能转换、安全调用与 Elvis 运算符表达缺失值，并在 Java 互操作和生成代码边界避免运行时空指针异常。
+track: kotlin
+section: functions-classes
+difficulty: beginner
+tags: [kotlin, null-safety, nullable-types, smart-casts, java-interop]
+prerequisites: [kotlin/fundamentals]
+related: [kotlin/collections, kotlin/scope-functions, kotlin/extensions, kotlin/sealed-classes]
+terms: [nullable-type, smart-cast, safe-call, elvis-operator, platform-type]
+verified: { version: 'Kotlin 2.4.10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: kotlin/null-safety
+sources:
+  - { title: 'Kotlin documentation source: Null safety', url: 'https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/null-safety.md' }
+  - { title: 'Kotlin documentation source: Type checks and casts', url: 'https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/typecasts.md' }
+  - { title: 'Kotlin documentation: Calling Java from Kotlin', url: 'https://kotlinlang.org/docs/java-to-kotlin-interop.html#nullability-annotations' }
+  - { title: 'Kotlin documentation source: Generics', url: 'https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/generics.md' }
+origin: old/src/content/docs/kotlin/null-safety.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Kotlin 把可否为 `null` 写进类型：`T` 表示非空值，`T?` 表示值也可能缺失。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `?.` 只会安全地传播 `null`，不会判断缺失是否符合业务规则；`!!` 则把检查推迟到运行时。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    在输入边界保留可空性，随后用智能转换、Elvis 提前返回或显式结果类型，把已验证的数据收窄为非空领域值。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Kotlin 空安全（null safety）把缺失值作为静态类型信息。普通的 `String` 不能保存 `null`，<Term id="nullable-type">可空类型</Term> `String?` 才能保存字符串或 `null`。调用方因此能从函数签名看出缺失是否属于契约，而不必依赖注释或等到解引用时才发现问题。
+
+这套设计把许多空指针错误移到编译期。如果接收者是 `String?`，编译器不会允许直接读取 `length`；代码必须先证明值非空、使用安全调用，或明确承担非空断言的风险。它减少的是未经检查的解引用，不是所有 `NullPointerException`。
+
+当数据库列、JSON 字段、查找结果、可选配置或 Java API 可能不给出值时，你会遇到可空类型。关键设计问题不是怎样最快去掉问号，而是 `null` 在当前边界代表什么：合法缺省、未找到、无效数据，还是程序状态错误。不同含义需要不同处理方式。
+
+空安全也不会自动验证空字符串、负数、过期值或对象之间的不变量。`String` 只能证明引用非空，不能证明文本非空白。进入领域层前仍要做内容校验，并让领域类型尽量只保存合法状态。
+
+## 工作原理
+
+### 两套相邻的类型
+
+对于一个非空类型 `T`，`T?` 是允许额外 `null` 值的可空版本。非空值可以赋给对应的可空变量，所以 `String` 的值可以用在需要 `String?` 的位置；反向赋值需要先处理 `null`。重复写问号没有新的含义，Kotlin 不存在独立的 `T??` 层级。
+
+可空性作用于它紧邻的类型。`List<String>?` 表示列表本身可能缺失，但存在的列表只含非空字符串；`List<String?>` 表示列表一定存在，而元素可能缺失；`List<String?>?` 两层都可空。函数类型同样需要看括号：`((String) -> Int)?` 是可空函数值，`(String) -> Int?` 是一定存在但可能返回 `null` 的函数。
+
+API 应只在缺失确实有意义时暴露 `T?`。查找不到记录可以返回 `User?`，但已通过身份验证的请求上下文若仍把必需的用户写成 `User?`，下游每一步都要重复处理一个本不该存在的状态。边界越早把输入规范化为有效非空值，后续代码的状态空间就越小。
+
+### 检查与智能转换
+
+显式检查是最直接的收窄方式。在 `if (name != null)` 的真分支里，编译器可以把稳定的 `name` 当作 `String`；若空分支已经 `return` 或 `throw`，检查后的路径也能使用非空类型。这种由控制流证明完成的收窄叫 <Term id="smart-cast">智能转换</Term>（smart cast），源码中没有运行时强制转换。
+
+智能转换要求编译器能保证检查和使用之间的值没有改变。局部 `val` 通常满足条件，未在期间修改或被修改型 lambda 捕获的局部 `var` 也可能满足条件。可变属性不会被智能转换，因为其他代码或自定义访问器可能在两次读取之间给出不同结果。
+
+遇到可变属性时，先读取一次局部快照通常是正确修复。`val email = account.email` 固定了本次操作观察到的引用，之后对 `email` 的非空检查可以支配使用点。用 `account.email!!` 绕过编译器既会重新读取属性，也会把竞态或自定义 getter 的变化变成运行时崩溃。
+
+`is` 类型检查也能同时证明类型和非空。例如，`value is String` 成立后，`value` 已是非空 `String`。如果转换失败本来就是普通分支，安全转换 `value as? String` 会返回 `String?`；普通的 `as String` 在类型不匹配时抛出 `ClassCastException`，并不属于空安全处理。
+
+### 用表达式处理缺失
+
+<Term id="safe-call">安全调用</Term> `?.` 在接收者非空时读取属性或调用函数，否则整个表达式返回 `null`。链式写法 `order?.customer?.address?.city` 会在第一个空接收者处停止。结果通常仍然可空，因为链条只回答能否得到值，没有决定得不到值时该怎么办。
+
+安全调用也可以出现在赋值左侧。如果 `account?.address?.city = computeCity()` 的任一接收者为 `null`，赋值被跳过，右侧的 `computeCity()` 也不会执行。这一点会影响带日志、计数或 I/O 的右侧表达式，不能只把它理解为简写的属性访问。
+
+<Term id="elvis-operator">Elvis 运算符</Term> `?:` 在左侧非空时返回左侧，否则才计算右侧。右侧可以是默认值，也可以是 `return` 或 `throw`，因为它们在 Kotlin 中可以出现在表达式位置。`val user = lookup(id) ?: return NotFound` 很适合在函数入口结束缺失分支，并让后续的 `user` 保持非空。
+
+`value?.let { use(it) }` 只在 `value` 非空时调用 lambda，并返回 lambda 的结果。这适合短小转换，却不比普通 `if` 更安全；如果 `use` 本身返回可空值，最终的 `null` 无法区分接收者缺失还是转换失败。需要保留原因时，应使用显式分支或带类型的结果。
+
+非空断言 `!!` 把可空表达式视为非空，实际值为 `null` 时抛出 `NullPointerException`。它适合让违反测试前置条件的测试立即失败，但在生产路径中通常说明不变量没有在边界表达清楚。优先使用 `requireNotNull` 给调用方错误、用 `checkNotNull` 表示对象状态错误，或用 Elvis 返回领域结果。
+
+常用工具的语义如下：
+
+| 写法 | 非空时 | 为空或失败时 | 结果特点 |
+| --- | --- | --- | --- |
+| `value?.member` | 访问成员 | 返回 `null` | 继续传播可空性 |
+| `value ?: fallback` | 返回 `value` | 延迟计算 `fallback` | 可提供非空结果或退出 |
+| `value?.let { transform(it) }` | 执行转换 | 不执行 lambda | 结果也可能由 lambda 产生 `null` |
+| `value as? T` | 返回转换后的 `T` | 返回 `null` | 同时处理类型不匹配 |
+| `value!!` | 返回非空值 | 抛出异常 | 将证明责任交给运行时 |
+
+### 缺失策略属于 API 契约
+
+同样的 `null` 在不同 API 中可能需要不同返回形状。缓存查询把 `null` 定义为未命中时，`Entry?` 已经足够；命令执行还要区分拒绝、冲突和依赖故障时，一个可空返回值会丢失信息。类型设计应先保留调用方需要采取行动的差别，再选择语法。
+
+处理可空输入时，可以按下面的顺序决定：
+
+1. 缺失是否合法；不合法就应在最接近输入的位置拒绝。
+2. 合法缺失是否只有一种含义；只有一种时才适合直接使用 `T?`。
+3. 调用方是否需要知道原因；需要时返回密封结果或抛出契约规定的异常。
+4. 默认值是否与显式提供该值完全等价；不等价时不能用 Elvis 抹平来源。
+
+常见边界可以映射为不同形状：
+
+| 边界语义 | 合适的形状 | 调用方得到的信息 |
+| --- | --- | --- |
+| 未命中且无需解释 | `T?` | 有值或无值 |
+| 缺失时采用等价默认值 | `T` 配合 `?:` | 已完成回退的值 |
+| 缺失违反调用契约 | 非空参数或 `requireNotNull` | 带责任归属的异常 |
+| 多种可恢复失败 | 密封结果类型 | 可穷举的原因与成功值 |
+
+默认值本身也属于业务数据。把缺少超时时间写成 `timeout ?: 30`，等于承诺“未配置”与“明确配置 30”对后续所有行为没有区别。如果系统需要展示继承来源、支持配置回写或审计变更，就必须保留是否缺失的信息。
+
+`requireNotNull(value)` 在失败时抛出 `IllegalArgumentException`，适合检查调用者传入的参数；`checkNotNull(value)` 抛出 `IllegalStateException`，适合检查接收对象或当前执行阶段。二者都返回非空值，因此可以直接赋给局部变量。它们比 `!!` 多表达了责任归属，但仍不适合正常的未找到分支。
+
+公开函数还要让 Java 调用方看懂契约。参数声明为 `String?` 表示函数必须接受 Java 传入的 `null`，参数声明为 `String` 则会在 Kotlin 生成的入口检查非空。实现中的安全调用不能弥补签名选错，因为兼容性和调用方生成代码都先观察签名。
+
+### 相等性与可空布尔值
+
+Kotlin 的结构相等运算符 `==` 可以安全比较可空引用。`left == right` 会处理两边都为 `null` 的情况，不需要先写安全调用；不等运算符 `!=` 同样安全。引用相等 `===` 比较是否为同一个对象，也允许两侧为 `null`，但它回答的是身份问题，不是值是否相等。
+
+`Boolean?` 有三个状态，而条件表达式要求 `Boolean`。`flag == true` 只在值明确为 `true` 时成立，`false` 与 `null` 都进入另一分支；`flag ?: false` 也会合并后两种状态。只有业务确实把“未知”当作“否”时，这种折叠才正确。
+
+需要保留三个状态时，使用 `when (flag)` 分别处理 `true`、`false` 和 `null`。这不仅避免编译错误，也让新增日志、指标或用户提示时仍能定位未知来源。把 `Boolean?` 到处改成 `Boolean` 并填 `false`，通常是在数据模型层提前丢失信息。
+
+### 可空接收者扩展仍会执行
+
+扩展函数可以把接收者声明为可空类型，例如 `fun String?.display(): String`。调用 `name.display()` 时，即使 `name` 是 `null`，函数体仍会执行，体内的 `this` 保持 `String?`。这种设计适合为一种类型集中定义稳定的缺失表示。
+
+调用点写成 `name?.display()` 会改变语义：接收者为空时，安全调用直接跳过扩展函数体，结果为 `null`。如果 `display()` 原本要把 `null` 变成占位文本，额外的 `?.` 反而绕过了回退。评审扩展调用时，要同时查看扩展的接收者类型和调用运算符。
+
+可空接收者扩展不应隐藏需要上下文的业务决策。同一个缺失名称在日志中可能应显示固定标记，在用户界面中可能需要本地化文本，在持久化层则可能必须保留 `null`。这些策略属于各自边界，不适合塞进一个全局字符串扩展。
+
+测试这类扩展至少覆盖四个输入：`null`、空字符串、空白字符串和普通值。还应分别调用 `value.extension()` 与 `value?.extension()`，因为两种写法在接收者为空时走不同路径。只测试非空值会完全错过该 API 最特殊的契约。
+
+## 示例
+
+下面四个程序从读取可空值逐步推进到边界规范化和泛型集合。每个文件都已使用 Kotlin 2.4.10 编译器编译，并在 JRE 21 上运行；紧随代码的输出来自实际执行。
+
+### 收窄一次，继续使用非空值
+
+第一个程序把可空输入留在 `label` 的入口。Elvis 运算符在资料不存在时提前返回；此后局部变量 `current` 是非空 `Profile`，只有真正可选的 `bio` 继续使用安全调用链。
+
+<Depth level="quick">
+
+```kotlin title="nullable_profile.kt"
+data class Profile(val handle: String, val bio: String?)
+
+fun label(profile: Profile?): String {
+    val current = profile ?: return "missing profile"
+    val detail = current.bio
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: "no bio"
+    return "${current.handle}: $detail"
+}
+
+fun main() {
+    val profiles = listOf(
+        Profile("ada", "  compiler engineer  "),
+        Profile("lin", null),
+        null,
+    )
+
+    profiles.forEach { println(label(it)) }
+}
+```
+
+```text
+ada: compiler engineer
+lin: no bio
+missing profile
+```
+
+</Depth>
+
+`takeIf` 把空白简介也变成 `null`，所以 `?: "no bio"` 同时处理原始缺失和校验失败。这在两种情况业务含义相同时很合适；若界面必须区分未填写和只填了空格，就要保留独立分支。
+
+函数返回 `String`，因此调用方不用继续处理可空结果。这个签名说明 `label` 已经完整处理了输入缺失，而不是把决定推给下一层。
+
+### 安全调用和 Elvis 都会短路
+
+第二个程序展示两种惰性行为。`displayCity` 只在安全调用链得到 `null` 时计算默认城市；左侧安全赋值找不到接收者时，也不会计算右侧。
+
+```kotlin title="safe_calls.kt"
+data class Address(var city: String?)
+data class Account(val address: Address?)
+
+fun defaultCity(): String {
+    println("default computed")
+    return "unknown"
+}
+
+fun displayCity(account: Account?): String =
+    account?.address?.city ?: defaultCity()
+
+fun main() {
+    val known = Account(Address("Lyon"))
+    val absent: Account? = null
+
+    println(displayCity(known))
+    println(displayCity(absent))
+
+    var writes = 0
+    absent?.address?.city = run {
+        writes += 1
+        "ignored"
+    }
+    known.address?.city = "Paris"
+
+    println(known.address?.city)
+    println(writes)
+}
+```
+
+```text
+Lyon
+default computed
+unknown
+Paris
+0
+```
+
+读取已知城市不会打印 `default computed`，说明 Elvis 右侧没有提前求值。`writes` 最后仍为 `0`，则证明接收者缺失时，安全赋值右侧的 `run` 整体被跳过。
+
+这种短路能避免无用工作，也可能隐藏预期的副作用。若审计记录无论对象是否存在都必须写入，就应把记录操作放在安全调用之外，并显式记录失败原因。
+
+### 在边界保留失败原因
+
+第三个程序模拟把宽松的外部记录转换为领域对象。原始字段保持可空或未知类型，解析函数用安全转换、内容校验和提前返回，一次性构造只含有效非空属性的 `Order`。
+
+```kotlin title="boundary_normalization.kt"
+data class RawOrder(val id: String?, val cents: Int?, val customer: Any?)
+data class Order(val id: String, val cents: Int, val customer: String)
+
+sealed interface ParseResult {
+    data class Valid(val order: Order) : ParseResult
+    data class Invalid(val reason: String) : ParseResult
+}
+
+fun parseOrder(row: RawOrder): ParseResult {
+    val id = row.id?.trim()?.takeIf { it.isNotEmpty() }
+        ?: return ParseResult.Invalid("missing id")
+    val cents = row.cents?.takeIf { it >= 0 }
+        ?: return ParseResult.Invalid("invalid cents")
+    val customer = (row.customer as? String)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: return ParseResult.Invalid("invalid customer")
+
+    return ParseResult.Valid(Order(id, cents, customer))
+}
+
+fun main() {
+    val rows = listOf(
+        RawOrder(" A-7 ", 950, " Ada "),
+        RawOrder("B-2", null, "Lin"),
+        RawOrder("C-3", 400, 42),
+    )
+
+    rows.map(::parseOrder).forEach(::println)
+}
+```
+
+```text
+Valid(order=Order(id=A-7, cents=950, customer=Ada))
+Invalid(reason=invalid cents)
+Invalid(reason=invalid customer)
+```
+
+这里没有用 `!!`，因为每个局部变量都由 Elvis 的提前返回收窄。成功分支只能携带完整的 `Order`，失败分支则保留字段级原因；两者比一个含多个可空属性的半成品更容易使用。
+
+`as? String` 把类型不匹配纳入普通失败路径，而不是抛出 `ClassCastException`。它不负责验证字符串内容，所以后面的 `trim` 和 `takeIf` 仍然必要。
+
+### 区分可空集合与可空元素
+
+第四个程序为泛型增加 `T : Any` 上界，使成功结果不能包含 `null`。缺失的整个标签列表被定义为空列表，但已出现的列表若含空元素，就被视为损坏数据并报告索引。
+
+```kotlin title="nullable_collections.kt"
+fun <T : Any> requireAll(values: List<T?>): List<T> =
+    values.mapIndexed { index, value ->
+        requireNotNull(value) { "value at index $index is null" }
+    }
+
+fun normalizedTags(raw: List<String?>?): List<String> {
+    val tags = raw ?: return emptyList()
+    return requireAll(tags).map(String::trim)
+}
+
+fun main() {
+    println(normalizedTags(listOf("red", "blue")))
+
+    val message = runCatching {
+        normalizedTags(listOf("red", null, "blue"))
+    }.exceptionOrNull()?.message
+    println(message)
+
+    println(normalizedTags(null).size)
+}
+```
+
+```text
+[red, blue]
+value at index 1 is null
+0
+```
+
+如果改用 `filterNotNull()`，程序会安静地删除损坏元素，输出长度也会改变。只有当丢弃元素就是契约时才应这样做；需要保持位置或数量时，校验并报告索引更可靠。
+
+`raw ?: return emptyList()` 是一项明确的业务决定，不是空安全规则。若缺失列表与空列表含义不同，返回类型应保留这种差别，例如使用密封结果，而不是机械调用 `orEmpty()`。
+
+## 陷阱
+
+> [!PITFALL]
+> 在生产路径用 `!!` 消除编译错误，会把未证明的不变量变成延迟发生的 `NullPointerException`，而且异常通常丢失领域上下文。
+
+**修复：** 先判断 `null` 属于调用方错误、对象状态错误还是正常分支，再分别使用 `requireNotNull`、`checkNotNull` 或 Elvis 返回。只有当崩溃本身就是测试断言的一部分时，`!!` 才能清楚表达意图。
+
+> [!PITFALL]
+> 过长的 `?.` 链配上一个通用默认值，会把多个不同故障压成同一个结果，例如把缺少账户、缺少地址和空城市都显示成 `unknown`。
+
+**修复：** 对真正可选的尾部字段使用安全调用；对必需的中间对象，在边界逐项校验并返回具体错误。评审时列出链中每个可能产生 `null` 的位置，确认它们是否真的共享一个业务含义。
+
+> [!PITFALL]
+> 检查可变属性后再读取它，既可能无法智能转换，也可能因自定义 getter 或并发修改而观察到另一个值；自动生成的修复常直接追加 `!!`。
+
+**修复：** 把属性读取到局部 `val`，对这个快照检查并使用。如果操作必须针对最新值保持原子性，局部快照仍不够，应在状态所有者内部加锁或提供一个原子操作。
+
+> [!PITFALL]
+> `List<T>?`、`List<T?>` 和 `List<T?>?` 表达不同契约；随手使用 `orEmpty()` 或 `filterNotNull()` 会分别抹掉容器缺失和元素缺失的信息。
+
+**修复：** 为容器和元素分别定义 `null` 的含义，并测试数量、顺序和索引。数据损坏时应拒绝输入；只有产品规则允许忽略缺失项时才过滤。
+
+> [!PITFALL]
+> 从 Java 得到的平台类型可以被当作非空值使用，但 Java 实现仍可能返回 `null`；代码看起来没有可空类型，却会在赋值检查或成员调用处失败。
+
+**修复：** 在互操作边界查看 Java 的可空性注解，把未注解或不可信的结果立即赋给显式 `T?`，然后规范化。不要用一次测试结果、接口文档中的示例或生成器的猜测替代真实注解和边界测试。
+
+## AI 时代
+
+**生成代码在这里常犯的错误**
+
+模型常根据一份始终带值的 JSON 样例，把可选字段生成为非空属性，随后在反序列化或映射代码里补 `!!`。它也会把长安全调用链结尾统一成 `?: emptyList()`，从而把服务缺失、解析失败和合法空结果混在一起；或用 `filterNotNull()` 让批量记录数量悄悄减少。Java 互操作代码里，模型还会把平台类型直接推断为非空局部变量，并假定未注解的第三方方法遵守样例行为。
+
+**让 AI 检查这些内容**
+
+- 列出每个 `?`、`?.`、`?:`、`as?` 和 `!!` 的位置，并说明该处 `null` 的具体领域含义和失败路径。
+- 沿着反序列化、数据库和 Java 调用边界追踪可空性，确认第一次转换为非空值之前完成了哪些运行时校验。
+- 找出 `orEmpty()`、`filterNotNull()` 和通用默认值导致数量、顺序、错误原因或审计行为变化的位置。
+
+**评审清单**
+
+- 用字段缺失、显式 `null`、空白文本、错误运行时类型和含空元素的集合测试每个外部输入边界。
+- 把所有 `!!` 当作待证明的断言，确认其不变量由同一控制流、同步边界或可信注解保证。
+- 对每条安全调用链逐段置空，验证得到的是预期领域结果，而不是被默认值掩盖的故障。
+
+**提示词汇**
+
+使用准确术语 `nullable type`（可空类型）、`non-null type`（非空类型）、`safe call`（安全调用）、`Elvis operator`（Elvis 运算符）、`smart cast`（智能转换）、`not-null assertion`（非空断言）、`platform type`（平台类型）、`nullability annotation`（可空性注解）和 `definitely non-nullable type`（确定非空类型）。要求模型给出“可空性来源到验证点的路径”，比笼统地要求“让代码空安全”更容易暴露错误假设。
+
+<Depth level="deep">
+
+## Java 边界与平台类型
+
+### 平台类型不是非空承诺
+
+Java 源码通常没有 Kotlin 类型系统所需的完整可空性信息。Kotlin 编译器把这类 Java 表达式表示为 <Term id="platform-type">平台类型</Term>（platform type），诊断和 IDE 中常显示为 `String!` 一类形式；这个感叹号不是可以写进 Kotlin 类型声明的语法。
+
+平台类型具有灵活性：调用方可以把结果当作可空或非空类型，也可以直接访问成员。这样才能平滑调用既有 Java API，但风险并未消失。若实际结果是 `null`，赋给非空 Kotlin 变量时插入的检查或随后成员调用仍会失败。
+
+受支持的 `@Nullable` 与 `@NotNull` 一类注解会让编译器增强 Java 签名。增强后的可空返回值必须按 `T?` 处理，非空返回值可以按 `T` 使用；注解与实现不一致时，运行时仍可能违反契约。因此，第三方边界既要检查注解，也要用返回 `null` 的测试替身验证失败行为。
+
+平台类型应尽快离开核心领域逻辑。把 Java 结果先保存为显式 `T?`，完成缺省、拒绝或错误映射，再向内部返回 `T` 或领域结果。这样，风险集中在一个适配器中，后续调用不会反复猜测 Java 方法的约定。
+
+### 库边界需要双向验证
+
+Kotlin 编译器会为非空参数和部分返回路径生成运行时检查，但这些检查是契约的后卫，不是输入解析器。Java 调用方传入 `null` 时，失败通常发生在 Kotlin 方法入口；异常能阻止无效值继续传播，却不能替代面向调用方的校验结果或协议错误。
+
+从 Kotlin 导出给 Java 的 API 时，应同时编译一个 Java 使用方。测试要覆盖传入 `null`、接收可空返回值以及泛型参数，因为 Kotlin 调用点能看到的信息可能比 Java 源码更丰富。只在 Kotlin 测试中使用同一 API，无法证明互操作签名易用或注解正确。
+
+从 Java 导入时，则先检查声明位置、类型参数和覆盖链上的可空性注解。实现类可能继承接口契约，库升级也可能增强原本的平台类型；重新编译后，警告或类型错误可能改变。适配器测试应锁定你依赖的行为，而不是锁定 IDE 曾经显示的 `!`。
+
+对于反射和序列化框架，还要测试它们是否绕过构造函数、属性 setter 或参数检查。静态声明为非空并不保证每种对象创建路径都执行了同一验证。把框架产生的对象先当作外部数据验证，再交给领域服务，可把这种不确定性留在边界层。
+
+### 泛型默认允许可空类型实参
+
+未写上界的 Kotlin 类型参数默认上界是 `Any?`。因此 `fun <T> keep(value: T): T` 可以用 `String?` 作为 `T`，函数体不能假定 `value` 非空。需要拒绝可空类型实参时，声明 `T : Any`，正如示例中的 `requireAll`。
+
+`T : Any` 约束类型实参，而 `T & Any` 表达确定非空类型（definitely non-nullable type）。后者要求 `T` 原本有可空上界，主要用于覆盖带非空注解的 Java 泛型成员。纯 Kotlin API 通常用普通上界和类型推断即可，不应为了看起来更严格而到处添加交集写法。
+
+泛型擦除也不会在运行时恢复元素可空性。一个外部框架可能把含 `null` 的数据交给静态声明为 `List<String>` 的边界，尤其是通过 Java、反射或不安全转换时。对不可信数据的结构和元素仍需在进入领域模型前验证。
+
+### 仍可能出现的空指针异常
+
+Kotlin 文档列出的运行时来源包括显式 `throw NullPointerException()`、对 `null` 使用 `!!`、初始化期间的数据不一致，以及 Java 互操作。`lateinit` 属性在赋值前访问会抛出 `UninitializedPropertyAccessException`；它避免了可空属性，却没有证明初始化顺序正确。
+
+空安全是一套编译期契约，不是对运行时对象图的净化器。反射、反序列化器、Java 实现和并发状态都可能越过静态假设。边界测试应故意提供 `null`，并断言系统在最接近来源的位置给出有意义的失败，而不是在远处偶然解引用。
+
+</Depth>
+
+<Checkpoint id="kotlin/null-safety" />
+
+## 延伸阅读
+
+- [Kotlin 官方文档源码：空安全](https://raw.githubusercontent.com/JetBrains/kotlin-web-site/master/docs/topics/null-safety.md)
+- [Kotlin 官方文档：类型检查与转换](https://kotlinlang.org/docs/typecasts.html)
+- [Kotlin 官方文档：Java 互操作中的可空性注解](https://kotlinlang.org/docs/java-to-kotlin-interop.html#nullability-annotations)
+- [Kotlin 官方文档：确定非空类型](https://kotlinlang.org/docs/generics.html#definitely-non-nullable-types)

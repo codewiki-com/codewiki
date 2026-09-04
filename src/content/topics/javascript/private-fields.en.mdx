@@ -1,0 +1,404 @@
+---
+title: JavaScript private fields
+description: 'Use # private fields, methods, and brand checks to encapsulate class state without breaking inheritance, proxies, serialization, or callbacks.'
+track: javascript
+section: core
+difficulty: intermediate
+tags: [classes, private-fields, encapsulation, brand-checks]
+prerequisites: [javascript/classes, javascript/objects-prototypes]
+related: [javascript/proxy-reflect, javascript/weakmap-weakset, javascript/closures]
+terms: [private-field, encapsulation, private-brand]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/private-fields
+sources:
+  - { title: 'ECMAScript language specification - Field definitions', url: 'https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-field-definitions' }
+  - { title: 'MDN - Private elements', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements' }
+  - { title: 'V8 - Private brand checks', url: 'https://v8.dev/features/private-brand-checks' }
+  - { title: 'MDN - Proxy', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy' }
+origin: old/src/content/docs/javascript/private-fields.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Private fields, methods, and accessors start with `#` and can be used only inside the class body that declares them. At each access, the engine also checks that the receiver carries that class's private brand.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Private elements aren't ordinary properties, so reflection, spread, and automatic serialization ignore them. They don't follow the prototype chain either, which means a wrong `this`, a `Proxy`, or a derived class can cause a `TypeError`.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Keep private state inside the class and return validated projections through public methods. Test the real callback, proxy, and inheritance paths, and design serialization boundaries explicitly.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A <Term id="private-field">private field</Term> is a class element whose name starts with `#`, such as `#balance`. The same syntax can declare private methods, getters, setters, and static members. These elements give classes a language-enforced <Term id="encapsulation">encapsulation</Term> boundary, instead of treating an `_balance` naming convention as access control.
+
+A private name can appear only inside the class body that declares it. If `account.#balance` appears outside that class, the whole script gets a `SyntaxError` during parsing, so an outer `try...catch` can't catch it. `account['#balance']` is valid syntax, but it accesses an ordinary public property named `"#balance"`, not the private field.
+
+You meet private elements in classes that maintain invariants, such as a balance that changes only after amount validation or a cache index that callers must not replace. A private boundary also lets an implementation change its internal representation without changing the public API. It isn't encryption, authorization, or secret storage, however; the class can still expose the value, and it doesn't constrain debuggers or an attacker already running code in the process.
+
+Private fields fit state wholly owned by one class. If a framework must enumerate the fields, a generic serializer must copy them, or subclasses need direct extension access, ordinary properties with an explicit public contract may fit better. Decide who can read and mutate the state before choosing the syntax.
+
+## How it works
+
+When the class definition is parsed, the engine establishes a lexical set of private names. Every `#name` must resolve to a declaration in the current class body; a same-named string or `Symbol` can't stand in for it. This static relationship makes a misspelled private name fail before the code runs.
+
+When an instance is created, the class installs its private elements on the object. For a later `object.#name` access, the engine first performs a <Term id="private-brand">private brand</Term> check: the receiver must have gone through that class's initialization. The check doesn't depend on `instanceof`, the constructor's name, or the shape of the prototype, so an object with matching public properties can't fake it.
+
+### Declaration and initialization
+
+A private field must be declared in the class body. It can be initialized at the declaration, or it can receive `undefined` before the constructor assigns it. Field initializers run in source order. An earlier initializer can read fields already initialized, but it can't read a later private field that hasn't been installed yet.
+
+Instance fields belong to individual instances; static fields belong to the class constructor that defines them. Private methods and accessors use the same lexical access restriction. `delete this.#name` is a syntax error; represent absence by assigning `undefined`, `null`, or a domain-specific sentinel.
+
+### Brands and receivers
+
+A private access checks the actual object on the left side of the expression. A class method can read a private field from another instance of the same class because the access code remains inside the declaring class and the other instance carries the same brand. Call that method without its instance, and `this` becomes `undefined` or another object, causing a `TypeError` at the private access.
+
+Inside the declaring class, `#name in value` checks whether an object has the matching brand. It doesn't search the prototype chain, and it isn't the same as `'#name' in value`. A right-hand side that is `null` or another non-object still causes a `TypeError`, so a check that accepts unknown input should reject those values first.
+
+### Private elements aren't properties
+
+Ordinary properties have string or `Symbol` keys and descriptors such as writable, enumerable, and configurable. Private elements aren't part of that property model, so `Object.keys()`, `Reflect.ownKeys()`, `Object.getOwnPropertyDescriptors()`, and `for...in` can't see them. Object spread, `Object.assign()`, and `JSON.stringify()` don't automatically copy or output them either.
+
+That invisibility prevents accidental exposure, but it doesn't protect a mutable object referenced by a field. If a public getter returns a private array directly, callers can still mutate that same array. Real encapsulation depends on whether the public API returns a read-only view, a suitable copy, or selected data; the `#` token alone is insufficient.
+
+## Examples
+
+These four examples cover basic encapsulation, brand checks, proxy receivers, and static-private inheritance. Every output below comes from running the corresponding file locally with Node 24.14.0.
+
+### Maintaining a balance through a public API
+
+`Wallet` lets only integer cent amounts enter its state and uses `toJSON()` to choose what becomes public. Reflection sees only ordinary properties, so this instance has no enumerable own keys.
+
+<Depth level="quick">
+
+```javascript run title="wallet.js"
+class Wallet {
+  #cents;
+
+  constructor(openingCents = 0) {
+    this.#checkAmount(openingCents);
+    this.#cents = openingCents;
+  }
+
+  #checkAmount(cents) {
+    if (!Number.isInteger(cents) || cents < 0) {
+      throw new RangeError('amount must be a non-negative integer');
+    }
+  }
+
+  deposit(cents) {
+    this.#checkAmount(cents);
+    this.#cents += cents;
+    return this.#cents;
+  }
+
+  toJSON() {
+    return { balanceCents: this.#cents };
+  }
+}
+
+const wallet = new Wallet(2000);
+console.log(wallet.deposit(500));
+console.log(Reflect.ownKeys(wallet));
+console.log(JSON.stringify(wallet));
+```
+
+```text
+2500
+[]
+{"balanceCents":2500}
+```
+
+<TryToBreak items={['a zero opening balance', 'a negative deposit', 'a fractional cent amount']} />
+
+</Depth>
+
+`#cents` didn't enter the JSON merely because it was hidden from enumeration. The balance appears because `toJSON()` explicitly returns it; without that method, the instance would serialize as `{}`. Serialization is a public API decision, not an automatic property of a private field.
+
+The validation method is private too. Callers can change the balance only through the constructor and `deposit()`, keeping the "cent amount must be a non-negative integer" invariant in one place. Any other public method that writes the balance must still apply the same validation.
+
+### Checking brands and separating same-named fields
+
+Privacy is scoped to a class declaration, not to the spelling of a name. `GuestPass` can declare `#code` again; it is a separate element from `AccessPass`'s `#code`.
+
+```javascript run title="access-pass.js"
+class AccessPass {
+  #code;
+
+  constructor(code) {
+    this.#code = code;
+  }
+
+  static hasBrand(value) {
+    return typeof value === 'object' && value !== null && #code in value;
+  }
+
+  readCodeOf(other) {
+    return other.#code;
+  }
+}
+
+class GuestPass extends AccessPass {
+  #code = 'lobby';
+
+  codes() {
+    return [this.readCodeOf(this), this.#code].join(',');
+  }
+}
+
+const first = new AccessPass('A-17');
+const second = new AccessPass('B-42');
+const guest = new GuestPass('G-07');
+
+console.log(AccessPass.hasBrand(first));
+console.log(AccessPass.hasBrand({ code: 'A-17' }));
+console.log(first.readCodeOf(second));
+console.log(guest.codes());
+```
+
+```text
+true
+false
+B-42
+G-07,lobby
+```
+
+`first` can read `second`, showing that the privacy is class-level rather than "this instance only." An object literal with the same string value doesn't have the `AccessPass` brand. A brand check normally isn't complete input validation; it says only that the object went through that class's initialization.
+
+A derived instance receives the base private elements while `super()` runs, so inherited base methods can read the base `#code`. Source inside `GuestPass` still can't refer directly to the base private name. A `#code` written in the derived class body resolves only to the derived declaration.
+
+### A proxy doesn't transfer the private brand
+
+After a `Proxy` wraps a target, the default receiver of a method call is the proxy. The proxy can forward an ordinary property read, but it doesn't inherit the target object's private brand.
+
+```javascript run title="proxy-receiver.js"
+class Meter {
+  #value = 0;
+
+  add(step) {
+    this.#value += step;
+    return this.#value;
+  }
+
+  read() {
+    return this.#value;
+  }
+
+  static hasBrand(value) {
+    return #value in value;
+  }
+}
+
+const target = new Meter();
+const directProxy = new Proxy(target, {});
+
+try {
+  directProxy.add(1);
+} catch (error) {
+  console.log(`direct proxy: ${error.name}`);
+}
+
+const boundProxy = new Proxy(target, {
+  get(targetObject, property) {
+    const value = Reflect.get(targetObject, property, targetObject);
+    return typeof value === 'function' ? value.bind(targetObject) : value;
+  },
+});
+
+console.log(boundProxy.add(2));
+console.log(Meter.hasBrand(target), Meter.hasBrand(boundProxy));
+```
+
+```text
+direct proxy: TypeError
+2
+true false
+```
+
+The bound wrapper makes the method run on `target`, so this example works, but it hasn't copied the brand to the proxy. This generic `get` trap may also create a new bound function on every read and change method identity. Production code usually benefits from explicit forwarding methods for the operations that need proxying instead of assuming a wrapper is fully transparent.
+
+The same failure occurs with a detached method, such as passing `meter.add` directly to a callback API. Pass `(step) => meter.add(step)`, or bind the receiver once when registering. Tests must use the real callback path; a direct `meter.add(1)` test won't expose the problem.
+
+### Static private fields belong to the declaring class
+
+A public static method is inherited by derived classes, but a base static private field doesn't become the derived class's own private field. With polymorphic `this.#next`, the receiver selected by the caller affects the brand check.
+
+```javascript run title="static-private.js"
+class IdSource {
+  static #next = 100;
+
+  static takeViaThis() {
+    return this.#next++;
+  }
+
+  static takeFromBase() {
+    return IdSource.#next++;
+  }
+}
+
+class RegionalSource extends IdSource {
+  static #next = 900;
+
+  static takeRegional() {
+    return this.#next++;
+  }
+}
+
+console.log(IdSource.takeViaThis());
+try {
+  RegionalSource.takeViaThis();
+} catch (error) {
+  console.log(`derived receiver: ${error.name}`);
+}
+console.log(RegionalSource.takeFromBase());
+console.log(RegionalSource.takeRegional());
+```
+
+```text
+100
+derived receiver: TypeError
+101
+900
+```
+
+Inside `RegionalSource.takeViaThis()`, `this` is the derived constructor, which lacks the base class's static private brand. It doesn't matter that the derived class also declares a `#next`: the private name in the base method is lexically bound to the declaration in `IdSource`.
+
+If the counter must be shared across the inheritance hierarchy, the base method should explicitly use `IdSource.#next` and accept that this part isn't polymorphic. If each derived class needs an independent counter, use a public registry or let each class implement the method. One private name can't express both ownership models.
+
+## Pitfalls
+
+### Putting a syntax error inside `try...catch`
+
+> [!PITFALL]
+> `instance.#secret` outside the class fails while the script is parsed, before control flow starts. Generated code often wraps the line in `try...catch`, leaving the entire test file unable to load.
+
+**Fix:** test behavior through the class's public methods. If you really need to verify illegal syntax, pass a source string to an isolated parser or the `Function` constructor and assert that compilation fails; don't place the illegal expression directly in the current file.
+
+### Returning a private mutable object
+
+> [!PITFALL]
+> `get items() { return this.#items; }` exposes the same array reference. A caller can run `push()` and bypass the class's checks; the private field name hasn't made the array read-only.
+
+**Fix:** return a projection, iterator, or copy of the depth required by the API contract. If element objects are mutable too, copying only the outer array isn't enough. State which levels may be shared and test the mutation paths.
+
+### Assuming a subclass has direct access
+
+> [!PITFALL]
+> A derived class can't read a base private field directly, even when both classes declare a `#value` with the same spelling. A static method using `this.#value` can also fail when its receiver is a derived class.
+
+**Fix:** when a base class deliberately provides an extension point, expose a narrowly scoped public or controlled method. Decide whether static state belongs to the base class or to each derived class, then choose an explicit base name, a public registry, or a per-class implementation.
+
+### Losing the method receiver
+
+> [!PITFALL]
+> Passing an instance method as a bare function to `map()`, an event registrar, or a test stub loses the original `this`. An empty `Proxy` also makes the proxy the receiver, so ordinary properties may look fine until the first private access throws `TypeError`.
+
+**Fix:** use an explicit arrow wrapper at the API boundary, or bind the method once. Design proxy forwarding one operation at a time and test method identity, getters, setters, and private access instead of checking only one ordinary property read.
+
+### Treating freezing and cloning as private-state operations
+
+> [!PITFALL]
+> `Object.freeze(instance)` handles only object properties, so class methods can still mutate private fields. Object spread, `structuredClone()`, and default JSON serialization omit private state, and the clone doesn't have the original class's private brand.
+
+**Fix:** enforce immutability through the class's public mutation interface. For persistence or cross-thread transfer, define an explicit data format and reconstruction function, then test the round trip. A successful return from a generic object utility doesn't mean it copied a complete class instance.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models put `obj.#token` outside its class and wrap it in `try...catch`, making the file fail to parse instead of handling a runtime error. They also use `obj['#token']`, `Object.hasOwn()`, or object spread to "inspect" a private field, but those operations see only ordinary properties. During a callback refactor or `Proxy` addition, a model may preserve the method body while changing its receiver. Generated static factories often use `this.#counter` in an inheritable method and test only the base call. Another common leak is a public getter that returns the private array itself, or a `toJSON()` method that re-exposes a token that was meant to stay inside the boundary.
+
+**Ask your AI to check**
+
+- List the declaring class and every access site for each private name, then state which private brands each receiver is expected to carry.
+- Run detached callbacks, proxy calls, and derived static calls through their real paths, reporting the exact receiver and exception type.
+- Audit spread, cloning, freezing, and serialization boundaries, distinguishing omitted private state from leaked mutable references.
+
+**Review checklist**
+
+- Confirm that no class-external `#name` access makes the file unparseable and that no string key `"#name"` is mistaken for a private field.
+- Exercise methods with a wrong receiver, a proxy, and a derived class; confirm that binding and state ownership match the design.
+- Inspect every public return value and serialized record for secrets or internal mutable objects, and test the brand after reconstruction.
+
+**Prompt vocabulary**
+
+Use the exact terms `private element`, `private field`, `private name`, `private brand`, `brand check`, `receiver`, `wrong receiver`, `lexical access`, and `static private field`. Ask for a table with "declaring class, access site, actual receiver, expected brand" rather than asking only for an encapsulation review.
+
+<Depth level="deep">
+
+## Initialization, brands, and object boundaries
+
+### When initialization happens
+
+Base instance fields initialize before the base constructor body starts. Derived instance fields initialize after `super()` returns and before the remaining statements in the derived constructor. A base constructor can therefore see its own private fields, but not a derived field, private or public, that hasn't been installed yet.
+
+Field initializers in one class run in declaration order. An earlier initializer that reads a later public field usually gets `undefined`; reading a later private field that hasn't been installed yet fails its brand check with a `TypeError`. Put dependent fields in a clear order, and move involved validation to the constructor when that makes the sequence easier to see.
+
+| Element | Initialization point | Owner |
+| --- | --- | --- |
+| Base instance private field | Before the base constructor body | Each instance |
+| Derived instance private field | After `super()` returns | Each derived instance |
+| Static private field | While the class definition is evaluated | The declaring class constructor |
+
+`this` in an instance field initializer is the object being constructed; in a static field initializer it is the current class. An initializer can call a method, but that code may read a later field that isn't initialized. Constructor tests should cover the real inheritance path rather than instantiating only a leaf or only the base.
+
+### Class-private doesn't mean instance-private
+
+The visible scope of a private name is the declaring class body, so class code can access any object with the matching brand, including objects other than its current `this`. That supports comparing internal state across two instances, but it also means a class method accepting an arbitrary object must handle a brand mismatch. A direct access throws `TypeError`; when you need a Boolean result, validate that the input is an object before using `#name in value`.
+
+A normally constructed derived instance carries both the base and derived brands installed by their respective classes. Base methods can therefore run on the derived instance, while derived source still can't name the base private elements. Private access doesn't search the prototype chain, and changing an object's prototype can't add or remove a brand.
+
+A proxy has a new object identity. Even when its target carries a brand, the proxy doesn't pass that check, and private access doesn't trigger `get`, `set`, or `has` traps. If a library relies on proxies to observe every state change, a `#` private field creates a channel that observation mechanism can't see.
+
+### Reflection, integrity, and copying
+
+The following APIs answer different questions and aren't interchangeable:
+
+| Operation | Handles private elements | Actual result |
+| --- | --- | --- |
+| `Reflect.ownKeys(value)` | No | Returns only string and `Symbol` keys |
+| `Object.hasOwn(value, '#x')` | No | Checks an ordinary string property with that name |
+| `#x in value` inside the class | Yes | Checks the declaring class's private brand |
+| `Object.freeze(value)` | No | Restricts ordinary own properties; methods can still change private fields |
+| `{ ...value }` and `Object.assign()` | No | Copy only qualifying ordinary properties |
+| `JSON.stringify(value)` | No | Unless a public `toJSON()` explicitly returns corresponding data |
+| `structuredClone(value)` | No | Doesn't copy private elements; the result lacks the class brand |
+
+Private fields don't have property descriptors or enumerable and configurable flags. Calling them "non-enumerable properties" suggests that `Object.getOwnPropertyNames()` might still find them, which is wrong; they aren't properties at all. Property integrity APIs don't manage that state either.
+
+After `Object.freeze()`, a class method with access to a private field can still reassign the field or mutate its referenced object. That doesn't violate the freeze rules because those rules cover own property descriptors only. If a type promises logical immutability, don't expose methods that change its private state, and make sure returned values don't leak mutable references.
+
+Serialization needs a separate contract. Use `toJSON()`, `toRecord()`, or an explicit transfer object to select fields, then validate and reconstruct the instance with a static factory. Don't serialize secrets, and don't assume a deserialized ordinary object has regained the private brand, methods, or invariants.
+
+### Methods, accessors, and static state
+
+Private methods fit validation and state transitions that aren't part of the public protocol. Private getters and setters can organize internal access, but they don't add another security boundary over a field; other code in the declaring class can still call them. If a plain field is already clear, an accessor adds little.
+
+Instance private fields are usually owned independently by each object. A static private field is directly accessible only to its declaring class, which fits registry data or counters that truly belong to that class definition. Once a public static method can be called on derived classes, its implementation must choose between a fixed base-class name and polymorphic `this`; those choices express different ownership.
+
+A fixed base-class name makes every derived class share the base state. `this.#field` instead requires the actual receiver to carry the declaring class's static brand, which a derived constructor normally doesn't. The inheritance of a public static method doesn't imply matching inheritance of the static private field.
+
+### Build artifacts and test contracts
+
+A transpiler may lower `#` syntax to `WeakMap` storage, helper functions, or ordinary properties, depending on the tool, version, and target configuration. Check the deployed artifact against any source-level semantic promise, especially for libraries that still target old runtimes. An editor accepting the source isn't evidence that a production transform preserves identical reflection or error behavior.
+
+Tests should primarily assert public behavior and invariants while still covering the failure boundaries. Exercise the main path with a same-class instance, a lookalike object, a derived instance, a proxy, and a detached method. If the class supports persistence, test the full "instance to record to reconstructed instance" round trip instead of comparing object spread results.
+
+When a framework tracks fields through proxies, enumerates model keys, or automatically turns instances into data records, verify its explicit support for private elements first. If the framework's requirements conflict with the class's encapsulation goal, public read-only accessors, explicit snapshot methods, or composed data objects are usually easier to maintain than a workaround that defeats the private syntax.
+
+</Depth>
+
+<Checkpoint id="javascript/private-fields" />
+
+## Further reading
+
+- [ECMAScript language specification: field definitions](https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-field-definitions)
+- [MDN: private elements](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements)
+- [V8: private brand checks](https://v8.dev/features/private-brand-checks)
+- [MDN: `Proxy`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)

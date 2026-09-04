@@ -1,0 +1,404 @@
+---
+title: Rust 所有权规则
+description: 追踪移动、复制、借用、部分移动与析构，确保每个 Rust 值在程序的每个位置都有明确所有者。
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [ownership, move-semantics, copy, clone, partial-move]
+prerequisites: [rust/ownership]
+related: [rust/borrowing-rules, rust/lifetime-annotations, rust/box-rc-arc, rust/closures]
+terms: [ownership, move-semantics, borrowing, raii, partial-move]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/ownership-rules
+sources:
+  - { title: 'The Rust Programming Language — What Is Ownership?', url: 'https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html' }
+  - { title: 'The Rust Programming Language — References and Borrowing', url: 'https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html' }
+  - { title: 'The Rust Reference — Destructors', url: 'https://doc.rust-lang.org/reference/destructors.html' }
+  - { title: 'Rust standard library — Copy', url: 'https://doc.rust-lang.org/std/marker/trait.Copy.html' }
+  - { title: 'Rust standard library — Clone', url: 'https://doc.rust-lang.org/std/clone/trait.Clone.html' }
+origin: old/src/content/docs/rust/ownership-rules.en.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Rust 的<Term id="ownership">所有权（ownership）</Term>规则追踪哪个位置负责某个值、责任何时移动，以及何时执行析构。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    赋值与按值调用会移动非 `Copy` 值。即使看不出有堆数据发生位移，后续读取也可能失败；只取出一个字段，还会让结构体变得只能部分使用。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把每个操作标成取得、读取或修改，再分别用 `T`、`&T` 或 `&mut T` 表达契约。只有程序确实需要另一个值时才克隆。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Rust 把每个值交给一个拥有位置，可以是局部绑定、结构体字段、集合槽位，或其他能保存值的位置。所有者负责让值保持有效，并在正常离开作用域时执行析构。编译器会追踪这份责任，无需垃圾回收器，也无需运行时的所有者标记。
+
+可以用三条规则建立工作模型：每个值都有所有者；普通值在同一时刻只有一个位置拥有；所有者离开作用域时，值被丢弃。`Rc<T>` 等共享所有权类型没有破坏这个模型，它们只是把被拥有的值变成计数句柄，再由句柄 API 决定内部值何时结束。
+
+对于没有实现 `Copy` 的类型，赋值或按值函数调用通常会转移所有权。这就是<Term id="move-semantics">移动语义（move semantics）</Term>。在编译器看来，源位置随后处于未初始化状态；要再次使用它，必须先在所有控制流路径上赋予新值。
+
+<Term id="borrowing">借用（borrowing）</Term>提供临时访问，而不更换所有者。共享引用 `&T` 允许读取，`&mut T` 则在其有效区域内允许独占修改。别名与生命周期规则由其他主题展开；在这里，引用的作用是让 API 避免转移所有权。
+
+给 `String` 赋值、把领域对象传给辅助函数、迭代集合、解构值或释放守卫时，都会遇到这些规则。阅读 Rust 代码时，与其盯着字节位于哪里，不如先问下一步哪个位置有权使用这个值。
+
+## 工作原理
+
+所有权分析以位置和程序点为单位。在 `let next = current;` 中，两个名称都是位置。若值不是 `Copy`，`next` 变成已初始化，`current` 变成已移动；编译器不会为之后的访问插入运行时检查。
+
+移动描述的是权限与责任，不要求机器层面真的复制数据。移动 `String` 会转移由指针、长度和容量组成的值，不会克隆 UTF-8 缓冲区。优化时，编译器甚至可能消除这次小型物理传递，但旧位置不能再读取的规则不变。
+
+以下几种形式都会发生相同的转移：
+
+1. 赋值把右侧的非 `Copy` 值移动到目标位置。
+2. 按值实参把值移动到形参中。
+3. 按值返回把结果移动到调用方的目标位置。
+4. 向集合插入元素会把元素移动到集合中。
+5. 消费型模式会移动它按值绑定的字段。
+
+源位置可以在之后重新初始化。执行 `let mut name = String::from("old"); let saved = name;` 后，为 `name` 赋一个新的 `String`，这个位置便可再次使用。新赋值不会找回已移动的值，原值仍由 `saved` 拥有。
+
+### Copy 与 Clone 回答不同问题
+
+`Copy` 是一个标记 trait，表示 Rust 可以隐式复制该值。整数、布尔值、共享引用，以及字段都满足条件的结构体是常见例子。带析构函数的类型不能实现 `Copy`，因为静默复制会让唯一清理责任变得含糊。
+
+`Clone` 是显式操作，其含义由类型定义。克隆 `String` 会分配独立缓冲区；克隆 `Rc<T>` 则为同一分配创建另一个拥有句柄。看到 `.clone()` 只能说明代码请求了复制，无法单凭它判断成本，也无法判断结果是否共享状态。
+
+| 表达式 | 非 `Copy` 值 | `Copy` 值 | 操作后的源位置 |
+| --- | --- | --- | --- |
+| `let b = a;` | 移动 | 隐式复制 | 移动后无效，复制后仍有效 |
+| `consume(a)` | 移动到形参 | 隐式复制到形参 | 取决于是否实现 `Copy` |
+| `inspect(&a)` | 共享借用 | 共享借用 | 仍拥有该值 |
+| `a.clone()` | 显式克隆 | 显式克隆 | 仍拥有该值 |
+| `drop(a)` | 移动到 `drop` | 复制后丢弃副本 | 取决于是否实现 `Copy` |
+
+不要根据值位于栈还是堆来猜测 `Copy`。共享引用即使指向堆分配也可以是 `Copy`；固定大小的值若拥有资源或定义了 `Drop`，也可以不是 `Copy`。trait 实现才是契约。
+
+### 借用让责任留在调用方
+
+类型为 `T` 的形参取得所有权，可以保存、转移或销毁该值。`&T` 形参可以临时读取，`&mut T` 可以临时修改，而调用方始终是所有者。选择范围最窄且准确的形式，调用点才会如实表达后续行为。
+
+字符串 API 能清楚表现这个区别。只读取文本的辅助函数通常接收 `&str`，而不是 `String` 或 `&String`。组件若要在调用结束后继续保存文本，就需要拥有的 `String`，或者用生命周期关系证明借用仍然有效。
+
+不兼容的移动或修改开始前，借用必须结束。不过，现代 Rust 会根据实际使用位置推导有效区域，而不只看右花括号。如果共享引用已经完成最后一次使用，同一代码块中之后的可变借用可以合法。这也是诊断会同时指出先前借用，以及让借用保持有效的后续使用的原因。
+
+### Drop 结束所有权路径
+
+已初始化的所有者离开丢弃作用域时，Rust 会运行其析构函数，再销毁它拥有的值。把值的作用域与资源清理相连，就是<Term id="raii">资源获取即初始化（Resource Acquisition Is Initialization，RAII）</Term>。堆缓冲区、文件、套接字、锁守卫和普通字段都适用。
+
+`std::mem::drop` 函数并不是特殊语法。它按值接收参数且不返回内容，所以所有权在调用内部结束。调用 `drop(&guard)` 只会丢弃复制出来的引用，守卫本身仍然存活，这是常见的锁生命周期错误。
+
+## 示例
+
+下面四个示例依次演示完整移动、复制、临时借用与字段提取。每个程序都用 Rust 1.98.0 在本地编译并运行，紧随其后的文本块是程序的标准输出。
+
+### 移入函数再返回
+
+`dispatch` 取得一个 `Parcel`，修改后再返回。调用点通过遮蔽继续使用同一个领域名称，但第二个绑定拥有的是返回值，并没有让第一个绑定复活。
+
+<Depth level="quick">
+
+```rust title="transfer.rs"
+#[derive(Debug)]
+struct Parcel {
+    id: u32,
+    state: String,
+}
+
+fn dispatch(mut parcel: Parcel) -> Parcel {
+    parcel.state = String::from("dispatched");
+    parcel
+}
+
+fn main() {
+    let parcel = Parcel {
+        id: 17,
+        state: String::from("packed"),
+    };
+
+    let parcel = dispatch(parcel);
+    println!("parcel {}: {}", parcel.id, parcel.state);
+}
+```
+
+```text
+parcel 17: dispatched
+```
+
+<TryToBreak items={['删除 dispatch 的返回值', '调用后打印第一个绑定', '把形参改成 &mut Parcel']} />
+
+</Depth>
+
+当操作代表状态转移，或必须临时保存这个值时，取得再返回所有权很合适。如果目标只是在调用期间原地修改，使用 `&mut Parcel` 就不必交出再收回责任。
+
+### 对比隐式 Copy 与显式 Clone
+
+`Window` 的两个字段都满足条件，因此它可以实现 `Copy`。`Route` 含有 `String`，所以必须显式调用派生的 `Clone`；克隆出的路线拥有自己的字符串缓冲区。
+
+```rust title="copy_clone.rs"
+#[derive(Copy, Clone)]
+struct Window {
+    start: u8,
+    end: u8,
+}
+
+#[derive(Clone)]
+struct Route {
+    name: String,
+    window: Window,
+}
+
+fn main() {
+    let morning = Window { start: 8, end: 10 };
+    let copied = morning;
+
+    let original = Route {
+        name: String::from("north"),
+        window: morning,
+    };
+    let mut rerouted = original.clone();
+    rerouted.name.push_str("-express");
+
+    println!(
+        "windows: {}-{} {}-{}",
+        morning.start, morning.end, copied.start, copied.end
+    );
+    println!(
+        "original: {} {}-{}",
+        original.name, original.window.start, original.window.end
+    );
+    println!(
+        "rerouted: {} {}-{}",
+        rerouted.name, rerouted.window.start, rerouted.window.end
+    );
+}
+```
+
+```text
+windows: 8-10 8-10
+original: north 8-10
+rerouted: north-express 8-10
+```
+
+赋值复制了 `Window`，所以 `morning` 与 `copied` 都仍然有效。修改 `rerouted.name` 不会改变 `original.name`，因为派生的 `Route::clone` 会克隆每个字段，包括字符串拥有的数据。
+
+### 通过借用读取和修改
+
+`label` 只需要共享访问，`reserve` 需要独占可变访问。两个函数都不保存库存，因此两次调用前后，所有权始终留在 `main` 中。
+
+```rust title="borrow.rs"
+#[derive(Debug)]
+struct Inventory {
+    warehouse: String,
+    units: u32,
+}
+
+fn label(inventory: &Inventory) -> String {
+    format!("{}:{}", inventory.warehouse, inventory.units)
+}
+
+fn reserve(inventory: &mut Inventory, units: u32) -> bool {
+    if units > inventory.units {
+        return false;
+    }
+    inventory.units -= units;
+    true
+}
+
+fn main() {
+    let mut inventory = Inventory {
+        warehouse: String::from("CDG"),
+        units: 5,
+    };
+
+    println!("before: {}", label(&inventory));
+    println!("reserved: {}", reserve(&mut inventory, 2));
+    println!("after: {}", label(&inventory));
+}
+```
+
+```text
+before: CDG:5
+reserved: true
+after: CDG:3
+```
+
+第一个 `println!` 使用的共享借用在最后一次使用后结束，因此下一行可以开始可变借用。`label` 返回拥有型 `String` 是另一个设计决定：`format!` 创建了新文本，并没有暴露库存内部的视图。
+
+### 移动一个字段并安全取出另一个
+
+移动 `first.address` 是一次<Term id="partial-move">部分移动（partial move）</Term>。之后不能再使用完整的 `first`，但未受影响的 `Copy` 字段仍然可用。`Option::take` 采用另一种提取方式，会在原字段中留下 `None`。
+
+```rust title="partial_move.rs"
+#[derive(Debug)]
+struct Delivery {
+    address: String,
+    attempts: u8,
+    note: Option<String>,
+}
+
+fn main() {
+    let first = Delivery {
+        address: String::from("12 Rue Ada"),
+        attempts: 1,
+        note: None,
+    };
+
+    let address = first.address;
+    println!("send {address} after {} attempt", first.attempts);
+
+    let mut second = Delivery {
+        address: String::from("8 Rust Lane"),
+        attempts: 2,
+        note: Some(String::from("side door")),
+    };
+
+    let note = second.note.take();
+    println!("note: {note:?}");
+    println!("remaining: {second:?}");
+}
+```
+
+```text
+send 12 Rue Ada after 1 attempt
+note: Some("side door")
+remaining: Delivery { address: "8 Rust Lane", attempts: 2, note: None }
+```
+
+第一次提取没有为 `address` 留下替代值，所以之后只能分别访问剩余字段。第二个配送记录仍是完整的有效值，因为 `take()` 留下了合法的 `Option::None`；外围类型实现 `Drop` 时，这种模式尤其有用。
+
+## 陷阱
+
+### 把每次赋值都当作移动
+
+> [!PITFALL]
+> “赋值会转移所有权”漏掉了 `Copy` 情况，还容易让人用堆分配解释规则。其实存储位置并不决定源值之后是否有效。
+
+**修复方法：** 检查具体类型是否实现 `Copy`。实现后，赋值会隐式复制；否则，除非表达式明确借用或克隆，都应按移动追踪。
+
+### 在报错行添加 clone
+
+> [!PITFALL]
+> 生成代码遇到 `borrow of moved value` 时，经常直接在移动前克隆。这可能复制大型缓冲区、增加引用计数所有者，也可能掩盖被调用方其实只需要读取权限。
+
+**修复方法：** 检查第一次移动以及被调用方的契约。临时读取就借用，调用方不再使用就移动，责任需要交回就返回所有权；只有设计确实需要两个值或句柄时，才保留 `clone()`。
+
+### 只读辅助函数却取得所有权
+
+> [!PITFALL]
+> `fn length(text: String) -> usize` 这类签名会迫使调用方失去或克隆字符串，尽管实现只读取它。只改调用点无法修复这个被夸大的所有权契约。
+
+**修复方法：** 普通文本读取接收 `&str`，其他只读值接收 `&T`。只有函数要保存、转移、转换或有意销毁输入时，才接收 `T`。
+
+### 部分移动后使用完整值
+
+> [!PITFALL]
+> 模式匹配、结构体更新语法和直接字段访问都可能移动一个非 `Copy` 字段。即使多个未受影响的字段仍可单独使用，之后记录整个结构体依然会失败。
+
+**修复方法：** 只需观察时匹配引用。必须提取时，可以消费并解构整个值，或者把字段放进 `Option<T>`，再用 `take()` 保持容器完整。
+
+### 丢弃引用而不是守卫
+
+> [!PITFALL]
+> `drop(&guard)` 看起来很明确，实际只消费复制出来的引用。锁、文件或事务守卫仍由原绑定拥有，会继续存活到该绑定结束。
+
+**修复方法：** 把拥有型守卫传给 `drop(guard)`，或者把它放进更窄的代码块。启用编译警告，Rust 会提示对引用调用 `drop` 不会影响它指向的值。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常在每条 E0382 诊断处插入 `.clone()`，却不修改本可改为借用的按值形参。它还会为后续代码仍要使用的集合生成 `.into_iter()`，移出 `String` 字段后记录完整结构体，或者在异步等待前写下 `drop(&guard)`，导致锁仍被持有。另一种常见错误是把所有指针形状的类型都说成可廉价复制，但克隆 `String`、`Rc<T>` 和自定义句柄代表三种不同的所有权含义。
+
+**让 AI 检查**
+
+- 为每个非 `Copy` 值生成表格，列出初始化、移动、借用、克隆、重新初始化与最终丢弃位置。
+- 对每个 `T`、`&T` 和 `&mut T` 形参，说明实现会保存、读取还是修改参数，并标出不匹配处。
+- 对每个 `.clone()`、`.into_iter()`、字段模式和显式 `drop`，写出表达式前后的所有者。
+
+**审查清单**
+
+- 从第一次移动开始追踪，不要只修改后续的 `use of moved value` 报错行。
+- 测试缺失分支、提前返回与部分匹配，确保每次后续使用都面对已初始化位置。
+- 确认守卫和资源所有者会在必须释放资源的阻塞、异步等待或关机边界前结束。
+
+**提示词词汇**
+
+使用准确术语：`owning place`（拥有位置）、`move semantics`（移动语义）、`Copy trait`、`explicit clone`（显式克隆）、`shared borrow`（共享借用）、`mutable borrow`（可变借用）、`partial move`（部分移动）、`reinitialization`（重新初始化）、`drop scope`（丢弃作用域）与 `destructor`（析构函数）。要求模型生成所有者时间线和克隆清单；“让借用检查器满意”没有说明预期责任。
+
+<Depth level="deep">
+
+## 初始化状态属于位置
+
+编译器不会为对象或变量名永久贴上“已移动”标签，而是追踪每个程序点上某个位置是否已经初始化。移动让源位置变为未初始化，把新值赋给同一位置则可以再次初始化它。
+
+控制流让这件事更精确。如果一个分支移动某个值而另一个分支没有，汇合点后的代码只有在编译器能证明所有到达路径都有合法状态时才能使用它。在条件中移动后，即使开发者认为某个运行时事实能保证安全，只要类型分析无法表达这个事实，后续访问仍不会通过。
+
+方法接收者遵循同一组规则。接收 `self` 的方法会消费对象，`&self` 借用对象进行读取，`&mut self` 则独占借用对象进行修改。如果生成代码在方法调用后意外失去对象，应先检查接收者类型，再考虑克隆。
+
+索引表达式与解引用也描述位置，但安全代码不一定能通过借用访问直接移出值。例如，索引一个借用的向量只能访问元素，并不授予取走其中 `String` 的权限。`remove`、`pop` 和 `swap_remove` 等集合方法定义了合法转出元素且让集合保持已初始化的方式。
+
+闭包可以通过借用或按值方式捕获位置，`move` 要求按值捕获。这不表示闭包内的每个捕获值都只能使用一次：`Copy` 捕获会复制，拥有型非 `Copy` 捕获才会移动。闭包主题会继续解释函数体如何决定 `Fn`、`FnMut` 与 `FnOnce` 行为。
+
+## 部分移动只保留可证明的字段
+
+结构体由不同的字段位置组成。移动一个非 `Copy` 字段不会抹去未受影响的字段，所以仍能单独读取或移动它们；失去的是把结构体作为完整值使用的能力。
+
+模式会逐字段选择移动、复制或借用。按值绑定 `String` 会移动它，绑定实现 `Copy` 的整数会复制它，使用 `ref` 或匹配引用则会创建借用。`match ergonomics` 规则还可能根据被匹配值的上下文自动增加借用，因此应查看每个绑定的类型，不要只根据写法猜测。
+
+结构体更新语法遵循相同的字段规则。在 `Record { id: new_id, ..old }` 中，显式字段来自新表达式，`old` 的 `Copy` 字段被复制，其余非 `Copy` 字段被移动。因此，即使语法看起来像构造，旧值也可能进入部分移动状态。
+
+实现 `Drop` 的类型会限制字段移出，因为析构函数接收 `&mut self`，可能依赖完整的类型不变量。Rust 会拒绝导致析构函数之后收到不完整值的部分提取。消费完整值的方法，或用 `Option::take` 替换字段，都能保留析构函数可以处理的状态。
+
+这个限制也提供了设计线索。如果调用方经常需要在包装器结束前提取一个资源，应提供 `into_inner(self)` 之类的消费方法，或保存一个显式空状态。为了绕过一次字段移动错误而使用 unsafe，会把责任从编译器手中拿走，通常还会让预期生命周期更难理解。
+
+## 析构遵循作用域与所有权路径
+
+局部绑定通常按声明的逆序丢弃；结构体字段则在类型自身的 `Drop::drop` 返回后，按声明顺序丢弃。代码不应让互不相关的字段析构函数形成隐藏的正确性依赖。清理顺序属于契约时，应在拥有类型中明确表达。
+
+提前 `return`、`break` 与 `?` 运算符仍会正常离开作用域，因此对应路径上已经初始化的局部值会被销毁。panic 采用栈展开时，Rust 也会在展开过程中丢弃仍存活的栈值。进程中止、`std::process::exit` 与泄漏的所有权路径则不承诺执行清理。
+
+引用计数改变了最终边界，但不会让边界变得模糊。克隆 `Rc<T>` 或 `Arc<T>` 会创建另一个强所有者，内部值在最后一个强所有者结束时结束。因此，强所有者形成的环可以无限期保留值；`Weak` 用来标记能够观察、却不让目标继续存活的链接。
+
+释放点很重要时，可以显式调用 `drop(value)`，锁守卫就是典型例子。更窄的代码块往往能更清楚地表达同一边界，并避免之后意外访问。必须执行的提交、刷新与网络确认应使用可返回错误的显式方法，不要依赖通常无法报告失败的析构函数。
+
+诊断位置看起来离原因很远时，可以按以下顺序追踪：
+
+1. 找到该位置最后一次确定已初始化的程序点。
+2. 标出第一次按值赋值、传参、接收者调用、返回、模式绑定或集合插入。
+3. 判断失败操作需要所有权、共享访问还是可变访问。
+4. 修改签名或操作顺序，准确表达这种需求。
+5. 代码通过编译后，再检查所有克隆与丢弃位置。
+
+编译器建议只是局部修复，不是领域规范。编译器能指出借用或克隆在类型上可行，却无法决定凭据是否应被复制、队列项是否应被消费，也无法决定句柄是否必须在异步等待前释放。这些所有权决策必须由 API 说明。
+
+## 所有权修复会改变契约
+
+多种修改都能消除同一条诊断，但含义并不相同。借用保留当前所有者，移动结束源位置的使用，克隆按照 `Clone` 创建另一个值，共享所有权则让生命周期取决于多个句柄。
+
+| 修复方式 | 调用后的责任 | 要回答的问题 |
+| --- | --- | --- |
+| 传入 `&value` | 调用方仍是所有者 | 被调用方是否只临时读取？ |
+| 传入 `&mut value` | 独占访问结束后，调用方仍是所有者 | 被调用方是否修改但不保存？ |
+| 传入 `value` | 被调用方取得所有权 | 调用方是否已经用完该值？ |
+| 传入 `value.clone()` | 调用方和被调用方各得到一个值或句柄 | 领域是否要求复制或共享？ |
+
+把 `T` 改为 `&T` 可能只是把问题推入存储状态，因为被调用方或许确实需要保存输入。增加 `Arc<T>` 可以让值继续存活，但也会改变所有权图，而且不会自动让修改变得安全。只有新契约符合数据预期生命周期，修复才是正确的。
+
+测试应验证契约，而不只是证明代码可以编译。借用调用后继续使用值；在 API 层验证消费型调用不会留下意外复用；还要检查两个克隆会按设计独立修改，还是共享内部状态。
+
+</Depth>
+
+<Checkpoint id="rust/ownership-rules" />
+
+## 延伸阅读
+
+- [Rust 程序设计语言：所有权是什么？](https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html)
+- [Rust 程序设计语言：引用与借用](https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html)
+- [Rust 参考：析构函数](https://doc.rust-lang.org/reference/destructors.html)
+- [Rust 标准库：`Copy`](https://doc.rust-lang.org/std/marker/trait.Copy.html)
+- [Rust 标准库：`Clone`](https://doc.rust-lang.org/std/clone/trait.Clone.html)

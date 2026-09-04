@@ -1,0 +1,422 @@
+---
+title: C# attributes
+description: Understand how C# attributes store declarative metadata, how targets, arguments, inheritance, and reflection work, and what generated code gets wrong.
+track: csharp
+section: types-linq
+difficulty: intermediate
+tags: [attributes, metadata, reflection, attribute-usage, custom-attributes]
+prerequisites: [csharp/fundamentals]
+related: [csharp/reflection, csharp/source-generators, csharp/properties, csharp/aspnet-core]
+terms: [attribute, attribute-target, positional-argument, named-argument, attribute-inheritance, reflection]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/attributes
+sources:
+  - { title: 'Attributes and reflection - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/' }
+  - { title: 'Attributes - C# language specification', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/attributes' }
+  - { title: 'Writing custom attributes', url: 'https://learn.microsoft.com/en-us/dotnet/standard/attributes/writing-custom-attributes' }
+  - { title: 'Retrieving information stored in attributes', url: 'https://learn.microsoft.com/en-us/dotnet/standard/attributes/retrieving-information-stored-in-attributes' }
+  - { title: 'CustomAttributeData API', url: 'https://learn.microsoft.com/en-us/dotnet/api/system.reflection.customattributedata?view=net-10.0' }
+origin: old/src/content/docs/csharp/attributes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A C# attribute attaches structured declarative information to a type, member, or assembly. The compiler stores it as metadata, and a compiler, runtime, framework, or tool interprets it under its own rules.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Writing `[Something]` doesn't make behavior run. A wrong target, an inconsistent inheritance query, or a single-value API used for a multi-use attribute can leave apparently valid metadata ineffective.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Identify the consumer and exact target first, constrain the contract with `AttributeUsage`, and deliberately choose instance-based retrieval or `CustomAttributeData` metadata inspection.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+An <Term id="attribute">attribute</Term> is structured declarative information attached to a program entity. An attribute class derives directly or indirectly from `System.Attribute`, and a use is written in square brackets, such as `[Obsolete]`. By convention, the class name ends in `Attribute`, but a use can normally omit that suffix.
+
+Attribute information enters assembly metadata instead of disappearing after compilation like a comment. Code can read it through <Term id="reflection">reflection</Term>, while compilers, test runners, serializers, and web frameworks can also consume it. An attribute only describes a fact or intent; its effect comes from a consumer that reads it and applies a rule.
+
+This mechanism separates a declaration from its interpretation. An API author can define a stable, typed metadata vocabulary; users place information beside the relevant declaration; consumers avoid parsing naming conventions or scattered string configuration. You encounter attributes in deprecation diagnostics, conditional calls, routing, validation, serialization, and test discovery.
+
+The C# compiler directly understands some attributes, including `ObsoleteAttribute` and `ConditionalAttribute`. Most attributes are ordinary library types and have an effect only when their framework scans them. Identical square-bracket syntax does not give different attributes the same execution time or semantics.
+
+Attributes fit small, serializable metadata that belongs close to a declaration. Secrets, runtime objects, complex control flow, and frequently changing configuration belong in normal parameters, configuration objects, or services instead of an attribute that becomes a hidden programming language.
+
+## How it works
+
+### An attribute class defines the vocabulary
+
+A custom attribute is at minimum a class derived from `Attribute`. Public instance constructors define valid positional-parameter sequences, while public writable instance fields or properties with public `get` and `set`/`init` accessors define named parameters. An attribute class can have ordinary methods, but metadata consumers do not call them automatically.
+
+`AttributeUsageAttribute` defines the usage contract. Its `ValidOn` value names the declaration kinds that accept the attribute, `AllowMultiple` controls whether one entity can have several instances, and `Inherited` controls whether inheritance queries on derived classes and overriding members can see a base declaration. Omitting `AttributeUsage` is equivalent to allowing every target, rejecting duplicates, and enabling inheritance.
+
+An attribute class should usually be `sealed`, and its public data should behave as values that do not change after retrieval. Deriving attribute classes is useful only when consumers explicitly support a polymorphic contract. Named parameters must be writable so the runtime can construct the object; that does not mean application code should mutate a retrieved instance.
+
+### The target decides where metadata lives
+
+Every attribute has an <Term id="attribute-target">attribute target</Term>. The default is usually the following declaration, but properties, events, method return values, and compiler-generated backing fields can occupy different metadata entities. Use target specifiers such as `[field: Marker]`, `[property: Marker]`, `[return: Marker]`, or `[assembly: Marker]` when the location needs to be explicit.
+
+`AttributeTargets` is the flags enumeration used by `AttributeUsage`. It can combine values such as `Class`, `Method`, `Property`, `Field`, `Parameter`, and `ReturnValue`, but allowing a target does not select it for you. The use-site context and any explicit target specifier determine the final location.
+
+Auto-properties make this distinction especially visible. `[Marker]` targets property metadata by default, while `[field: Marker]` targets the compiler-generated backing field. Reflection on a `PropertyInfo` does not automatically return attributes on that field, and a framework scanning fields does not treat the property target as a field target.
+
+### Arguments must fit in metadata
+
+Constructor-call syntax supplies <Term id="positional-argument">positional arguments</Term>, which appear first and must match a public constructor. A following `Name = value` is a <Term id="named-argument">named argument</Term> for a public writable instance field or property; it is optional and independent of order.
+
+Attribute arguments are limited to types the metadata can represent: the specified simple numeric and character types, `bool`, `string`, `System.Type`, enumerations, `object`, and one-dimensional arrays of those types. The expression must also be determined at compile time, such as a string constant, enum value, `typeof(Customer)`, or a permitted array-creation expression.
+
+`DateTime.Now`, service instances, and arbitrary object construction cannot be attribute arguments. For complex configuration, pass a stable enum, string, or `Type` as a key, then let the consumer resolve the runtime object from its configuration or dependency injection container. That indirection also keeps the metadata portable.
+
+### Writing and consuming are separate stages
+
+The compiler resolves the attribute name, checks the target, duplicate rules, constructor, and argument types, then writes a custom-attribute record into the assembly. The record identifies the decorated entity and attribute constructor and encodes positional and named arguments as data. It normally creates no attribute object at this stage.
+
+A consumer later decides whether to read the record and how to interpret it. A typical flow is:
+
+1. The compiler or a build tool reads attributes it recognizes.
+2. A runtime library locates types, members, or parameters through reflection.
+3. The consumer filters for the attribute types it needs and decides whether to query an inheritance chain.
+4. The consumer validates the data and performs routing, serialization, test discovery, or another behavior.
+
+Defining an attribute and defining its consumer are therefore separate tasks. Completing only the first creates valid metadata but no routing, validation, caching, or authorization. During review, you should be able to name the consumer's exact API or build phase.
+
+### Retrieval APIs make different promises
+
+`GetCustomAttribute<T>()` fits a query that can produce at most one matching instance and returns `null` when none exists. `GetCustomAttributes<T>()` returns a sequence and fits `AllowMultiple = true` or a query that merges inherited results. A single-value query can throw `AmbiguousMatchException` when several matches actually exist.
+
+Instance-based retrieval invokes the attribute constructor and assigns named fields or properties. Exceptions and side effects in that code happen during scanning, not when an instance of the decorated type is created. Attribute objects should stay lightweight and should not access a network, file, clock, or dependency injection container.
+
+`CustomAttributeData` exposes constructor information, positional arguments, and named arguments without constructing the attribute object. Prefer it when a tool only needs the metadata shape or cannot safely execute code from the inspected assembly. The consumer still has to validate argument counts, types, and missing values rather than treating metadata as trusted input.
+
+The `inherit` argument and `AttributeUsage.Inherited` jointly affect inheritance queries. <Term id="attribute-inheritance">Attribute inheritance</Term> does not copy a record to a derived declaration; it is a reflection-API rule that augments a query by walking a base-class or override chain. Direct metadata inspection still shows where each record is physically declared.
+
+## Examples
+
+### Define and read a custom attribute
+
+The first program defines `EndpointAttribute` for classes only. `"orders"` is a positional argument for the constructor, while `Version = 2` targets a public `init` property and is therefore an optional named argument.
+
+<Depth level="quick">
+
+```csharp title="BasicAttribute.cs"
+using System;
+using System.Reflection;
+
+var descriptor = typeof(OrderHandler)
+    .GetCustomAttribute<EndpointAttribute>();
+
+Console.WriteLine($"{descriptor!.Route} v{descriptor.Version}");
+Console.WriteLine(descriptor.GetType().Name);
+
+[Endpoint("orders", Version = 2)]
+public sealed class OrderHandler;
+
+[AttributeUsage(
+    AttributeTargets.Class,
+    AllowMultiple = false,
+    Inherited = false)]
+public sealed class EndpointAttribute : Attribute
+{
+    public string Route { get; }
+    public int Version { get; init; } = 1;
+
+    public EndpointAttribute(string route) => Route = route;
+}
+```
+
+```text
+orders v2
+EndpointAttribute
+```
+
+</Depth>
+
+The source uses the short name `[Endpoint]`, but reflection still returns an object whose actual type is `EndpointAttribute`. The consumer receives structured values instead of inferring an endpoint version from a class name, comment, or string convention.
+
+This example only prints metadata; it does not implement web routing. With no code calling `GetCustomAttribute` and no framework scanner, the square-bracket declaration does not make `OrderHandler` receive requests.
+
+### Target a property and its backing field separately
+
+One auto-property can carry both a property-targeted and a field-targeted attribute. The program retrieves a `PropertyInfo` and the nonpublic backing field separately, proving that the two records do not live on one reflection object.
+
+```csharp title="AttributeTargets.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var type = typeof(CustomerRecord);
+var property = type.GetProperty(nameof(CustomerRecord.CustomerId))!;
+var field = type
+    .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
+    .Single(candidate => candidate.Name.Contains("CustomerId"));
+
+Console.WriteLine(
+    $"property: {property.GetCustomAttribute<MarkerAttribute>()!.Name}");
+Console.WriteLine(
+    $"field: {field.GetCustomAttribute<MarkerAttribute>()!.Name}");
+
+public sealed class CustomerRecord
+{
+    [Marker("public contract")]
+    [field: Marker("private storage")]
+    public string CustomerId { get; init; } = string.Empty;
+}
+
+[AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
+public sealed class MarkerAttribute(string name) : Attribute
+{
+    public string Name { get; } = name;
+}
+```
+
+```text
+property: public contract
+field: private storage
+```
+
+`[Marker]` uses the default target for an auto-property declaration, so the property query returns `public contract`. The explicit `field:` puts the other record on the backing field, where only the field query returns `private storage`.
+
+The example finds the backing field by a name fragment only to demonstrate the target location. Its full compiler-generated name is not a public contract; production code depending on it should instead scan for the targeted field attribute or use the framework's public member model.
+
+### Merge direct and inherited results
+
+`AuditAttribute` permits several uses on one method and participates in inheritance. The derived override supplies its own record; the query argument decides whether to return only that record or include the base method's record too.
+
+```csharp title="InheritedAttributes.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var method = typeof(ExpressWorkflow)
+    .GetMethod(nameof(ExpressWorkflow.Submit))!;
+
+var direct = method
+    .GetCustomAttributes<AuditAttribute>(inherit: false)
+    .Select(attribute => attribute.Stage);
+var inherited = method
+    .GetCustomAttributes<AuditAttribute>(inherit: true)
+    .Select(attribute => attribute.Stage)
+    .OrderBy(stage => stage);
+
+Console.WriteLine($"direct: {string.Join(",", direct)}");
+Console.WriteLine($"inherited: {string.Join(",", inherited)}");
+
+public class Workflow
+{
+    [Audit("base")]
+    public virtual void Submit() { }
+}
+
+public sealed class ExpressWorkflow : Workflow
+{
+    [Audit("derived")]
+    public override void Submit() { }
+}
+
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = true, Inherited = true)]
+public sealed class AuditAttribute(string stage) : Attribute
+{
+    public string Stage { get; } = stage;
+}
+```
+
+```text
+direct: derived
+inherited: base,derived
+```
+
+The program sorts inherited results before printing because the source order of attributes carries no semantic guarantee. If a consumer needs priority, model it as an explicit integer or enum instead of depending on reflection return order.
+
+If `Inherited` changes to `false`, the base-method record is not returned as inherited data even when the query passes `inherit: true`. Both switches must allow the lookup, and the consumer still needs tests for the member kinds it queries.
+
+### Inspect metadata without instantiating it
+
+The last program makes its attribute constructor increment a counter. The count remains zero after reading `CustomAttributeData`; it becomes one only after instance-based retrieval, clearly separating a metadata record from a runtime object.
+
+```csharp title="CustomAttributeData.cs"
+using System;
+using System.Linq;
+using System.Reflection;
+
+var type = typeof(Shipment);
+var data = type.GetCustomAttributesData()
+    .Single(item => item.AttributeType == typeof(ProbeAttribute));
+
+Console.WriteLine($"after data: {ProbeAttribute.Created}");
+Console.WriteLine($"argument: {data.ConstructorArguments[0].Value}");
+
+var instance = type.GetCustomAttribute<ProbeAttribute>();
+
+Console.WriteLine($"after instance: {ProbeAttribute.Created}");
+Console.WriteLine($"name: {instance!.Name}");
+
+[Probe("stable")]
+public sealed class Shipment;
+
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class ProbeAttribute : Attribute
+{
+    public static int Created { get; private set; }
+    public string Name { get; }
+
+    public ProbeAttribute(string name)
+    {
+        Created++;
+        Name = name;
+    }
+}
+```
+
+```text
+after data: 0
+argument: stable
+after instance: 1
+name: stable
+```
+
+The counter reveals timing; it is not a recommended attribute design. A real attribute constructor should retain and validate a small amount of data, while the consumer performs external work through ordinary services.
+
+A metadata tool can reconstruct a declaration from `ConstructorArguments` and `NamedArguments`. It receives typed metadata values rather than a `ProbeAttribute` instance, so it should not try to invoke business methods on the attribute class.
+
+## Pitfalls
+
+### Treating a marker as behavior
+
+> [!PITFALL]
+> Generated code often defines `[Cache]`, `[Authorize]`, or `[Validate]` without any middleware, interceptor, generator, or reflection scanner that consumes it.
+
+A valid attribute proves only that metadata can be written, not that a feature exists. A test that merely checks for the attribute also misses the fact that the real call path never reads it.
+
+**Fix:** For every noncompiler attribute, name its consumer, read phase, and failure policy. Write an integration test through the real framework entry point to prove that metadata changes observable behavior; when no consumer exists, remove the attribute or implement explicit ordinary code.
+
+### Attaching metadata to the wrong target
+
+> [!PITFALL]
+> A serializer scans properties, but generated code writes `[field: Name]`; or a framework scans backing fields while the code decorates only the property. The names look related, but the metadata entities differ.
+
+Return values, parameters, accessors, events, and assemblies have similar ambiguities. When `AttributeUsage` permits several targets, the compiler cannot infer which one the consumer meant.
+
+**Fix:** Determine whether the framework reads a `Type`, `PropertyInfo`, `FieldInfo`, `ParameterInfo`, or return parameter, and spell the target explicitly where ambiguity exists. Build a minimal test using the same reflection entry point as the framework.
+
+### Supplying an argument metadata cannot encode
+
+> [!PITFALL]
+> A model puts `DateTime.Now`, runtime configuration, or `new Service()` in an attribute constructor, assuming a square-bracket call behaves exactly like ordinary object creation.
+
+Attribute arguments are constrained by metadata types and compile-time determinability. Even when an attribute class can declare an ordinary constructor parameter type, that constructor may be unusable in an attribute specification.
+
+**Fix:** Pass only constants, enums, `typeof(...)`, or permitted one-dimensional arrays. Let the consumer resolve complex runtime values from a stable key, and validate each key during startup.
+
+### Using a single-value API for a multi-use attribute
+
+> [!PITFALL]
+> After enabling `AllowMultiple = true`, a consumer still calls `GetCustomAttribute<T>()` and encounters `AmbiguousMatchException` only when the data grows to a second record.
+
+Tests with one attribute hide this defect. An inheritance query can also add a base-class or base-method record, making a single-value assumption fail only on derived types.
+
+**Fix:** Always use `GetCustomAttributes<T>()` for a multi-use attribute, and define merge, conflict, and priority rules. If the business contract allows only one effective value, use `AllowMultiple = false` and keep the consumer's single-value contract consistent.
+
+### Assuming every member inherits the same way
+
+> [!PITFALL]
+> A generated scanner sends classes, overrides, properties, events, and interface implementations through the same `inherit: true` query and assumes equivalent results.
+
+Inheritance results depend on the member kind, reflection entry point, and the attribute's own `Inherited` setting. An attribute on an interface does not naturally become an inherited class attribute when a class implements that interface; properties and events also need handling through their own declaration or accessor chains.
+
+**Fix:** Test classes, overriding methods, and each other member kind the framework actually supports separately. Walk interface maps explicitly for interface contracts, and define how matching property or event declarations are found instead of treating one Boolean argument as a universal traversal mechanism.
+
+### Performing external work in a constructor
+
+> [!PITFALL]
+> An attribute constructor reads a file, contacts a network, or depends on mutable global state, making assembly scanning slow, fragile, or unexpectedly effectful inside a tool process.
+
+Instance-based reflection can invoke constructors during application startup, test discovery, designer loading, or diagnostic tooling. The use site does not reveal that work, and exceptions surface from the scanning path.
+
+**Fix:** Keep attribute instances limited to lightweight, deterministic data and leave I/O and service calls to the consumer. Tools that only analyze declarations should use `CustomAttributeData` and validate metadata as input.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models invent plausible-sounding attributes that the target framework never reads, or import a namesake type from the wrong namespace. They also confuse property targets with backing-field targets, keep using single-value retrieval after enabling `AllowMultiple`, and assume `inherit: true` traverses interfaces and every member kind. Scanner code may repeatedly reflect in a request hot path or let an attribute constructor quietly reach into services.
+
+**Ask your AI to check**
+
+- For every attribute, list the fully qualified type name, allowed targets, consumer in the target framework, and the versioned API that consumer actually uses.
+- For every reflection query, state which metadata entity it reads, whether inherited results are included, and what happens with zero, one, and multiple matches.
+- Distinguish the instance path through `GetCustomAttributes` from the metadata path through `CustomAttributeData`, and mark where constructors, named setters, and external I/O execute.
+
+**Review checklist**
+
+- Test attribute-driven behavior through the real framework entry point instead of asserting only that brackets or reflection records exist.
+- For auto-properties, parameters, return values, and overriding members, verify that the attachment point matches the consumer's query point.
+- Exercise missing, duplicate, inherited, and invalid configurations, and confirm that discovery is not repeated for every request.
+
+**Prompt vocabulary**
+
+Use the exact terms `attribute class`, `attribute target`, `positional argument`, `named argument`, `AttributeUsage`, `AllowMultiple`, `Inherited`, `attribute instantiation`, and `CustomAttributeData`. Ask for a “declaration → metadata entity → consumer API → observable behavior” map; “add an annotation” is too vague to expose a missing execution chain.
+
+<Depth level="deep">
+
+## Metadata, instantiation, and inheritance boundaries
+
+### A record is not an object
+
+A compiled custom-attribute record associates three core pieces of information: the decorated metadata entity, the constructor used for the attribute, and encoded arguments. It is not a precreated CLR object permanently stored in the assembly. Loading an assembly does not itself instantiate every attribute.
+
+Positional arguments are encoded in constructor-parameter order. Named arguments additionally record whether their destination is a field or property and record the member name. That format explains the narrow set of permitted types and why renaming a public named parameter can break already compiled consumers. An attribute class is part of a metadata protocol and deserves serialization-format compatibility discipline.
+
+`CustomAttributeData` presents a record as `Constructor`, `ConstructorArguments`, and `NamedArguments`. It suits documentation generators, analyzers, and plugin catalogs that only need to describe declarations. Callers still have to handle unknown attribute types, missing dependencies, and version differences.
+
+Calling `GetCustomAttribute<T>()` instead requires the runtime to load the attribute type and create an object. The consumer receives convenient strongly typed properties, but it has crossed a boundary into executing code. For untrusted assemblies or incomplete dependency sets, this is an architectural choice rather than a mere API-style preference.
+
+### Construction and named assignment
+
+The instance path first passes positional arguments to the constructor named by the record, then writes named arguments into their fields or properties. Constructors and setters can both execute user code, so both should remain deterministic, fast, and free of external side effects. One apparently simple retrieval call can throw if either step fails.
+
+Do not treat an attribute instance as an application-wide mutable configuration object. Reflection calls can return fresh instances, and consumers have no contract for sharing mutations. If a read result will serve many requests, cache a validated immutable descriptor model instead of relying on a modified attribute object.
+
+`IsDefined` fits a query that asks only whether an attribute type is present, but presence alone is rarely enough to execute a feature. When routing templates, priorities, or policy names matter, read and validate their arguments. Separating “record found” from “configuration valid” produces clearer diagnostics.
+
+### Inheritance is a query policy
+
+A record on a base class or base method remains stored on that declaration. Inheritance-aware reflection APIs combine results according to the query object, the `inherit` argument, and `AttributeUsage.Inherited`; they do not rewrite the derived type's metadata. Direct `CustomAttributeData` inspection naturally does not manufacture inherited copies.
+
+`AllowMultiple` also affects merging. With multi-use attributes, matching instances from derived and base declarations can coexist; with single-use attributes, the derived declaration affects which value a consumer ultimately sees. Do not express override policy through return order; explicitly implement a nearest-to-farthest declaration rule.
+
+Interface implementation is not a class inheritance chain. A framework that treats interface attributes as contracts must explicitly find implemented interfaces and member maps, then define conflicts between class and interface declarations. `AttributeUsage.Inherited` does not supply that framework behavior automatically.
+
+Properties and events are independent members in metadata even though they associate accessor methods. A scanner must say whether it matches property declarations, accessor methods, or backing fields. An override-chain query that works for methods cannot be generalized to these compound members without tests.
+
+### Targets and generated members
+
+A target specifier fixes the attachment point at compile time. `field:` can target the generated field of an auto-property or field-like event, `method:` can target an accessor, `param:` can target a setter's implicit value parameter, and `return:` can target a getter's result. The consumer must query the corresponding kind of metadata entity.
+
+Generated-member names and exact layouts are implementation details; the target is the language-level contract. A framework can enumerate fields and look for an attribute, but it should not put a spelling such as `<Name>k__BackingField` in a public format. A source generator should likewise use the compiler symbol model to locate associated members.
+
+Assembly and module attributes require explicit global targets and normally appear at the top level of a source file. They fit information about the whole output unit, not a local policy for one type. A multiproject solution must also confirm which assembly ultimately receives the attribute rather than looking only at the file where it appears.
+
+### Order, caching, and boundaries
+
+C# assigns no semantics to the order of multiple attributes on one declaration. A reflection implementation returning some order does not make it an application contract. When order matters, model `Order` as explicit data, check duplicate values, and define a stable secondary key.
+
+Reflection discovery usually belongs in application startup or registration, after which results can become ordinary descriptor objects. Whether to cache should follow call frequency and measurement, but the boundary rule needs no benchmark claim: do not rediscover the same static metadata during every business call. If assemblies can load dynamically, define cache invalidation and isolation scope too.
+
+A source generator can read attributes from compiler symbols during a build and emit ordinary code, moving some errors to compilation. It cannot repair ambiguous targets, conflict rules, or invalid business configuration. Whether a consumer runs at build time or runtime, the same metadata protocol needs versioning, validation, and diagnosable errors.
+
+</Depth>
+
+<Checkpoint id="csharp/attributes" />
+
+## Further reading
+
+- [Attributes and reflection in C#](https://learn.microsoft.com/en-us/dotnet/csharp/advanced-topics/reflection-and-attributes/)
+- [C# language specification: attributes](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/attributes)
+- [Writing custom attributes](https://learn.microsoft.com/en-us/dotnet/standard/attributes/writing-custom-attributes)
+- [Retrieving information stored in attributes](https://learn.microsoft.com/en-us/dotnet/standard/attributes/retrieving-information-stored-in-attributes)
+- [`CustomAttributeData` API](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.customattributedata?view=net-10.0)

@@ -1,0 +1,412 @@
+---
+title: Rust Pattern Matching
+description: Use exhaustive matches, destructuring, guards, and binding patterns while avoiding hidden wildcard cases and accidental moves.
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [pattern-matching, match, destructuring, ownership]
+prerequisites: [rust/ownership, rust/option-result]
+related: [rust/pattern-matching-advanced, rust/borrowing-rules, rust/error-handling, rust/closures]
+terms: [pattern-matching, refutable-pattern, match-guard, match-ergonomics, partial-move]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/pattern-matching
+sources:
+  - { title: 'Rust 1.98 Reference - Patterns', url: 'https://doc.rust-lang.org/1.98.0/reference/patterns.html' }
+  - { title: 'Rust 1.98 Reference - Match expressions', url: 'https://doc.rust-lang.org/1.98.0/reference/expressions/match-expr.html' }
+  - { title: 'The Rust Programming Language - Patterns and matching', url: 'https://doc.rust-lang.org/1.98.0/book/ch19-00-patterns.html' }
+  - { title: 'The Rust Programming Language - Pattern syntax', url: 'https://doc.rust-lang.org/1.98.0/book/ch19-03-pattern-syntax.html' }
+  - { title: 'Rust 1.98 std::matches!', url: 'https://doc.rust-lang.org/1.98.0/std/macro.matches.html' }
+origin: old/src/content/docs/rust/pattern-matching.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="pattern-matching">Pattern matching</Term> checks a value's shape and contents and can extract its data in the same operation; `match` uses it for exhaustive branch selection.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `_` lets code keep compiling after an enum gains a variant, but it may silently choose the wrong branch; destructuring by value can also move a non-`Copy` field and make the whole original value unavailable.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    List every variant of a closed enum when practical, decide whether to borrow or take ownership first, then choose `match`, `if let`, `let-else`, or `matches!`.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A Rust pattern describes the structure a value must have and may create bindings for data inside that structure. Patterns can match enum variants, struct fields, tuples, slices, literals, and ranges; they aren't merely `switch` labels that compare one scalar.
+
+`match` compares one subject with its arms from top to bottom and executes only the first successful arm. The compiler requires every possible value to go somewhere and warns about arms that can never be reached, so adding an enum variant immediately exposes omissions wherever variants are listed explicitly.
+
+A pattern combines checking and extraction. `Some(order)` proves that an `Option` isn't `None` and binds its inner value as `order`; there's no separate state query followed by an extraction that might fail.
+
+You encounter patterns in `match` arms, `let`, function parameters, `for`, `if let`, `while let`, `let-else`, and `matches!`. They share one pattern language but permit failure in different ways, so they aren't interchangeable based only on code length. Macro-generated patterns, heavily nested patterns, and API-evolution strategies belong in `rust/pattern-matching-advanced` and aren't repeated here.
+
+## How it works
+
+### Arm selection and exhaustiveness
+
+`match subject { pattern => expression, ... }` evaluates `subject` once, then tries arms in source order. The selected arm supplies the value of the entire `match` expression, so all reachable arms must produce compatible result types.
+
+Exhaustiveness checking reasons from the type and the coverage of each pattern; it doesn't execute code to infer conditions. A Boolean has two possible values, an ordinary enum has its declared variants, and integers normally need ranges or a catch-all; an arbitrary Boolean expression in a match guard doesn't count as static coverage.
+
+Order changes behavior. A broad range, variable binding, or `_` placed early masks more specific patterns below it, and the compiler normally points out such arms with an `unreachable_patterns` warning.
+
+### Destructuring and binding
+
+A pattern can test and bind at once. `Request::Read { id }` first requires the `Read` variant, then creates the local binding `id`; `Request::Read { id: 0 }` tests the field without creating a same-named variable.
+
+`_` matches and ignores one value, while `..` ignores the remaining parts of a structure or sequence. `name @ subpattern` requires `subpattern` to succeed and binds the complete matched part as `name`, which is useful when you need both a range check and the original value.
+
+You can join alternatives with `|`, but every alternative must create the same names with the same types and binding modes. `1 | 2 | 3` creates no variable; a bare lowercase identifier normally introduces a new binding rather than referring to a same-named outer variable.
+
+### Refutability determines where a pattern fits
+
+An irrefutable pattern matches every possible value of its type. `let (x, y) = pair` must succeed, so ordinary `let`, function parameters, and `for` bindings can use it directly.
+
+A <Term id="refutable-pattern">refutable pattern</Term> can fail, as with `Some(value)`, `1..=9`, or a fixed-length slice pattern. It belongs somewhere with a failure path, such as a `match` arm, `if let`, `while let`, or `let-else`; a `let-else` `else` block must leave the current path with `return`, `break`, `continue`, or a diverging expression.
+
+| Form | Best fit | What failure does | Exhaustiveness check |
+|---|---|---|---|
+| `match` | Several meaningful cases or a returned value | Selects another arm | Yes |
+| `if let` | Handle one successful shape | Optional `else` | No |
+| `while let` | Repeat while extraction succeeds | Ends the loop | No |
+| `let-else` | Leave early on failure | `else` must leave | For that pattern |
+| `matches!` | Produce only a Boolean | Returns `false` | No |
+
+### Binding modes and ownership
+
+Pattern bindings follow Rust's move, copy, and borrow rules. When an owned value is matched by value, a non-`Copy` field moves by default and a `Copy` field is copied; moving only some fields creates a <Term id="partial-move">partial move</Term>, after which remaining fields may be used separately but the original structure can't be used as a whole.
+
+When the subject is borrowed, <Term id="match-ergonomics">match ergonomics</Term> automatically dereferences common structural patterns and makes the bindings references. In `match &job { Job { owner, .. } => ... }`, `owner` is therefore borrowed rather than moving the `String` out of `job`.
+
+Read the ownership choice from the subject first: `match value` can take its contents, `match &value` borrows for reading, and `match &mut value` borrows for mutation. `ref` and `ref mut` can still borrow individual fields explicitly, but borrowing the complete subject is usually easier to review in new code.
+
+### Guards and failure paths
+
+A <Term id="match-guard">match guard</Term> is the `if condition` after an arm's pattern. The guard runs only after the pattern succeeds; when it returns `false`, matching continues with later arms.
+
+A guard can use bindings created by its pattern and can read outside variables. It doesn't add its condition to the exhaustiveness proof, so an arm for `Some(x) if x > 0` still needs coverage for other `Some` values and for `None`.
+
+In `A | B if condition`, the guard applies to the complete `A | B`, not only to `B`. If the alternatives need different conditions, split them into separate arms so both the ordering and condition boundaries are explicit.
+
+## Examples
+
+These four examples cover exhaustive branching, slice parsing, borrowing versus moving, and repeated matching. Every output shown below came from compiling and running the corresponding program with local `rustc`.
+
+### Seal the state space with an enum
+
+The routing function handles every `Request` variant explicitly and returns its `match` expression directly. The guard on `Write` handles only an oversized request; the following `Write` arm remains responsible for every other size.
+
+<Depth level="quick">
+
+```rust title="route.rs"
+enum Request {
+    Health,
+    Read { id: u32 },
+    Write { bytes: usize },
+}
+
+fn route(request: Request) -> (&'static str, u16) {
+    match request {
+        Request::Health => ("health", 200),
+        Request::Read { id: 0 } => ("invalid id", 400),
+        Request::Read { .. } => ("read", 200),
+        Request::Write { bytes } if bytes > 1_024 => ("too large", 413),
+        Request::Write { .. } => ("write", 202),
+    }
+}
+
+fn main() {
+    let requests = [
+        Request::Health,
+        Request::Read { id: 0 },
+        Request::Read { id: 7 },
+        Request::Write { bytes: 2_048 },
+    ];
+
+    for request in requests {
+        let (label, status) = route(request);
+        println!("{label}: {status}");
+    }
+}
+```
+
+```text
+health: 200
+invalid id: 400
+read: 200
+too large: 413
+```
+
+<TryToBreak items={['add a new enum variant without adding an arm', 'change the write size to exactly 1,024 bytes', 'move the Read catch-all arm before the id 0 arm']} />
+
+</Depth>
+
+Adding `Request::Delete` makes this function stop compiling because the match is no longer exhaustive. Replacing the last two explicit variant arms with `_` removes that reminder, which is why a wildcard can weaken evolution safety.
+
+`id: 0` is a field subpattern and doesn't bind `id`. The next arm uses `..` to say that the variant's remaining fields don't affect this decision; it also makes no promise to read fields added later.
+
+### Parse a command with slice patterns
+
+`split_first()` removes empty input from the main path, and `let-else` makes `verb` and `args` available afterward. The `match` then checks the verb and the argument slice's length as one command shape.
+
+```rust title="commands.rs"
+#![allow(dead_code)]
+
+#[derive(Debug)]
+enum Command<'a> {
+    Show { id: u32 },
+    Tag { id: u32, label: &'a str },
+}
+
+fn parse_command<'a>(parts: &[&'a str]) -> Result<Command<'a>, String> {
+    let Some((verb, args)) = parts.split_first() else {
+        return Err(String::from("empty command"));
+    };
+
+    match (*verb, args) {
+        ("show", [id]) => id
+            .parse::<u32>()
+            .map(|id| Command::Show { id })
+            .map_err(|_| String::from("invalid id")),
+        ("tag", [id, label @ ("urgent" | "normal")]) => id
+            .parse::<u32>()
+            .map(|id| Command::Tag { id, label })
+            .map_err(|_| String::from("invalid id")),
+        _ => Err(String::from("unknown command")),
+    }
+}
+
+fn main() {
+    for parts in [
+        &[][..],
+        &["show", "17"][..],
+        &["tag", "17", "urgent"][..],
+        &["tag", "17", "later"][..],
+    ] {
+        println!("{:?}", parse_command(parts));
+    }
+}
+```
+
+```text
+Err("empty command")
+Ok(Show { id: 17 })
+Ok(Tag { id: 17, label: "urgent" })
+Err("unknown command")
+```
+
+`[id]` matches exactly one argument, while `[id, label]` matches exactly two, so extra arguments aren't silently ignored. `label @ ("urgent" | "normal")` restricts the allowed values and retains the chosen label.
+
+The catch-all is appropriate here because input strings form an open state space and the function's contract groups unsupported shapes into one error. That differs from a closed internal enum; whether `_` is right depends on the type boundary and error policy.
+
+### Borrow for inspection, then extract by value
+
+`inspect()` matches a `&Job`, so its field bindings are borrows. The main function still owns `job` afterward and can pass it to `take_owner()`, where destructuring by value moves the `String` field.
+
+```rust title="binding_modes.rs"
+struct Job {
+    owner: String,
+    retries: u8,
+}
+
+fn inspect(job: &Job) {
+    match job {
+        Job {
+            owner,
+            retries: attempts @ 1..=3,
+        } => println!("retry {attempts} for {owner}"),
+        Job { owner, retries: 0 } => println!("first attempt for {owner}"),
+        Job { owner, retries } => println!("retry {retries} for {owner}"),
+    }
+}
+
+fn take_owner(job: Job) -> String {
+    let Job { owner, .. } = job;
+    owner
+}
+
+fn main() {
+    let job = Job {
+        owner: String::from("Mina"),
+        retries: 2,
+    };
+
+    inspect(&job);
+    println!("owner: {}", take_owner(job));
+}
+```
+
+```text
+retry 2 for Mina
+owner: Mina
+```
+
+`attempts @ 1..=3` tests an inclusive range and retains the actual retry count. Because the subject is a shared reference, `owner` doesn't move the string; that borrow ends when `inspect()` returns.
+
+`take_owner()` consumes the complete `Job`, so moving `owner` agrees with its function contract. If the caller still needs `job`, the usual fix is to accept `&Job` or `&str`, not to clone the entire value merely to keep the old signature compiling.
+
+### Process consecutive successful states in a loop
+
+`while let` fits a stateful operation that repeatedly returns `Option` or `Result`. This example pops one string at a time, uses `let-else` to skip parse failures, then classifies valid numbers with a range and guard.
+
+```rust title="readings.rs"
+fn main() {
+    let mut pending = vec!["101", "bad", "42", "7"];
+
+    while let Some(text) = pending.pop() {
+        let Ok(value) = text.parse::<i32>() else {
+            println!("skip: {text}");
+            continue;
+        };
+
+        match value {
+            even @ 0..=100 if even % 2 == 0 => println!("even: {even}"),
+            odd @ 0..=100 => println!("odd: {odd}"),
+            outside => println!("outside: {outside}"),
+        }
+    }
+
+    println!("empty: {}", pending.is_empty());
+}
+```
+
+```text
+odd: 7
+even: 42
+skip: bad
+outside: 101
+empty: true
+```
+
+The vector is last-in, first-out, so output begins with `"7"`. The parse failure uses `continue` to satisfy the requirement that `let-else` leave the current path; whether invalid input should be skipped is a caller contract decision.
+
+The first arm's guard selects only even values, so the second range arm must still catch odd values in the interval. Removing the second arm doesn't make the first guard stand for all of `0..=100`, and the compiler doesn't include an arbitrary `%` condition in its coverage proof.
+
+## Pitfalls
+
+> [!PITFALL]
+> **A wildcard hides enum evolution.** Generated code often uses `_ => unreachable!()` to remove an exhaustiveness error quickly, but a new valid variant then becomes a production panic instead of a compile-time reminder.
+>
+> **Fix:** List every variant of a closed enum in your crate. Use `_` only when unknown values genuinely share semantics or the input space is open, and make the fallback behavior safe and observable.
+
+> [!PITFALL]
+> **A bare identifier is mistaken for an outer value.** In `match code { expected => ... }`, `expected` normally creates a new binding that matches anything and shadows the outer variable, making later arms unreachable.
+>
+> **Fix:** Compare a runtime value with a guard such as `value if value == expected`. Fixed values should be `const` items or enum variants that resolve as paths, and `unreachable_patterns` warnings should be investigated.
+
+> [!PITFALL]
+> **A guard is assumed to complete exhaustive coverage.** `Some(value) if value > 0` doesn't cover zero or negative values, and the compiler doesn't prove the logical complement of an arbitrary guard.
+>
+> **Fix:** Follow guarded arms with a pattern for the remaining structure, such as `Some(value)`, then handle `None`. Test boundary values and the path where the guard is `false`.
+
+> [!PITFALL]
+> **Destructuring moves a field accidentally.** Binding a `String`, `Vec`, or another non-`Copy` field by value from an owned structure moves it; a generator then often adds an expensive or semantically wrong `.clone()` to patch E0382.
+>
+> **Fix:** Match `&value` for reading, `&mut value` for mutation, and `value` only when ownership should transfer. After a partial move, use remaining fields separately or refactor around complete consumption instead of using the whole value again.
+
+> [!PITFALL]
+> **`if let` discards a meaningful failure arm.** `if let Ok(value) = result` with no `else` silently ignores an error and can make an import or configuration failure look successful.
+>
+> **Fix:** Use `match` or propagate the error when at least two cases affect the result. Reserve `if let` for failures where doing nothing is truly the contract, and make that behavior explicit in tests.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often append `_ => unreachable!()` to an enum match because it makes today's code compile, but it turns a future variant into a production panic. They also put an outer variable's bare name directly in a pattern, mistaking a new binding for a comparison, and clone an entire structure after a field-move error without examining the ownership intent.
+
+Models also mishandle guards and convenience forms. They may treat a guarded `Some(x)` as coverage for every `Some`, or rewrite an error that must be handled as `if let Ok(x)` with no `else`. Generated parsers also use `[first, ..]` to accept extra input even when the protocol requires an exact argument count.
+
+**Ask your AI to check**
+
+- List the value set covered by every `match` arm, including gaps or masking caused by `_`, variable bindings, ranges, and guards.
+- Annotate the inferred type and binding mode of every pattern binding, then state whether each field is copied, borrowed, mutably borrowed, or moved.
+- Write the failure path for every `if let`, `while let`, and `let-else`, confirming that no error is silently discarded.
+
+**Review checklist**
+
+- Add a temporary enum variant and confirm matches meant to be exhaustive fail to compile instead of reaching `unreachable!()`.
+- Test range endpoints, a false guard, an empty slice, extra elements, and parse failures, then verify arm order.
+- Use the original value after matching to expose accidental field moves and clones that only hide ownership mistakes.
+
+**Prompt vocabulary**
+
+Use the exact terms `scrutinee`, `match arm`, `exhaustiveness`, `refutable pattern`, `binding mode`, `match ergonomics`, `match guard`, `or-pattern`, `at binding`, and `partial move`. Ask for a pattern-coverage table and a binding-ownership table; "make this more Rust-like" is too vague to expose these failures.
+
+<Depth level="deep">
+
+## Refutability is not a runtime guess
+
+The compiler decides whether a pattern can fail from its type and form. A variable binding, a tuple made only of variable bindings, and a complete pattern for a one-variant struct are normally irrefutable; enum variants, literals, ranges, and fixed-length slice patterns are normally refutable.
+
+The same pattern has different requirements in different syntactic positions. Ordinary `let` has no failure arm and accepts only an irrefutable pattern; `if let` permits failure and decides whether to run its block; `let-else` permits failure but requires that path to leave, which guarantees the bindings are initialized afterward.
+
+Using an irrefutable pattern with `if let` normally produces a warning because the condition is always true. It may compile, but it hides what the author intended to test; replace it with ordinary `let` or restore a genuinely refutable subpattern.
+
+### `let-else` scope
+
+After `let PATTERN = expression else { ... };` succeeds, bindings created by the pattern are available in the following outer scope. That differs from `if let`, whose bindings exist only inside its successful block.
+
+The `else` must diverge so that reaching the next statement proves the pattern succeeded. Returning an error, continuing the current loop, or calling a function that returns `!` all work; logging and falling back into the main path doesn't.
+
+Complex validation doesn't need to fit into one pattern. Patterns are good at expressing type structure, while business predicates fit ordinary conditions or validation functions returning `Result`; keeping that boundary makes failure details easier to preserve.
+
+## Match ergonomics and partial moves
+
+Patterns operate on places, not only temporary scalar values. With `match value`, an arm can take ownership of fields inside `value`; with `match &value`, automatic dereferencing keeps structural patterns concise while the default bindings become shared references.
+
+That automatic adjustment is match ergonomics. It removes layers of `&` and `ref` but doesn't change the underlying ownership rules; when a binding's type isn't obvious, add a local type annotation or inspect the inferred type in your editor instead of guessing from the spelling.
+
+A by-value pattern can mix copies and moves. If a structure contains a `u32` and a `String`, binding the former copies while binding the latter moves; untouched fields remain individually accessible, but a method call on the full structure normally needs the complete value and is rejected.
+
+Borrowing the whole subject usually avoids a partial move. The more precise alternative is `ref name` or `ref mut name` on individual field patterns, but mixing binding modes requires reviewers to trace every field; unless only a few fields need borrowing, prefer a function signature and subject that state the borrowing intent.
+
+A type that implements `Drop` can't have arbitrary fields moved out through a pattern because its destructor must receive a complete `&mut self`. To extract a resource deliberately, provide a consuming method for the whole value or store the field in `Option` and use `take()` to leave a valid state.
+
+## Or-patterns, `@` bindings, and guards
+
+An or-pattern `left | right` is the union of its alternatives. Every alternative must create the same bindings, because the arm expression needs one stable set of local variables; mismatched binding types or borrowing modes are rejected too.
+
+The left side of `@` creates a binding while its right side constrains the same matched part. `id @ 1..=9` retains the actual `id` in addition to checking the range; in a nested structure, you can likewise bind a complete subobject while testing its fields.
+
+Precedence is easy to misread. A guard follows the complete arm pattern, so `A | B if ready` means `(A | B) if ready`; if only `B` requires `ready`, write two arms.
+
+A guard is an ordinary expression and can call functions, read outside state, or even cause side effects. Side effects make branch selection depend on evaluation timing and complicate tests, so guards should normally remain short and pure; move complicated decisions into clearly named functions.
+
+## Exhaustiveness, reachability, and API boundaries
+
+Exhaustiveness guarantees that every type-level possibility can select an arm; it doesn't guarantee that every arm has the right business behavior. `_ => Ok(())` passes the check but may report an unhandled event as success, so coverage completeness and semantic completeness need separate review.
+
+Reachability is calculated top to bottom. A variable pattern matches any value of its type and is especially dangerous near the top; a wide range can also cover a narrower range completely. Don't suppress the warning mechanically, because it usually reveals an ordering or naming mistake.
+
+A public API can mark an enum `#[non_exhaustive]`, requiring callers in other crates to retain a fallback arm. The wildcard is then part of the compatibility contract, but it should still return an explicit error or conservative behavior rather than defaulting to `unreachable!()`.
+
+Strings, integers, and fields from external protocols have open input spaces by nature. Those matches need a safe fallback; for a closed enum you control, explicit variants usually let the compiler help more during refactoring.
+
+## Choose the narrowest form that preserves information
+
+`match` is the right default when several branches affect the result or every enum variant deserves explicit treatment. It also suits state transitions because an input state and event can be matched together as a tuple.
+
+`if let` works when one shape matters and failure genuinely requires no action. Once both sides matter, `match` is often clearer and restores an exhaustiveness reminder when the type changes.
+
+`let-else` moves a failure path out early and keeps the main path flat. It isn't meant to describe several recovery strategies; when failure reasons differ, match the `Result` or use `?` to preserve error information.
+
+`while let` repeats while a stateful operation succeeds, such as repeated `pop()` calls or channel receives. It treats the first mismatch as normal termination, so when one `Err` type represents both closure and failure, an explicit `match` may be necessary to avoid swallowing an error.
+
+`matches!(value, pattern if guard)` returns only a Boolean and doesn't expose bindings afterward. It suits filtering and assertions; if you immediately need data from the same value, matching twice is usually redundant, so use `match` or `if let` directly.
+
+</Depth>
+
+<Checkpoint id="rust/pattern-matching" />
+
+## Further reading
+
+- [Rust 1.98 Reference: patterns](https://doc.rust-lang.org/1.98.0/reference/patterns.html)
+- [Rust 1.98 Reference: `match` expressions](https://doc.rust-lang.org/1.98.0/reference/expressions/match-expr.html)
+- [The Rust Programming Language: patterns and matching](https://doc.rust-lang.org/1.98.0/book/ch19-00-patterns.html)
+- [The Rust Programming Language: pattern syntax](https://doc.rust-lang.org/1.98.0/book/ch19-03-pattern-syntax.html)
+- [Rust 1.98 standard library: `matches!`](https://doc.rust-lang.org/1.98.0/std/macro.matches.html)

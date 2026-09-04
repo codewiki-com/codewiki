@@ -24,13 +24,16 @@ const read = (dir: string, file: string) => readFileSync(`${root}${dir}/${file}`
 describe('topic fixtures', () => {
   const mdx = files('topics', '.mdx');
 
-  it('ships both languages of every sample topic', () => {
-    expect(mdx).toEqual([
-      'javascript/event-loop.en.mdx',
-      'javascript/event-loop.zh.mdx',
-      'python/closures.en.mdx',
-      'python/closures.zh.mdx',
-    ]);
+  it('ships both languages of every topic', () => {
+    expect(mdx.length).toBeGreaterThan(0);
+    const shipped = new Set(mdx);
+    for (const file of mdx) {
+      const match = /^(.*)\.(en|zh)\.mdx$/.exec(file);
+      expect(match, file).not.toBeNull();
+      const [, id, lang] = match as RegExpExecArray;
+      const counterpart = lang === 'en' ? 'zh' : 'en';
+      expect(shipped, file).toContain(`${id}.${counterpart}.mdx`);
+    }
   });
 
   it.each(mdx)('%s has valid frontmatter', (file) => {
@@ -73,6 +76,6 @@ describe('data fixtures', () => {
   it.each(files('interview', '.yaml'))('interview/%s is a valid interview bank', (file) => {
     const bank = interviewSchema.parse(yamlOf('interview', file));
     expect(bank.track).toBe(file.replace(/\.yaml$/, ''));
-    expect(bank.items.every((item) => item.tags.includes('calibration'))).toBe(true);
+    expect(bank.items.every((item) => !item.tags.includes('calibration'))).toBe(true);
   });
 });

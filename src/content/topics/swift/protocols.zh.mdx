@@ -1,0 +1,409 @@
+---
+title: Swift 协议
+description: 用协议定义能力边界，理解要求、遵循、默认实现、关联类型，以及 some 与 any 表达的不同类型关系。
+track: swift
+section: optionals-protocols
+difficulty: intermediate
+tags: [swift, protocols, conformance, associated-types, existentials]
+prerequisites: [swift/fundamentals, swift/structs-classes]
+related: [swift/generics, swift/extensions, swift/protocols-generics, swift/codable]
+terms: [protocol-requirement, protocol-conformance, associated-type, primary-associated-type, existential-type, opaque-type, conditional-conformance, static-dispatch]
+verified: { version: 'Swift 6.3.3', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: swift/protocols
+sources:
+  - { title: 'The Swift Programming Language - Protocols', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/protocols/' }
+  - { title: 'The Swift Programming Language - Opaque and Boxed Protocol Types', url: 'https://docs.swift.org/swift-book/documentation/the-swift-programming-language/opaquetypes/' }
+  - { title: 'Swift Evolution SE-0335 - Existential any', url: 'https://github.com/swiftlang/swift-evolution/blob/main/proposals/0335-existential-any.md' }
+  - { title: 'Swift Evolution SE-0346 - Primary Associated Types', url: 'https://github.com/swiftlang/swift-evolution/blob/main/proposals/0346-light-weight-same-type-syntax.md' }
+  - { title: 'Swift 6.3.3 Release', url: 'https://github.com/swiftlang/swift/releases/tag/swift-6.3.3-RELEASE' }
+origin: old/src/content/docs/swift/protocols.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    协议（protocol）声明一组能力要求，结构体、枚举或类通过提供对应实现来遵循协议；调用方因此可以依赖契约，而不必依赖具体类型。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    协议扩展里新增但未列入协议要求的方法不会形成可动态替换的见证；把泛型边界随手改成 `any Protocol` 也会擦除调用方可能需要的类型关系。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把必须动态派发的成员写进协议声明，并按所有权选择泛型、`some` 或 `any`：调用方选类型、实现方选一个类型，或运行时保存任意遵循值。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Swift 协议是一份能力契约。它可以要求实例或类型属性、方法、构造器和下标，但不规定遵循类型必须用存储属性、计算属性还是其他内部结构完成这些要求。结构体、枚举和类都能声明<Term id="protocol-conformance">协议遵循（protocol conformance）</Term>，因此抽象不依赖类继承。
+
+协议遵循是具名且显式的关系，不是只看成员形状的结构化匹配。一个类型即使恰好拥有全部同名成员，也必须在类型声明或扩展中写出协议名称，才能作为该协议的遵循者使用。
+
+显式声明给编译器一个集中检查点，也让读者能搜索谁承诺了这份契约。成员偶然同名却语义不同的类型不会被静默当成遵循者。
+
+协议解决的是「调用方需要哪些能力」，而不是「对象属于哪条继承链」。一个发送函数只要知道参数能生成消息，就不需要知道它是结构体、actor 还是测试替身。这让 API 边界更窄，也让替换实现时由编译器检查契约。
+
+你会在标准库的 `Sequence`、`Collection`、`Equatable`、`Hashable`、`Codable` 和 `Sendable` 中持续遇到协议。应用代码则常用协议隔离存储、网络、时钟、日志等依赖，或给多种值类型提供相同算法入口。
+
+协议不是自动获得复用或解耦的开关。协议过大时，遵循类型和测试替身都必须实现无关能力；协议过小且无稳定使用方时，又会增加跳转和命名。先从调用方真正需要的操作出发，再决定是否值得建立协议边界。
+
+## 工作原理
+
+协议声明中的每个属性、方法、构造器或下标都是<Term id="protocol-requirement">协议要求（protocol requirement）</Term>。遵循类型必须提供可见且类型匹配的实现，或者使用协议扩展给出的默认实现。编译器在遵循声明处检查完整性，而不是等到运行时发现缺少成员。
+
+属性要求只描述可读或可读写能力。`{ get }` 可以由常量存储属性、变量存储属性或计算属性满足；`{ get set }` 不能由只读实现满足。类型属性在协议中写作 `static`，类在实现时可按允许的形式提供对应成员。
+
+值类型的方法若需要修改 `self` 或实例属性，协议要求必须标记 `mutating`。结构体和枚举的实现也要标记 `mutating`，类实现则不用。协议要求构造器时，非 `final` 类通常要用 `required`，确保子类仍提供该构造入口。
+
+### 继承与类专属协议
+
+一个协议可以继承多个协议，把它们的要求汇成新的长期契约。遵循子协议的类型必须同时满足整个继承链；这不是实现继承，协议本身仍不保存实例状态，也不提供超类对象。
+
+协议继承列表中加入 `AnyObject`，可以把遵循限制为类。只有契约依赖引用语义、弱引用或对象身份时才应这样限制；为了模仿类接口而机械加入 `AnyObject`，会无谓排除结构体和枚举。
+
+类还可以在协议继承列表中作为超类要求，让所有遵循者都属于特定类层级。这个约束比 `AnyObject` 更强，只适合协议默认实现必须调用该超类行为的边界。
+
+### 默认实现与派发边界
+
+协议扩展可以实现协议已经声明的要求，也可以新增便利成员。两者的派发语义不同：要求的实现会成为遵循关系的一部分；仅在扩展中出现的成员按调用位置可见的静态类型选择，不会成为可替换的协议见证。
+
+因此，如果所有遵循类型都可使用一个算法，把它放入扩展很合适。如果遵循类型应该能够改变通过协议值观察到的行为，先在协议中声明该成员，再在扩展中给出默认实现。只写一个同名具体成员并不会把扩展成员变成要求。
+
+### 三种抽象边界
+
+协议名称可以出现在不同的类型上下文中，但这些上下文并不等价。泛型约束让调用方选择具体类型；<Term id="opaque-type">不透明类型（opaque type）</Term> `some P` 让实现方选择一个隐藏的具体类型；<Term id="existential-type">存在类型（existential type）</Term> `any P` 则用盒装值在运行时保存某个遵循类型。
+
+| 写法 | 谁选择具体类型 | 保留的关系 | 典型用途 |
+| --- | --- | --- | --- |
+| `<T: P>` 或参数中的 `some P` | 调用方 | `T` 在该调用内保持同一类型 | 算法参数、静态类型关系 |
+| 返回值中的 `some P` | 实现方 | 隐藏但固定的底层类型 | 隐藏工厂或组合结果 |
+| `any P` | 运行时的赋值方 | 只保证当前值遵循 `P` | 异构集合、可替换存储槽 |
+
+`any P` 的灵活性来自类型擦除和必要时的一层间接访问。通过存在值只能直接使用协议保证的成员；需要具体类型 API 时必须转换。不要因为签名较短就把所有泛型参数改成 `any`，因为关联类型之间的同类型关系可能随之消失。
+
+### 关联类型与组合
+
+<Term id="associated-type">关联类型（associated type）</Term>是协议声明的类型占位符，由每个遵循类型确定。它适合表达「容器拥有一种元素类型」或「解析器产生一种输出类型」这样的关系；泛型函数随后可以把 `Store.Value` 与参数或返回值关联起来。
+
+<Term id="primary-associated-type">主关联类型（primary associated type）</Term>列在协议名称后的尖括号中，但仍要在协议体内用 `associatedtype` 声明。它让 `some Feed<String>` 与 `any Feed<String>` 能简洁地约束关联类型，并不把协议变成普通泛型类型。
+
+协议组合 `P & Q` 要求一个值同时满足多份契约，但不会声明一个新协议。需要给组合命名、让其他协议继承或长期演进契约时，声明真正的协议通常更清楚；只在局部参数上组合两种能力时，`P & Q` 更直接。
+
+## 示例
+
+下面三个独立程序依次展示基本要求与默认实现、扩展成员的派发差异，以及关联类型配合 `some` 和 `any` 的边界。当前环境没有 Swift 工具链，所以每个代码块都按要求标明未执行；输出为这些确定性示例的预期结果。
+
+### 定义最小能力契约
+
+`Resettable` 只要求摘要和重置操作；记录查询是 `SearchHistory` 自己的能力。扩展根据协议要求提供 `isEmpty`，所有遵循类型都能复用该逻辑。
+
+<Depth level="quick">
+
+```swift title="search_history.swift"
+// # not executed here: Swift toolchain is not installed.
+protocol Resettable {
+    var summary: String { get }
+    mutating func reset()
+}
+
+extension Resettable {
+    var isEmpty: Bool { summary.isEmpty }
+}
+
+struct SearchHistory: Resettable {
+    private var queries: [String] = []
+
+    var summary: String { queries.joined(separator: ",") }
+
+    mutating func record(_ query: String) {
+        queries.append(query)
+    }
+
+    mutating func reset() {
+        queries.removeAll()
+    }
+}
+
+var history = SearchHistory()
+history.record("swift")
+history.record("protocols")
+print(history.summary)
+print(history.isEmpty)
+history.reset()
+print(history.isEmpty)
+```
+
+```text
+swift,protocols
+false
+true
+```
+
+<TryToBreak items={['不记录任何查询就读取摘要', '连续调用两次 reset()', '记录一个空字符串']} />
+
+</Depth>
+
+`mutating` 属于协议契约的一部分，否则值类型实现不能修改自身。变量 `history` 也必须用 `var` 声明，才能调用可能改变值的要求；同一个协议由类遵循时，实现方法不写 `mutating`。
+
+扩展的 `isEmpty` 只读取 `summary`，因此无需知道查询数组的存储方式。另一个遵循类型可以从数据库计数或远程状态计算摘要，只要满足相同公开契约即可。
+
+### 观察扩展成员的静态选择
+
+`headline()` 是协议要求，`category()` 只存在于扩展中。具体值能看到 `Incident.category()`，但存在类型按静态接口找到扩展版本。
+
+```swift title="dispatch_boundary.swift"
+// # not executed here: Swift toolchain is not installed.
+protocol Reportable {
+    func headline() -> String
+}
+
+extension Reportable {
+    func headline() -> String { "Untitled" }
+    func category() -> String { "general" }
+}
+
+struct Incident: Reportable {
+    func headline() -> String { "Disk full" }
+    func category() -> String { "operations" }
+}
+
+let incident = Incident()
+let report: any Reportable = incident
+
+print(incident.headline())
+print(report.headline())
+print(incident.category())
+print(report.category())
+```
+
+```text
+Disk full
+Disk full
+operations
+general
+```
+
+`headline()` 通过遵循关系选择 `Incident` 的实现，所以具体值和存在值结果一致。`category()` 没有协议要求对应的见证；变量静态类型是 `any Reportable` 时，编译器选择协议扩展中的实现。
+
+若分类确实是可替换行为，应把 `func category() -> String` 加进 `Reportable`，然后保留扩展中的默认实现。这样具体实现才能在所有通过协议边界的调用中生效，而不只是直接通过具体类型调用时生效。
+
+### 保留或擦除关联类型
+
+`Feed` 的主关联类型是 `Item`。工厂用 `some Feed<String>` 隐藏具体实现但保留元素类型；数组用 `any Feed<String>` 保存不同的遵循类型，同时把可用接口限制为协议保证的操作。
+
+```swift title="feed_boundaries.swift"
+// # not executed here: Swift toolchain is not installed.
+protocol Feed<Item> {
+    associatedtype Item
+    func next() -> Item?
+}
+
+struct Single<Value>: Feed {
+    let value: Value
+    func next() -> Value? { value }
+}
+
+struct Empty<Value>: Feed {
+    func next() -> Value? { nil }
+}
+
+func releaseFeed() -> some Feed<String> {
+    Single(value: "release")
+}
+
+let feeds: [any Feed<String>] = [
+    releaseFeed(),
+    Empty<String>()
+]
+
+for feed in feeds {
+    print(feed.next() ?? "none")
+}
+```
+
+```text
+release
+none
+```
+
+返回 `some Feed<String>` 的函数必须在所有返回路径选择同一个底层类型。调用方不知道这个类型的名称，却知道 `Item == String`；这比只返回未约束的协议信息更完整。
+
+数组需要同时保存 `Single<String>` 和 `Empty<String>`，所以使用 `any Feed<String>`。如果所有元素本来就是同一种具体类型，泛型集合能保留更多静态关系，通常也更容易继续组合泛型算法。
+
+### 组合局部所需的能力
+
+函数需要名称和优先级时，可以直接写协议组合，不必为一次局部交集发明新协议。存在类型数组还能保存多种同时满足两份契约的具体值。
+
+```swift title="protocol_composition.swift"
+// # not executed here: Swift toolchain is not installed.
+protocol Named {
+    var name: String { get }
+}
+
+protocol Prioritized {
+    var priority: Int { get }
+}
+
+struct BuildJob: Named, Prioritized {
+    let name: String
+    let priority: Int
+}
+
+struct SupportTicket: Named, Prioritized {
+    let name: String
+    let priority: Int
+}
+
+let queue: [any Named & Prioritized] = [
+    BuildJob(name: "compile", priority: 2),
+    SupportTicket(name: "login", priority: 1)
+]
+
+for item in queue.sorted(by: { $0.priority < $1.priority }) {
+    print("\(item.priority):\(item.name)")
+}
+```
+
+```text
+1:login
+2:compile
+```
+
+`Named & Prioritized` 只描述这个存储位置的能力交集，没有创建可供其他协议继承的新名称。若队列契约之后还要增加取消、重试或并发安全要求，应声明一个具名协议并集中演进它。
+
+这个数组选择 `any` 是因为两个元素的具体类型不同。如果函数一次只处理一个由调用方提供的值，泛型约束 `<Item: Named & Prioritized>` 可以保留该次调用的具体类型。
+
+## 陷阱
+
+### 把扩展成员当成可覆盖要求
+
+> [!PITFALL]
+> 协议扩展新增 `render()`，具体类型再声明同名方法，看起来像覆盖；一旦值被存入 `any Protocol`，调用却可能回到扩展实现。
+
+**修复方法：** 需要多态替换的成员必须先出现在协议声明中。扩展只负责提供默认见证；同时分别通过具体类型和存在类型测试调用结果。
+
+### 用 `any` 代替所有泛型
+
+> [!PITFALL]
+> 生成代码常把 `<T: P>` 改成 `any P` 来缩短签名，却同时丢掉两个参数类型相同、返回类型与输入相关，或关联类型固定等关系。
+
+**修复方法：** 先写出调用方需要保留的同类型约束。只有存储槽确实要在运行时更换具体类型，或集合确实需要异构元素时才选择 `any`；其余边界优先考虑泛型或 `some`。
+
+### 误读 `{ get }` 与 `{ get set }`
+
+> [!PITFALL]
+> `{ get }` 表示调用方只被保证读取能力，并不要求实现不可变；`{ get set }` 则要求协议接口也能写入。把前者误写成后者会排除本来合法的只读计算属性。
+
+**修复方法：** 从使用方需要的最小访问能力定义要求。不要为了某个当前实现是 `var` 就扩大协议契约；只有协议使用方必须赋值时才声明 setter。
+
+### 假设存在类型自动遵循自身协议
+
+> [!PITFALL]
+> `any P` 能保存一个遵循 `P` 的值，不等于盒子类型本身在所有泛型上下文中都遵循 `P`。涉及 `Self`、关联类型输入或嵌套集合时，这个区别尤其容易暴露。
+
+**修复方法：** 查看具体调用需要保持哪些 `Self` 与关联类型关系。能让编译器临时打开存在值时直接调用；需要跨多个值维持关系时，改用泛型参数、约束主关联类型或设计显式类型擦除包装器。
+
+### 让默认实现掩盖遗漏
+
+> [!PITFALL]
+> 默认实现能让新遵循关系顺利编译，也可能让本应由领域类型明确决定的权限、重试或持久化行为悄悄采用通用逻辑。
+
+**修复方法：** 默认实现只承载对所有遵循类型都正确的语义。对安全或业务关键行为，要求显式实现，或者用测试证明每个遵循类型接受默认语义。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型会为了「简化依赖注入」把泛型存储改成 `[any Repository]`，随后又假设每个仓库的 `Model` 相同；也会把想要自定义的 `validate()` 只放进协议扩展，导致测试通过具体类型而生产代码通过存在类型时行为不同。另一个常见故障是生成 `[any Codable]` 后尝试直接编码整个数组，忽略数组元素被擦除后并不会自动形成可综合的统一 `Codable` 表示。
+
+**让 AI 检查**
+
+- 列出每个协议成员，标明它是协议要求、默认实现，还是仅由扩展新增的静态成员。
+- 为每个协议参数和返回值说明具体类型由调用方、实现方还是运行时存储选择，并解释为何使用泛型、`some` 或 `any`。
+- 跟踪每个 `Self` 与关联类型在调用链中的约束，指出类型关系在哪个擦除边界丢失。
+
+**审查清单**
+
+- 同时通过具体类型与 `any Protocol` 调用可自定义成员，确认派发结果一致。
+- 编译至少两个遵循类型，并测试关联类型相同与不同的组合是否按契约接受或拒绝。
+- 检查默认实现是否悄悄承担权限、持久化、重试或数据校验等领域决定。
+
+**提示词词汇**
+
+使用准确术语：`protocol requirement`（协议要求）、`protocol conformance`（协议遵循）、`default implementation`（默认实现）、`witness`（见证）、`associated type`（关联类型）、`primary associated type`（主关联类型）、`opaque type`（不透明类型）、`existential type`（存在类型）和 `existential opening`（存在值打开）。要求模型给出派发表与类型关系表；只说「用协议解耦」不足以检查语义。
+
+<Depth level="deep">
+
+## 遵循见证与调用选择
+
+编译器接受一项协议遵循时，会把每个要求对应到具体实现，这个实现常称为见证（witness）。通过协议边界调用要求时，运行时可以根据遵循信息找到正确实现。语言保证的是可观察的派发语义，不应把某个编译器版本的表布局当成应用 ABI。
+
+协议扩展提供的默认要求实现也可以成为见证。如果具体类型在声明遵循时提供自己的匹配实现，该实现会被选择。关键分界仍是成员是否出现在协议声明中，而不是它恰好写在类型主体还是另一个扩展文件里。
+
+仅由协议扩展新增的成员没有见证槽位。编译器根据表达式的静态类型解析它：静态类型是具体类型时，同名具体成员可能胜出；静态类型只暴露协议时，扩展成员可见。把这类行为笼统描述成「协议方法都是动态派发」会直接制造错误预期。
+
+泛型函数通常仍携带遵循信息，优化器可能针对具体类型特化或内联代码，但源码语义不保证一定生成某种机器码。性能问题应在目标平台的发布构建中测量；选择泛型或存在类型首先是 API 类型关系与运行时灵活性的决定。
+
+## 存在值与关联类型
+
+存在值把一个当前具体类型连同其遵循信息装入抽象容器。变量之后可以接收另一个遵循类型，因此具体类型身份不属于静态接口。调用方只能依赖协议要求，以及签名中明确保留下来的主关联类型约束。
+
+旧资料常说「带关联类型的协议不能作为类型使用」。现代 Swift 可以写 `any P`，也能在许多调用中隐式打开存在值；真正的限制是类型擦除后未必还有足够信息建立所需关系。例如，一个方法接收 `Item` 时，未约束的 `any Feed` 无法告诉调用方该传入哪种具体 `Item`。
+
+`any Feed<String>` 保留 `Item == String`，因此读取 `String?` 等操作有明确类型。若两个独立存在值必须共享同一个未知 `Item`，分别装箱仍不能证明它们相关；把共同类型提升为泛型参数，才能让编译器跨值检查这一不变量。
+
+手写类型擦除包装器可以把所需操作保存为闭包，并在包装器的泛型参数中保留关联类型。它适合需要稳定命名类型、额外状态或兼容既有 API 的场景，但会增加转发代码。现代 `any` 已满足需求时，不要机械生成 `AnyP` 包装器。
+
+## 不透明类型的固定身份
+
+返回位置的 `some P` 隐藏底层类型名称，但每个声明仍选择一个固定底层类型。函数不能在一个分支返回 `A`、另一个分支返回无关的 `B`，即使两者都遵循 `P`；若需要这种运行时切换，应返回 `any P` 或用枚举统一表示。
+
+不透明类型保留底层类型身份，因此编译器可以维持关联类型与 `Self` 关系。调用方不能写出隐藏名称，却能依赖声明公开的约束。`some Collection<String>` 就同时隐藏具体集合类型并公开 `Element == String`。
+
+参数位置的 `some P` 是泛型参数的简写，具体类型由每次调用选择；返回位置的 `some P` 则由实现选择。相同关键字位于不同位置时所有权相反，审查生成签名时必须明确这一点。
+
+## 条件遵循与组合边界
+
+泛型类型可以只在类型参数满足条件时遵循协议，这叫作<Term id="conditional-conformance">条件遵循（conditional conformance）</Term>。例如，包装器只有在 `Value: Equatable` 时才能可靠比较内容，就应把条件写在遵循扩展上，而不是让所有实例承诺做不到的能力。
+
+```swift title="conditional_conformance.swift"
+// # not executed here: Swift toolchain is not installed.
+struct Box<Value> {
+    let value: Value
+}
+
+extension Box: Equatable where Value: Equatable {}
+
+print(Box(value: 3) == Box(value: 3))
+```
+
+```text
+true
+```
+
+这段声明让 `Box<Int>` 获得 `Equatable`，但不会让 `Box<NonEquatable>` 伪装成可比较。条件属于遵循本身，使用方可继续通过泛型约束让编译器证明能力是否存在。
+
+给不属于当前模块的类型追加不属于当前模块的协议遵循，称为追溯遵循（retroactive conformance）。另一个模块可能声明相同组合，加载到同一程序后就产生冲突。优先用本地包装类型拥有这项遵循；确实要追溯添加时，应把全局唯一性当成集成契约，而不只是让当前文件编译。
+
+协议继承与协议组合也不要混为一谈。`protocol CachedStore: Store, Sendable` 声明可命名、可被继续继承的长期契约；参数 `any Store & Sendable` 只在该位置要求能力交集。需要在哪里拥有并演进契约，决定了应选择哪种形式。
+
+## 协议边界的测试方法
+
+协议测试不只验证某一个具体实现。至少准备两个行为不同的遵循类型，才能发现默认实现误用、具体类型泄漏，以及测试替身与生产实现契约不一致。若只有一个实现，先验证协议是否真的形成有价值的替换边界。
+
+派发测试应把同一个值先作为具体类型调用，再赋给 `any P` 调用。两条路径结果不一致时，检查成员是否漏写为要求。关联类型测试则要覆盖允许的同类型组合与应该在编译期拒绝的不同类型组合。
+
+存在集合还要测试类型切换。先放入两种遵循值，再逐个只通过协议接口操作，确认代码没有依赖某个隐藏具体类型；如果操作最终充满强制转换，协议可能没有表达真正共同的能力。
+
+</Depth>
+
+<Checkpoint id="swift/protocols" />
+
+## 延伸阅读
+
+- [Swift 语言指南：协议](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/protocols/)
+- [Swift 语言指南：不透明类型与盒装协议类型](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/opaquetypes/)
+- [Swift Evolution SE-0335：存在类型的 `any`](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0335-existential-any.md)
+- [Swift Evolution SE-0346：主关联类型的轻量同类型语法](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0346-light-weight-same-type-syntax.md)
+- [Swift 6.3.3 发布说明](https://github.com/swiftlang/swift/releases/tag/swift-6.3.3-RELEASE)

@@ -1,0 +1,409 @@
+---
+title: Proxy and Reflect
+description: Proxy intercepts fundamental object operations while Reflect preserves their default semantics; use traps, receivers, and invariants without breaking objects.
+track: javascript
+section: core
+difficulty: advanced
+tags: [proxy, reflect, metaprogramming, property-descriptors]
+prerequisites: [javascript/objects-prototypes, javascript/object-methods]
+related: [javascript/private-fields, javascript/symbol, javascript/weakmap-weakset, javascript/classes]
+terms: [property-descriptor, proxy-trap, proxy-invariant, internal-slot]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+quiz: javascript/proxy-reflect
+sources:
+  - { title: 'ECMAScript language specification - Proxy Objects', url: 'https://tc39.es/ecma262/#sec-proxy-objects' }
+  - { title: 'ECMAScript language specification - The Reflect Object', url: 'https://tc39.es/ecma262/#sec-reflect-object' }
+  - { title: 'MDN - Proxy', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy' }
+  - { title: 'MDN - Reflect', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect' }
+  - { title: 'MDN - handler.get()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/Proxy/get' }
+origin: old/src/content/docs/javascript/proxy-reflect.zh.md
+aligned: true
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `Proxy` uses traps in a handler to intercept fundamental object operations. `Reflect` supplies methods with matching names and arguments for performing the default semantics.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A trap can't lie arbitrarily: it must preserve invariants involving non-configurable properties, extensibility, and the target's prototype, or the engine throws `TypeError`.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Forward defaults through `Reflect` with the original `receiver`, then cover every operation that could bypass the policy. Test frozen targets, `Symbol` keys, and branded built-ins.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+`Proxy` creates a wrapper object through which you can observe or redefine fundamental operations on a target. Property reads, assignments, `in`, `delete`, key enumeration, function calls, and construction each have a corresponding <Term id="proxy-trap">proxy trap</Term>. Callers keep using ordinary JavaScript syntax instead of switching to a special interface such as `get("name")`.
+
+`Reflect` is a collection of static methods, not a constructor. It exposes fundamental operations as functions such as `Reflect.get()`, `Reflect.set()`, and `Reflect.ownKeys()`, and all 13 interceptable operations have a same-named trap. When a handler changes only a small part of the behavior, a `Reflect` call clearly says that everything else should retain the language's default semantics.
+
+These APIs fit access observation, write validation, virtual properties, revocable views, and the low-level machinery behind reactive systems or object membranes. They solve the problem of intervening in language operations while preserving ordinary object syntax. They aren't the default abstraction for every business object.
+
+A proxy isn't a copy of its target. A successful write through the proxy usually changes the target, and another target alias bypasses the handler, yet proxy and target have different object identities. Hiding underscore-prefixed properties or rejecting one read can enforce an interface convention, but it can't turn a still-reachable target into a secure vault.
+
+## How it works
+
+`new Proxy(target, handler)` requires both `target` and `handler` to be objects. When JavaScript performs an internal object operation on the proxy, the proxy looks up the corresponding trap; if it doesn't exist, the operation forwards to the target. A non-callable trap or a result that violates a language invariant makes the operation throw `TypeError`.
+
+A property read with default forwarding follows this sequence:
+
+1. The expression `proxy[key]` starts the proxy's internal `[[Get]]` operation.
+2. The proxy looks up the handler's `get` trap.
+3. `get(target, key, receiver)` receives the target, property key, and original receiver.
+4. The trap calls `Reflect.get(target, key, receiver)` to perform ordinary read semantics.
+5. The engine checks any invariants that constrain the trap result, then returns it to the caller.
+
+Trap arguments are defined by the intercepted language operation; they aren't arbitrary callback signatures. Here is the full mapping. Operations involving a <Term id="property-descriptor">property descriptor</Term> are especially easy to confuse with assignment.
+
+| Caller operation | Proxy trap | Default operation |
+| --- | --- | --- |
+| `proxy[key]` | `get` | `Reflect.get()` |
+| `proxy[key] = value` | `set` | `Reflect.set()` |
+| `key in proxy` | `has` | `Reflect.has()` |
+| `delete proxy[key]` | `deleteProperty` | `Reflect.deleteProperty()` |
+| Enumerate own keys | `ownKeys` | `Reflect.ownKeys()` |
+| Read an own property descriptor | `getOwnPropertyDescriptor` | `Reflect.getOwnPropertyDescriptor()` |
+| Define a property | `defineProperty` | `Reflect.defineProperty()` |
+| Read the prototype | `getPrototypeOf` | `Reflect.getPrototypeOf()` |
+| Set the prototype | `setPrototypeOf` | `Reflect.setPrototypeOf()` |
+| Test extensibility | `isExtensible` | `Reflect.isExtensible()` |
+| Prevent extensions | `preventExtensions` | `Reflect.preventExtensions()` |
+| Call a function proxy | `apply` | `Reflect.apply()` |
+| Construct with `new` | `construct` | `Reflect.construct()` |
+
+The `receiver` is the object that originally received the operation. It may be the proxy or an object inheriting from the proxy. `Reflect.get(target, key, receiver)` makes that receiver the `this` value inside an accessor; writing `target[key]` instead fixes the accessor's `this` to the target. The `receiver` passed to `Reflect.set()` likewise matters for inherited setters and for which object ultimately receives a defined property.
+
+`Reflect` doesn't automatically make an operation safe, nor does it bypass other proxies. If the target is itself a proxy, `Reflect.get()` may still invoke its trap; if the target property is a getter, the read still executes it. A handler should call the corresponding method on `target`, not repeat the same reflective operation on `receiver`, which can recurse into the current trap.
+
+Policies usually span several traps. Validation in `set` doesn't intercept `Object.defineProperty(proxy, key, descriptor)`, and hiding a name in `get` doesn't automatically affect `in`, key enumeration, or descriptor queries. Inventory every operation callers can perform, then decide which ones forward, reject, or need mutually consistent answers.
+
+## Examples
+
+These four examples build from default forwarding to `receiver`, a consistent virtual property, and revocation. Every output shown below came from running its file locally with Node 24.
+
+### Validate writes and preserve ordinary reads
+
+The first handler adds a log to reads and validates writes for fields with declared rules. A property key may be a `Symbol`, so the log calls `String(key)` instead of interpolating the key directly into a template literal.
+
+<Depth level="quick">
+
+```javascript run title="validated-order.js"
+function withValidation(target, rules) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      console.log(`get ${String(key)}`);
+      return Reflect.get(target, key, receiver);
+    },
+    set(target, key, value, receiver) {
+      const accepts = rules[key];
+      if (accepts && !accepts(value)) {
+        throw new TypeError(`invalid ${String(key)}: ${value}`);
+      }
+      console.log(`set ${String(key)}=${value}`);
+      return Reflect.set(target, key, value, receiver);
+    },
+  });
+}
+
+const order = withValidation(
+  { quantity: 1, unitPrice: 25 },
+  { quantity: (value) => Number.isInteger(value) && value > 0 },
+);
+
+order.quantity = 3;
+console.log(order.quantity * order.unitPrice);
+try {
+  order.quantity = 0;
+} catch (error) {
+  console.log(error.message);
+}
+console.log(order.quantity);
+```
+
+```text
+set quantity=3
+get quantity
+get unitPrice
+75
+invalid quantity: 0
+get quantity
+3
+```
+
+<TryToBreak items={['Assign the string "3" to quantity', 'Use a Symbol property key', 'Make quantity non-writable']} />
+
+</Depth>
+
+`Reflect.set()` returns a Boolean, which exactly matches the `set` trap's return contract. If it returns `false`, ordinary assignment in strict mode throws `TypeError`; a handler shouldn't hide that failure by always returning `true`. This example promises validation only for ordinary assignment and doesn't yet cover the property-definition path.
+
+The rules object also has a prototype, so generic library code shouldn't assume every arbitrary key is safe to use as an index. `Object.hasOwn(rules, key)`, a null-prototype dictionary, or a `Map` can make the rule set explicit. Here, both data and rules come from the same trusted code, keeping the example focused on trap forwarding.
+
+### Preserve the accessor receiver
+
+The two proxies differ only in whether they forward `receiver`. A child object inherits the getter through the proxy, so that difference changes which properties its `this` value sees.
+
+```javascript run title="receiver.js"
+const account = {
+  owner: "base",
+  currency: "USD",
+  get label() {
+    return `${this.owner}:${this.currency}`;
+  },
+};
+
+const badProxy = new Proxy(account, {
+  get(target, key) {
+    return Reflect.get(target, key, target);
+  },
+});
+
+const goodProxy = new Proxy(account, {
+  get(target, key, receiver) {
+    return Reflect.get(target, key, receiver);
+  },
+});
+
+const badChild = Object.create(badProxy);
+badChild.owner = "Mina";
+badChild.currency = "EUR";
+
+const goodChild = Object.create(goodProxy);
+goodChild.owner = "Mina";
+goodChild.currency = "EUR";
+
+console.log(badChild.label);
+console.log(goodChild.label);
+```
+
+```text
+base:USD
+Mina:EUR
+```
+
+`badProxy` explicitly uses `target` as the receiver, so the getter reads fields from the base object. `goodProxy` preserves the original `goodChild`, and the getter reads that child's own fields. Tests that only evaluate `proxy.label` don't expose this bug; include an inheritance or accessor case.
+
+There is no `set` trap here, but assigning to either child still forwards through the proxy prototype's default `[[Set]]` and eventually creates an own property on the child. If the handler adds a `set` trap, its `Reflect.set()` call should still receive the original receiver.
+
+### Make a virtual property reflect consistently
+
+Implementing only `get` makes `invoice.total` readable while `"total" in invoice` and `Object.keys(invoice)` deny that it exists. This handler defines the read, existence, key-list, and descriptor operations together so common observation paths agree.
+
+```javascript run title="virtual-total.js"
+function withTotal(invoice) {
+  const totalKey = "total";
+  if (Reflect.has(invoice, totalKey)) {
+    throw new TypeError("total already exists");
+  }
+
+  return new Proxy(invoice, {
+    get(target, key, receiver) {
+      if (key === totalKey) {
+        return receiver.quantity * receiver.unitPrice;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    has(target, key) {
+      return key === totalKey || Reflect.has(target, key);
+    },
+    ownKeys(target) {
+      return [...Reflect.ownKeys(target), totalKey];
+    },
+    getOwnPropertyDescriptor(target, key) {
+      if (key === totalKey) {
+        return { configurable: true, enumerable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+}
+
+const invoice = withTotal({ quantity: 3, unitPrice: 25 });
+console.log(invoice.total);
+console.log("total" in invoice);
+console.log(Object.keys(invoice).join(", "));
+console.log(JSON.stringify(invoice));
+```
+
+```text
+75
+true
+quantity, unitPrice, total
+{"quantity":3,"unitPrice":25,"total":75}
+```
+
+`Object.keys()` first obtains `ownKeys`, then retains only string keys whose descriptors are enumerable. `JSON.stringify()` also reads through these observation paths, so it includes `total`. Different consumers use different reflective operations, which is why a virtual object needs a coherent surface.
+
+The virtual descriptor says `configurable: true` because the target has no non-configurable `total` property supporting a stronger claim. If the target is later made non-extensible, continuing to report an extra key violates an invariant. A production implementation must specify and test that state transition.
+
+### Revoke a temporary view
+
+`Proxy.revocable()` returns a proxy and a revocation function. After revocation, fundamental operations on the proxy fail, while the target object and its other aliases remain usable.
+
+```javascript run title="revocable-session.js"
+function openReadOnlySession(record) {
+  const { proxy, revoke } = Proxy.revocable(record, {
+    set() {
+      throw new TypeError("read-only session");
+    },
+  });
+  return { view: proxy, close: revoke };
+}
+
+const record = { id: "job-7", status: "open" };
+const { view, close } = openReadOnlySession(record);
+
+console.log(view.status);
+try {
+  view.status = "closed";
+} catch (error) {
+  console.log(error.message);
+}
+
+close();
+try {
+  console.log(view.id);
+} catch (error) {
+  console.log(error.name);
+}
+
+record.status = "closed";
+console.log(record.status);
+```
+
+```text
+open
+read-only session
+TypeError
+closed
+```
+
+Revocation controls the lifetime of the proxy capability; it isn't a resource-cleanup protocol. It doesn't close files, cancel timers, erase target data, or invalidate existing target aliases. The resource owner still needs to expose and invoke an explicit cleanup operation.
+
+A `set` trap alone doesn't make a complete read-only view either. Callers may still mutate through `defineProperty`, `deleteProperty`, a prototype setter, or a target alias. A real read-only contract must enumerate allowed operations, cover the relevant traps, and control how the target is exposed.
+
+## Pitfalls
+
+### Losing `receiver`
+
+> [!PITFALL]
+> A generated handler that returns `target[key]` looks correct in tests using ordinary data properties, but it changes `this` inside getters, setters, and prototype chains. `Reflect.get(target, key, target)` has the same problem.
+
+**Fix:** preserve the trap's `receiver` when forwarding, and test accessors through an object that inherits from the proxy. Change the receiver only when the contract deliberately binds a method or accessor to the target, and document the resulting identity and encapsulation boundary.
+
+### Treating one trap as a complete policy
+
+> [!PITFALL]
+> `set`, `defineProperty`, and `deleteProperty` are distinct operations; so are `get`, `has`, `ownKeys`, and `getOwnPropertyDescriptor`. Covering only one leaves bypasses or contradictory results.
+
+**Fix:** build an operation matrix from the threat model and caller APIs. Test assignment, `Object.defineProperty()`, deletion, `in`, `Object.keys()`, `Reflect.ownKeys()`, and descriptor queries separately, and don't market a proxy as a security boundary when it can't be one.
+
+### Violating invariants
+
+> [!PITFALL]
+> An `ownKeys` result with duplicates, a missing non-configurable own key, or an extra key on a non-extensible target throws `TypeError`. Some `get` and `set` results are also constrained by non-configurable properties, so the bug may appear only after a production object is frozen.
+
+**Fix:** start from the corresponding `Reflect` result and make the smallest required transformation. Test a non-writable, non-configurable data property, an accessor without a setter, and a target passed to `Object.preventExtensions()`. Treat the exception as a handler defect, not a random caller failure.
+
+### Reporting every write as successful
+
+> [!PITFALL]
+> A `set` trap that returns `true` without changing the target makes an assignment appear successful while losing data. Always returning `false` instead turns ordinary assignment into `TypeError` in strict mode. Models often generate a fixed result merely to satisfy the Boolean return contract.
+
+**Fix:** throw a domain-specific error when rejecting a write and return the actual Boolean from `Reflect.set()` when accepting one. Test non-writable properties and non-extensible targets, and assert the final descriptor or value instead of checking only that no exception occurred.
+
+### Proxying branded objects
+
+> [!PITFALL]
+> `new Proxy(new Map(), {}).get("key")` gives `Map.prototype.get` the proxy as `this`, but the proxy lacks the internal slots a `Map` requires. A method that accesses a class private field likewise fails because the proxy doesn't carry the instance's private brand.
+
+**Fix:** don't assume an empty handler is transparent for every object. Write an explicit adapter for each concrete type you must support. If you bind methods to the target, test method identity, callback passing, fluent return values, and whether the target now escapes the proxy boundary.
+
+### Treating revocation as destruction
+
+> [!PITFALL]
+> `revoke()` disables only that proxy. It doesn't destroy the target, close resources held by the target, or stop operations through other references to it. Repeating revocation also doesn't replace idempotent resource cleanup.
+
+**Fix:** design access revocation and resource lifetime as two explicit protocols. A cleanup function closes or cancels resources, while a revoke function rejects later proxy operations. Test both call orders and repeated calls.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often emit `return target[key]` and lose `receiver`, or make `set` return `true` unconditionally, so inherited accessors read the wrong object and failed writes look successful. They also implement only `get` and `set`, then claim to provide “secure private properties” while overlooking `defineProperty`, deletion, enumeration, and target aliases. Another failure cluster is an untested `ownKeys`: a virtual key duplicates a real key, or remains reported after the target is frozen.
+
+Models also wrap `Map`, `Date`, or private-field instances in one generic logging proxy and discover incompatible-receiver or private-brand errors only at runtime. A generated fix may bind every function to the target, changing method identity, `this`, and the boundary returned by fluent APIs. Logging code that handles property keys with `` `${key}` `` can also throw for some `Symbol` keys and break the original operation.
+
+**Ask your AI to check**
+
+- List every object operation used by callers and map it to its trap, `Reflect` default, and any policy bypass.
+- For every trap, state its `receiver`, return type, and relevant invariants, then test those claims with non-configurable properties and a non-extensible target.
+- Search for `Map`, `Set`, `Date`, class private fields, `Symbol` keys, and target aliases; explain whether the proxy changes brand checks, object identity, or the access boundary.
+
+**Review checklist**
+
+- Verify `receiver` with an inherited object and getters or setters, and assert that failed writes aren't disguised as success.
+- Test assignment, property definition, deletion, presence, string keys, `Symbol` keys, and all own keys separately.
+- Repeat the tests after freezing or preventing extensions, then cover pre/post-revocation behavior and branded built-ins.
+
+**Prompt vocabulary**
+
+Use the exact terms `proxy trap`, `target`, `handler`, `receiver`, `forwarding`, `property descriptor`, `proxy invariant`, `internal slot`, `revocable proxy`, and `brand check`. Ask for an operation matrix and invariant tests; “put a proxy around this object” doesn't define correct behavior.
+
+<Depth level="deep">
+
+## Trap contracts and invariants
+
+A proxy can customize behavior, but it can't break facts on which the object model relies. These constraints are <Term id="proxy-invariant">proxy invariants</Term>. The engine validates applicable constraints after a trap returns, so a handler function that returns normally can still make the surrounding operation throw `TypeError`.
+
+Invariants connect to the target's actual state. For a non-writable, non-configurable data property, `get` can't report a different value and `set` can't claim a successful write of a different value. Non-configurable accessors without getters or setters similarly constrain the corresponding operation. Configurable properties give a proxy more room, but they don't make every combination of trap answers coherent.
+
+An `ownKeys` result may contain only strings and `Symbol` values, with no duplicates. It must include every non-configurable own key of the target; if the target is non-extensible, it must exactly match all the target's own keys. Extra virtual keys therefore fit only an extensible target unless the implementation defines real target properties and maintains descriptor consistency.
+
+`getOwnPropertyDescriptor` can't hide a non-configurable target property or invent a new property for a non-extensible target. `defineProperty`, `deleteProperty`, `has`, prototype, and extensibility traps carry related constraints. The most reliable design obtains a valid baseline from the corresponding `Reflect` method and changes only what the contract requires.
+
+Failure forms differ among `Reflect` methods. `Reflect.defineProperty()`, `Reflect.deleteProperty()`, `Reflect.set()`, and `Reflect.preventExtensions()` use a Boolean for some failures, while wrapper APIs such as `Object.defineProperty()` may throw. Callers must inspect that Boolean. “Functional means it never throws” is still wrong because invalid arguments, trap failures, and invariant conflicts can all raise exceptions.
+
+Traps can also compose. `Reflect.set(target, key, value, receiver)` with a proxy receiver may ultimately perform `[[DefineOwnProperty]]` on that receiver, invoking the same handler's `defineProperty` trap. Logging in both `set` and `defineProperty` may therefore record one assignment twice. Policy code should deduplicate by semantics instead of assuming each source statement invokes only one trap.
+
+### Limits of transparent forwarding
+
+An empty handler forwards the internal object methods a proxy supports, but the proxy remains a distinct object. `proxy === target` is `false`, and using proxy and target separately as `Map` or `WeakMap` keys creates two entries. Identity-based caches, subscriptions, and deduplication logic must choose a canonical identity.
+
+A proxy also can't redefine strict equality, every `typeof` category, or private-field syntax. A callable target produces a callable proxy, and only a constructable target permits a `construct` trap; a handler can't make an ordinary object genuinely callable. Proxy is a virtualization mechanism bounded by a predefined trap set, not arbitrary syntax overloading.
+
+## Receivers, internal slots, and membranes
+
+An <Term id="internal-slot">internal slot</Term> is specification state carried by an object but unavailable as an ordinary property. `Map`, `Set`, `Date`, private-field instances, and many platform objects first verify that the receiver carries the required state. A proxy generally doesn't acquire its target's slots or brands, so “no trap” doesn't mean every method call is transparent.
+
+Binding every function read from the target with `bind(target)` makes some built-in methods work, but the cost is substantial. Creating a new bound function on every read makes `proxy.method === proxy.method` false. The method's `this` bypasses the proxy, and a fluent method returning `this` may expose the target. Caching bound functions repairs part of the identity problem but doesn't define the correct security boundary.
+
+A type-specific adapter is usually clearer: expose only allowed methods, invoke those methods with the target as receiver, and explicitly wrap nested return values. If a policy must hold across a whole object graph, the design becomes an object membrane. Objects read out, objects passed in, exceptions, and function calls may all require wrapping or unwrapping in both directions.
+
+A membrane must also preserve identity. Wrapping the same target repeatedly should return the same proxy, or equality, collection membership, and cyclic object graphs fail. Typical implementations keep a target-to-proxy `WeakMap` and, when needed, a reverse map. That adds explicit lifetime and identity management beyond calling `new Proxy(value, handler)` inside every `get`.
+
+Revoking a whole membrane is harder than revoking one proxy. Every nested proxy already handed out must share the revoked state, and later getters or callbacks must not leak an unwrapped target again. When a system needs only one short-lived read-only view, keeping the target private and using one revocable proxy is easier to audit.
+
+### Testing the proxy contract
+
+Tests should start with observable contracts rather than invoking handler methods one at a time. Compare direct syntax with its corresponding `Reflect` call, then include `Object.keys()`, `Reflect.ownKeys()`, descriptors, inherited accessors, and strict-mode assignment. That covers real paths in which several internal operations compose.
+
+Invariant tests need target state changes. Run against an ordinary extensible target first, then add a non-configurable property, a non-writable property, an accessor without a setter, and the same operations after `Object.preventExtensions()`. Tests using only plain objects let illegal `ownKeys` and dishonest `set` results remain hidden.
+
+Boundary tests should also cover string and `Symbol` keys, callable and non-callable targets, built-in collections, private-field instances, and every supported operation after revocation. For a virtual property, verify that reading, `in`, key enumeration, descriptors, and serialization agree with the stated contract instead of assuming they must all behave identically.
+
+Finally, inspect target aliases and nested objects. If the policy says all access goes through the proxy, exposing the target after proxy creation is a design gap. If a read returns a nested raw object, the policy disappears at the next level. Putting these constraints in tests is more verifiable than calling the proxy generically “secure” or “reactive.”
+
+</Depth>
+
+<Checkpoint id="javascript/proxy-reflect" />
+
+## Further reading
+
+- [ECMAScript language specification: Proxy Objects](https://tc39.es/ecma262/#sec-proxy-objects)
+- [ECMAScript language specification: The Reflect Object](https://tc39.es/ecma262/#sec-reflect-object)
+- [MDN: `Proxy`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)
+- [MDN: `Reflect`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect)
+- [MDN: `handler.get()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy/Proxy/get)

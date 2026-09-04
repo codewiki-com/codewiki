@@ -1,0 +1,475 @@
+---
+title: Cell 与 RefCell
+description: 通过 Cell 的值替换与 RefCell 的运行时借用，理解 Rust 内部可变性、借用冲突、重入回调和共享所有权的边界。
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [interior-mutability, cell, refcell, borrow-checking, unsafe-cell]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/box-rc-arc, rust/mutex-rwlock, rust/send-sync, rust/unsafe]
+terms: [interior-mutability, borrow-checker, borrow-guard, unsafe-cell]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/refcell-cell
+sources:
+  - { title: 'Rust standard library - std::cell', url: 'https://doc.rust-lang.org/std/cell/index.html' }
+  - { title: 'Rust standard library - Cell', url: 'https://doc.rust-lang.org/std/cell/struct.Cell.html' }
+  - { title: 'Rust standard library - RefCell', url: 'https://doc.rust-lang.org/std/cell/struct.RefCell.html' }
+  - { title: 'Rust standard library - UnsafeCell', url: 'https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html' }
+  - { title: 'The Rust Programming Language - RefCell and interior mutability', url: 'https://doc.rust-lang.org/book/ch15-05-interior-mutability.html' }
+origin: old/src/content/docs/rust/refcell-cell.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="interior-mutability">内部可变性（interior mutability）</Term>允许类型通过共享引用修改受控状态。`Cell<T>` 以取出或替换整个值的方式工作，`RefCell<T>` 则在运行时检查共享借用与独占借用。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `RefCell<T>` 没有取消借用规则。活跃的 `Ref` 或 `RefMut` 与新借用冲突时，`borrow()` 和 `borrow_mut()` 会 panic；回调重入尤其容易触发这种冲突。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    小型值或可整体替换的状态优先考虑 `Cell<T>`。需要借用内部数据时才用 `RefCell<T>`，缩短守卫作用域，并在冲突属于正常控制流时使用 `try_borrow*()`。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Rust 通常不允许通过 `&T` 修改 `T`。这条规则让共享引用只能观察普通数据，使编译器可以在编译期排除悬垂引用和冲突访问。不过，有些类型的公开语义确实是共享的，而内部仍需更新计数、缓存、测试记录或回调注册表。
+
+`Cell<T>` 与 `RefCell<T>` 是标准库 `std::cell` 中的安全内部可变性类型。调用方拿到的仍是共享引用，但包装器把修改限制在自己的 API 内。它们没有绕开 Rust 的别名规则，而是用不同方式履行这些规则。
+
+`Cell<T>` 不会从共享的 `&Cell<T>` 返回内部 `T` 的引用。它让你复制、取出或替换整个值，因此不会产生一个与写入重叠的内部借用。`get()` 需要 `T: Copy`，但 `Cell<T>` 本身可以保存 `String` 等非 `Copy` 类型；这类值可用 `replace()`、`take()` 或 `into_inner()` 处理。
+
+`RefCell<T>` 会返回 `Ref<'_, T>` 或 `RefMut<'_, T>`。这些<Term id="borrow-guard">借用守卫（borrow guard）</Term>代表运行时的共享或独占访问权，守卫销毁时归还访问权。规则和普通引用相同，只是检查时机从编译期移到了运行时。
+
+你会在接受 `&self` 的缓存、测试替身、单线程 GUI 状态、回调注册表，以及 `Rc<RefCell<T>>` 形式的共享对象中遇到它们。若方法本来可以合理接收 `&mut self`，直接使用普通字段通常更清楚；内部可变性不应成为回避所有权设计的默认办法。
+
+| 需求 | 合适的起点 | 访问模型 | 失败方式 |
+| --- | --- | --- | --- |
+| 通过 `&self` 更新计数或标志 | `Cell<T>` | 复制或整体替换 | 普通操作不会因动态借用冲突而 panic |
+| 通过 `&self` 修改集合或结构体 | `RefCell<T>` | 运行时共享／独占借用 | 冲突的 `borrow*()` 会 panic |
+| 多线程共享可变状态 | `Mutex<T>`、`RwLock<T>` 或原子类型 | 同步访问 | 阻塞、错误或原子操作语义 |
+| 已有 `&mut T` 或拥有 `T` | 普通 `T` | 编译期独占访问 | 编译器拒绝冲突借用 |
+
+## 工作原理
+
+### `Cell<T>` 的整体值操作
+
+`Cell<T>` 可以保存非 `Copy` 值，但 cell 的共享引用不能产生指向内部值的普通引用。`set()` 写入新值并丢弃旧值，`replace()` 写入新值并返回旧值，`take()` 在 `T: Default` 时用默认值替换并返回旧值。拥有包装器时，`into_inner()` 可以直接取回 `T`。
+
+`get()` 只在 `T: Copy` 时可用，因为它要把值复制给调用方。若已经有 `&mut Cell<T>`，`get_mut()` 可以返回普通 `&mut T`；此时独占性已经由外层可变引用证明，不需要内部可变性参与检查。选 API 时应看你需要复制、替换还是借用，不要只看 `T` 的大小。
+
+| `Cell<T>` 操作 | 所需条件 | 结果 |
+| --- | --- | --- |
+| `get()` | `T: Copy` | 返回内部值的副本 |
+| `set(value)` | 无额外 trait 约束 | 替换并丢弃旧值 |
+| `replace(value)` | 无额外 trait 约束 | 替换并返回旧值 |
+| `take()` | `T: Default` | 放入默认值并返回旧值 |
+| `get_mut()` | 调用方持有 `&mut Cell<T>` | 返回 `&mut T` |
+| `into_inner()` | 调用方拥有 `Cell<T>` | 消费包装器并返回 `T` |
+
+### `RefCell<T>` 的动态借用
+
+`RefCell<T>` 在概念上维护三种状态：未借用、存在一个或多个共享借用、存在一个独占借用。`borrow()` 在没有独占借用时增加一个共享访问，`borrow_mut()` 只在完全未借用时取得独占访问。具体计数表示属于标准库实现细节，应用代码只应依赖公开行为。
+
+借用成功后，`Ref<T>` 通过 `Deref` 提供 `&T` 式访问，`RefMut<T>` 通过 `DerefMut` 提供 `&mut T` 式访问。守卫存活多久，动态借用就持续多久。把守卫存进结构体、从方法返回或跨越回调调用，都会扩大冲突窗口。
+
+`borrow()` 与 `borrow_mut()` 把冲突视为程序错误并 panic。`try_borrow()` 与 `try_borrow_mut()` 返回 `Result`，适合冲突确实属于接口允许的状态，例如一个非阻塞的「当前忙碌」查询。若冲突按设计不该发生，用 `try_*` 丢弃错误只会把 panic 改成静默漏写。
+
+当调用方拥有 `&mut RefCell<T>` 时，`get_mut()` 直接返回 `&mut T`，不执行动态检查。消费 `RefCell<T>` 的 `into_inner()` 也无需检查并返回内部值。这两种 API 能让初始化、批量更新和销毁路径回到普通编译期借用。
+
+### 所有权与访问权是两条轴
+
+`RefCell<T>` 只回答「现在谁能访问 `T`」，并不提供多个所有者。`Rc<T>` 只回答「单线程中有多少个强所有者」，并不允许修改 `T`。组合成 `Rc<RefCell<T>>` 后，多个 `Rc` 句柄共享一个动态借用点；所有克隆都可能在运行时互相冲突。
+
+组合类型要从外向内阅读。`Rc<RefCell<T>>` 表示共享所有权加单线程动态借用，`Arc<Mutex<T>>` 表示跨线程共享所有权加互斥访问。把前者机械替换为后者会引入阻塞、锁顺序和中毒策略等新问题，并不只是「线程安全版本」。
+
+`Cell<T>` 与 `RefCell<T>` 都不实现 `Sync`，所以不能通过共享引用在多个线程中同时使用。包装器在 `T: Send` 时可以作为一个整体移动到另一线程；这和跨线程共享不是一回事。`Rc<T>` 本身既不是 `Send` 也不是 `Sync`。
+
+## 示例
+
+下面四个程序依次展示 `Cell<T>` 的整体替换、`RefCell<T>` 的守卫、可重入回调，以及 `Rc<RefCell<T>>` 的共享所有权。代码使用 Rust 1.98.0 工具链执行，输出块是实际结果。
+
+### 用 `Cell<T>` 替换值
+
+`completed` 是 `Copy` 计数，因此可以用 `get()` 读出后再 `set()`。`phase` 是 `String`，它仍可放进 `Cell<T>`，但要通过 `replace()`、`take()` 与 `into_inner()` 转移整个值。
+
+<Depth level="quick">
+
+```rust title="cell_basics.rs"
+use std::cell::Cell;
+
+struct JobState {
+    completed: Cell<u32>,
+    phase: Cell<String>,
+}
+
+impl JobState {
+    fn finish_one(&self) -> u32 {
+        let next = self.completed.get() + 1;
+        self.completed.set(next);
+        next
+    }
+}
+
+fn main() {
+    let state = JobState {
+        completed: Cell::new(0),
+        phase: Cell::new(String::from("queued")),
+    };
+
+    println!("completed: {}", state.finish_one());
+    println!("completed: {}", state.finish_one());
+
+    let old_phase = state.phase.replace(String::from("running"));
+    println!("phase: {old_phase} -> {}", state.phase.take());
+    state.phase.set(String::from("done"));
+    println!("final phase: {}", state.phase.into_inner());
+}
+```
+
+```text
+completed: 1
+completed: 2
+phase: queued -> running
+final phase: done
+```
+
+<TryToBreak items={['让计数器从 u32::MAX 开始', '连续替换两次 String', '提前调用 into_inner() 移走 Cell']} />
+
+</Depth>
+
+`finish_one()` 只拿到 `&self`，但计数修改被限制在 `Cell<u32>` 内。加法是否允许溢出是另一个契约问题；实际计数可能到达上限时，应选 `checked_add()`、`saturating_add()` 或更宽类型，并说明所需语义。
+
+`take()` 返回 `"running"`，同时把 `String::default()`，也就是空字符串，留在 cell 中。示例随后立即写入 `"done"`，没有依赖这个临时空状态。若空值不满足类型不变量，应使用 `replace()` 放入一个明确有效的新值。
+
+### 观察 `RefCell<T>` 守卫
+
+`entries()` 用 `Ref::map()` 把整个向量的共享守卫映射成切片守卫。只要 `view` 仍存活，`try_record()` 就不能取得独占借用；显式 `drop(view)` 后，同一次写入可以成功。
+
+```rust title="refcell_guards.rs"
+use std::cell::{Ref, RefCell};
+
+struct AuditLog {
+    entries: RefCell<Vec<String>>,
+}
+
+impl AuditLog {
+    fn record(&self, event: &str) {
+        self.entries.borrow_mut().push(event.to_owned());
+    }
+
+    fn entries(&self) -> Ref<'_, [String]> {
+        Ref::map(self.entries.borrow(), Vec::as_slice)
+    }
+
+    fn try_record(&self, event: &str) -> bool {
+        if let Ok(mut entries) = self.entries.try_borrow_mut() {
+            entries.push(event.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn main() {
+    let log = AuditLog { entries: RefCell::new(Vec::new()) };
+    log.record("created");
+    log.record("validated");
+
+    let view = log.entries();
+    println!("entries: {:?}", &*view);
+    println!("write while view lives: {}", log.try_record("committed"));
+    drop(view);
+
+    println!("write after drop: {}", log.try_record("committed"));
+    println!("entries: {:?}", &*log.entries());
+}
+```
+
+```text
+entries: ["created", "validated"]
+write while view lives: false
+write after drop: true
+entries: ["created", "validated", "committed"]
+```
+
+返回 `Ref<'_, [String]>` 避免复制整个日志，但也把动态借用期限纳入公开 API。若调用方只需要长度、一个布尔判断或少量可复制数据，直接返回拥有型结果通常能减小冲突面。需要暴露守卫时，应在文档中说明它会阻止哪些方法。
+
+### 在回调前释放借用
+
+回调可能再次调用总线。`publish()` 先克隆一份轻量的 `Rc` 句柄列表，随后共享守卫在赋值语句末尾销毁；执行回调时，`subscribe()` 因而可以取得新的独占借用。新订阅者从下一次发布开始生效。
+
+```rust title="reentrant_bus.rs"
+use std::cell::RefCell;
+use std::rc::Rc;
+
+type Listener = Rc<dyn Fn(&EventBus)>;
+
+struct EventBus {
+    listeners: RefCell<Vec<Listener>>,
+}
+
+impl EventBus {
+    fn subscribe(&self, listener: Listener) {
+        self.listeners.borrow_mut().push(listener);
+    }
+
+    fn publish(&self) {
+        let snapshot = self.listeners.borrow().clone();
+        for listener in snapshot {
+            listener(self);
+        }
+    }
+
+    fn listener_count(&self) -> usize {
+        self.listeners.borrow().len()
+    }
+}
+
+fn main() {
+    let bus = EventBus { listeners: RefCell::new(Vec::new()) };
+    bus.subscribe(Rc::new(|bus| {
+        println!("primary");
+        bus.subscribe(Rc::new(|_| println!("secondary")));
+    }));
+
+    bus.publish();
+    println!("listeners after first: {}", bus.listener_count());
+    bus.publish();
+    println!("listeners after second: {}", bus.listener_count());
+}
+```
+
+```text
+primary
+listeners after first: 2
+primary
+secondary
+listeners after second: 3
+```
+
+如果直接写 `for listener in self.listeners.borrow().iter()`，共享守卫会覆盖整个循环体。第一个回调尝试订阅时，内部的 `borrow_mut()` 会 panic。快照语义还必须写进契约，因为它决定发布过程中新增或删除的监听器何时可见。
+
+### 用 `Rc<RefCell<T>>` 分开所有权与借用
+
+`Queue` 的克隆只增加 `Rc` 强引用计数，两个句柄指向同一个 `VecDeque`。每次方法调用再通过 `RefCell` 短暂取得访问权，因此生产者写入的任务能被工作者取出。
+
+```rust title="shared_queue.rs"
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+#[derive(Clone)]
+struct Queue {
+    jobs: Rc<RefCell<VecDeque<String>>>,
+}
+
+impl Queue {
+    fn new() -> Self {
+        Self { jobs: Rc::new(RefCell::new(VecDeque::new())) }
+    }
+
+    fn push(&self, job: &str) {
+        self.jobs.borrow_mut().push_back(job.to_owned());
+    }
+
+    fn pop(&self) -> Option<String> {
+        self.jobs.borrow_mut().pop_front()
+    }
+
+    fn owner_count(&self) -> usize {
+        Rc::strong_count(&self.jobs)
+    }
+}
+
+fn main() {
+    let producer = Queue::new();
+    let worker = producer.clone();
+
+    producer.push("index");
+    producer.push("publish");
+    println!("owners: {}", producer.owner_count());
+    println!("worker took: {}", worker.pop().unwrap());
+    println!("producer sees: {}", producer.pop().unwrap());
+}
+```
+
+```text
+owners: 2
+worker took: index
+producer sees: publish
+```
+
+这个队列只适用于单线程协作。若工作者是真实操作系统线程，`Rc<RefCell<_>>` 无法跨越线程边界；应重新选择消息传递、`Arc<Mutex<_>>` 或其他同步结构。选择哪一个取决于阻塞、所有权和关闭语义，而不是让类型检查通过的最短改动。
+
+## 陷阱
+
+### 把 `Cell<T>` 误写成只支持 `Copy`
+
+> [!PITFALL]
+> `Cell::get()` 要求 `T: Copy`，但这个约束不属于 `Cell<T>` 类型本身。生成代码常因此把 `Cell<String>` 改成 `RefCell<String>`，无端增加动态借用状态和 panic 路径。
+
+**修复：** 若操作可以表达为整体替换，非 `Copy` 类型也可使用 `set()`、`replace()`、`take()` 或 `into_inner()`。只有确实需要借用内部字段或原地操作集合时，才选择 `RefCell<T>`。
+
+### 让守卫跨过未知调用
+
+> [!PITFALL]
+> 迭代 `self.callbacks.borrow()` 的结果时，守卫通常覆盖整个循环。任何回调只要重新注册、删除回调或调用另一个借用同一 cell 的方法，就可能触发运行时 panic。
+
+**修复：** 在调用用户代码前提取所需的拥有型数据，并结束 `Ref` 或 `RefMut`。若采用快照，明确新增、删除和嵌套发布的可见性；不要为了缩短守卫而悄悄改变事件语义。
+
+### 把动态借用冲突当成锁竞争
+
+> [!PITFALL]
+> `try_borrow_mut()` 返回错误不表示另一个线程暂时持锁。`RefCell<T>` 不能跨线程共享，这个错误说明当前调用栈、迭代器或已返回守卫仍持有冲突访问权。
+
+**修复：** 先画出守卫的创建点、最后使用点和所有可能重入的调用。冲突不应存在时，调整作用域或 API；只有「忙碌」本来就是有效状态时，才把 `BorrowMutError` 转换为领域结果。
+
+### 过早采用 `Rc<RefCell<T>>`
+
+> [!PITFALL]
+> 为了绕过一个编译期借用错误而包装 `Rc<RefCell<_>>`，会同时引入共享所有权、运行时 panic 和可能的强引用环。原本清楚的状态所有者也会变得难以辨认。
+
+**修复：** 先尝试缩短普通借用、拆分结构体字段、改变方法接收者或让一个组件拥有状态。只有领域确实需要多个单线程所有者共享可变对象时，才使用该组合，并把反向非拥有边建模为 `Weak<T>`。
+
+### 把单线程包装器送进并发任务
+
+> [!PITFALL]
+> AI 常把本地状态改成 `Rc<RefCell<T>>`，随后又把句柄捕获进要求 `Send` 的线程或多线程异步任务。继续叠加 `clone()` 不能补上 `Send` 或 `Sync`，也不能提供同步。
+
+**修复：** 先确认任务是否会跨线程，以及状态能否改成消息所有权转移。确需共享时使用与访问模式匹配的同步原语，并审查临界区、锁顺序和失败策略；不要把 `Arc<Mutex<_>>` 当作语法替换。
+
+### 从 API 泄漏过长的 `Ref` 或 `RefMut`
+
+> [!PITFALL]
+> 返回守卫能避免复制，却把内部动态借用状态暴露给调用方。调用方若把守卫保存在较长作用域中，后来一个看似无关的 `&self` 方法也可能 panic。
+
+**修复：** 优先返回计算后的标量、克隆出的必要值，或接受一个只在短借用期间执行的闭包。必须返回守卫时，在名称、类型和文档中暴露该约束，并测试持有守卫时哪些操作会失败。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常用 `Rc<RefCell<_>>` 一次性压过所有权错误，却不说明谁拥有状态；随后它会在持有 `borrow_mut()` 时调用回调，让回调重入同一对象并 panic。它还会声称 `Cell<T>` 只能保存 `Copy` 类型，把本可整体替换的 `String` 升级成 `RefCell<String>`；或者把 `Rc<RefCell<_>>` 捕获进 `tokio::spawn`，再用更多 `clone()` 试图修复 `Send` 错误。另一种隐蔽失败是把 `try_borrow_mut().ok()` 的失败直接忽略，导致更新偶发丢失。
+
+**让 AI 检查**
+
+- 列出每个 `Cell`、`RefCell`、`Rc` 与 `Arc` 的所有者、线程边界，以及每个 `Ref`／`RefMut` 的最后使用点。
+- 找出持有借用守卫时发生的函数调用、回调、格式化、迭代和错误转换，并检查它们是否会再次借用同一 `RefCell`。
+- 对每个 `try_borrow*()` 说明冲突为何是允许的运行时状态，以及丢弃或重试失败是否会破坏业务不变量。
+
+**审查清单**
+
+- 用重入回调测试注册、删除和嵌套调用，并断言动态借用冲突不会变成未说明的 panic。
+- 核对 `Cell<T>` 是否可以用整体替换完成任务，以及 `RefCell<T>` 返回的守卫是否泄漏到过长作用域。
+- 验证共享状态的线程模型、`Send`／`Sync` 要求、`Rc` 强引用环和所有失败路径。
+
+**提示词词汇**
+
+使用准确术语：`interior mutability`（内部可变性）、`runtime borrow checking`（运行时借用检查）、`borrow guard`（借用守卫）、`shared borrow`（共享借用）、`exclusive borrow`（独占借用）、`reentrant callback`（重入回调）、`guard scope`（守卫作用域）、`strong reference cycle`（强引用环）、`thread boundary`（线程边界）。要求模型输出守卫时间线与所有权图；「修复 RefCell」不足以暴露冲突来自哪次调用。
+
+<Depth level="deep">
+
+## `UnsafeCell<T>` 与安全边界
+
+<Term id="unsafe-cell">`UnsafeCell<T>`</Term> 是 Rust 语言认可的内部可变性底层原语。通过共享的 `&UnsafeCell<T>` 可以调用 `get()` 取得原始 `*mut T`，但解引用和写入仍属于 `unsafe` 操作。它只关闭编译器对「共享引用指向的数据不可变」的部分假设，不会自动证明引用有效、访问不重叠或没有数据竞争。
+
+`Cell<T>` 与 `RefCell<T>` 都在内部使用这个原语，并各自提供安全契约。`Cell<T>` 通过不从共享引用产生内部普通引用来避免别名冲突；`RefCell<T>` 则在创建守卫时动态执行共享与独占检查。包装器持续维护的限制提供了安全性，只有一个 `UnsafeCell<T>` 字段并不能证明什么。
+
+实现自定义内部可变性类型时，`unsafe` 代码必须说明哪些指针可同时存在、何时可以读写、值是否已初始化，以及跨线程时如何排除数据竞争。只把字段放进 `UnsafeCell<T>` 而不写出这些不变量，等于把编译器原本承担的证明责任留成空白。
+
+`UnsafeCell<T>` 也不会让内部的 `T` 自动变成线程安全。标准库的并发原语还需要原子操作、锁或其他同步协议。若业务代码只需现有安全包装器，应使用 `Cell<T>`、`RefCell<T>`、`Mutex<T>`、`RwLock<T>` 或原子类型，而不是直接操作原始指针。
+
+### 包装器保证与业务不变量
+
+安全内部可变性只保证内存安全，不保证业务更新正确。两个依次成功的短借用仍可能组成错误事务，例如先读余额、释放守卫，再根据旧余额写回。借用检查无法判断这个读改写序列是否必须原子完成。
+
+因此，公开方法还要维护领域不变量。把验证与提交放在同一个 `RefMut` 作用域中，可以避免同一线程内的重入观察到半完成状态；但在持有守卫时调用未知代码又可能造成 panic。常见做法是在进入借用前准备输入，在短借用中完成状态转换，释放守卫后再通知外部回调。
+
+这个顺序并非普适模板。若回调必须能够取消操作或读取旧状态，可能需要显式事件对象、两阶段提交或队列化通知。重点是把「何时状态可见」与「何时守卫存活」作为同一份契约审查。
+
+## 动态借用的生命周期
+
+### 守卫由值的生命周期控制
+
+`RefCell<T>` 的借用跟随返回的守卫，而不是只存在于调用 `borrow()` 的一行。具名守卫通常保持到其销毁作用域结束，即使普通读取已经完成，因为销毁守卫才会释放动态借用。把守卫返回给调用方或放进容器会延长这段时间；用更小的代码块或显式 `drop(guard)` 可以提前结束。
+
+临时值的销毁位置有时比表面代码更长，尤其是在 `match`、`if let`、迭代器链和语句尾表达式中。怀疑冲突时，不要靠缩进猜测；给守卫命名，检查最后使用点，必要时用小代码块或 `drop(guard)` 明确结束访问权。
+
+显式 `drop()` 适合表达「后续调用必须在守卫释放后发生」。若代码频繁依赖它才能工作，API 可能返回了过宽的数据或把太多字段塞进一个 `RefCell`。拆成多个独立 cell 能缩小冲突域，但也会让跨字段不变量更难原子维护。
+
+### 映射守卫仍是同一次借用
+
+`Ref::map()` 与 `RefMut::map()` 可以把守卫投影到内部字段或切片，而不重新借用 `RefCell`。映射后的守卫仍保持原来的动态借用状态；它看起来只暴露一个字段，并不意味着包装器的其他部分可以同时取得独占借用。
+
+`Ref::filter_map()` 和对应的可变版本允许投影失败时返回原守卫。这些 API 适合实现精确读取接口，但会把守卫类型与生命周期写进签名。若调用方只需一个 `Copy` 值、长度或判定结果，直接计算后返回通常更简单。
+
+拆分守卫的 API 只能在安全规则能证明目标不重叠时使用。不要用原始指针伪造两个 `RefMut` 来绕过动态检查。动态借用检查被跳过后，违反别名规则会从可诊断的 panic 变成未定义行为。
+
+### panic 不是调度机制
+
+`borrow()` 失败会 panic，因为该 API 把冲突定义为程序逻辑错误。panic 策略可能是展开，也可能是直接终止进程，因此不能把 `catch_unwind` 当作普通的「稍后重试」控制流。库代码还可能不满足安全跨越展开边界所需的 trait。
+
+`try_borrow()` 把同一检查变成显式错误，但不会等待守卫释放。需要等待另一个线程或任务时，`RefCell<T>` 不是合适的原语。单线程异步代码即使只运行在一个线程上，也可能在 `.await` 处交错；长期保存守卫会让后续轮询路径发生动态冲突。
+
+在异步代码中，先把所需数据提取成拥有型值并释放守卫，再执行 `.await`，通常更容易审查。若状态必须跨挂起点保持独占访问，应重新考虑任务所有权、消息传递或异步感知的同步原语，而不是假设单线程就没有重入。
+
+## 组合类型的图与线程语义
+
+### `Rc<RefCell<T>>` 不会阻止环
+
+`Rc<T>` 通过强引用计数决定何时销毁值。若两个节点通过 `Rc<RefCell<Node>>` 互相保存强引用，它们的计数都不会归零，内存可以保持可达但业务上已无用。Rust 的内存安全允许这种泄漏。
+
+树或有向拥有关系通常让子节点持有父节点的 `Weak<T>`，父节点持有子节点的 `Rc<T>`。`Weak::upgrade()` 返回 `Option<Rc<T>>`，调用方必须处理所有者已经销毁的情况。哪条边拥有目标是领域设计，不应由代码生成器按字段名称猜测。
+
+动态借用与引用计数解决的是不同问题。把反向边改成 `Weak<RefCell<T>>` 可以打破强引用环，却不会减少借用冲突；缩短 `RefMut` 也不会让强计数归零。诊断时应分别画所有权图和守卫时间线。
+
+### 条件 `Send` 不等于 `Sync`
+
+当 `T: Send` 时，可以把一个未共享的 `Cell<T>` 或 `RefCell<T>` 整体移动到另一线程。它们不实现 `Sync`，所以 `&Cell<T>` 与 `&RefCell<T>` 不能安全地被多个线程共享。这个区别经常被简写成「它们不是线程安全的」，但简写会掩盖合法的所有权转移。
+
+`Rc<T>` 不能跨线程发送；`Arc<T>` 提供线程安全的引用计数，但只有当内部类型满足相应约束时，`Arc<T>` 才能共享。`Arc<RefCell<T>>` 仍不满足所需的 `Sync`，因为 `Arc` 不会改变内部访问协议。
+
+选择同步类型前，应先确定是单一任务拥有状态、多个任务发送命令，还是多个线程确实要直接共享。消息通道可以转移操作或数据所有权；互斥锁提供独占临界区；读写锁允许特定读写模式；原子类型只支持其定义的原子操作。它们不是可互换的包装层。
+
+## API 设计与测试
+
+### 让共享方法说明隐藏写入
+
+一个接收 `&self` 的方法若会更新缓存、统计或日志，类型文档应说明这个可观察副作用。调用方可能在重入、测试断言或性能敏感路径中依赖「读取不会修改」的直觉。方法名、错误类型和文档应让隐藏写入可被发现。
+
+不要向调用方承诺 `RefCell<T>` 是实现细节，却又返回 `Ref<T>`。守卫类型会暴露包装器、生命周期和冲突行为，未来改用锁或普通字段时会破坏 API。若需要抽象实现，可返回拥有型结果，或让调用方提供只在内部短借用期间执行的闭包。
+
+闭包式访问也有代价：闭包可能 panic、重入或执行很久。API 可以限制闭包拿到的视图，并确保内部状态在调用前处于有效状态。安全 Rust 会防止悬垂引用，却不会替你定义回调期间的业务语义。
+
+### 测试冲突而不依赖 panic 文本
+
+测试 `RefCell<T>` 时，优先通过公开 API 验证状态变化与错误结果。若某个方法按契约会在冲突时返回错误，就先持有一个守卫，调用该方法，并断言错误变体；不要匹配 `BorrowError` 的展示文本，因为文字不是核心契约。
+
+若冲突代表实现缺陷，测试应构造真实重入路径，例如监听器在回调中订阅或取消订阅。只在同一函数里连续写两个 `borrow_mut()` 能证明基础规则，却不能覆盖实际调用图。回归测试还应确认修复后事件顺序与快照语义没有改变。
+
+对 `Rc<RefCell<T>>` 再增加两个测试维度：多个句柄是否看见同一状态，以及非拥有边是否会阻止销毁。可以用 `Rc::strong_count()` 辅助定位，但业务测试更应观察节点或资源是否按契约释放。引用计数值容易因测试本身的临时克隆而变化。
+
+### 选择最窄的能力
+
+若只有一个所有者并能取得 `&mut self`，普通字段提供最强的静态保证。需要通过 `&self` 替换整体值时，`Cell<T>` 的能力比 `RefCell<T>` 更窄；需要借用内部结构时，再接受 `RefCell<T>` 的动态失败面。多个所有者属于另一项决定，应单独考虑 `Rc<T>` 或 `Arc<T>`。
+
+能力越宽，调用方需要审查的状态越多。`Rc<RefCell<T>>` 同时允许克隆所有者与延迟访问冲突，`Arc<Mutex<T>>` 又加入线程调度和锁行为。让类型准确表达实际共享关系，通常比先选最灵活的包装器、再靠约定限制使用更可靠。
+
+遇到编译器拒绝借用时，先描述期望的所有权与访问时间线。若期望本身可以在编译期表达，就重构数据或控制流；只有访问关系确实要到运行时才知道时，内部可变性才是在表达问题，而不是隐藏问题。
+
+</Depth>
+
+<Checkpoint id="rust/refcell-cell" />
+
+## 延伸阅读
+
+- [Rust 标准库：`std::cell`](https://doc.rust-lang.org/std/cell/index.html)
+- [Rust 标准库：`Cell<T>`](https://doc.rust-lang.org/std/cell/struct.Cell.html)
+- [Rust 标准库：`RefCell<T>`](https://doc.rust-lang.org/std/cell/struct.RefCell.html)
+- [Rust 标准库：`UnsafeCell<T>`](https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html)
+- [《Rust 程序设计语言》：`RefCell<T>` 与内部可变性](https://doc.rust-lang.org/book/ch15-05-interior-mutability.html)

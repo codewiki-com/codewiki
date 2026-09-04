@@ -1,0 +1,430 @@
+---
+title: 'Unicode 文本'
+description: '正确处理码点、编码、字素簇、规范化和文本比较，避免破坏用户数据。        '
+track: foundations
+section: text-numbers
+difficulty: intermediate
+tags: [unicode, utf-8, grapheme-clusters, normalization, text-comparison]
+prerequisites: []
+related: [foundations/i18n, foundations/regular-expressions, foundations/hash-maps, foundations/sorting-and-searching]
+terms: [unicode-code-point, unicode-scalar-value, utf-16-code-unit, grapheme-cluster]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: foundations/unicode-text
+sources:
+  - { title: 'Unicode Standard Annex #15 - Unicode Normalization Forms', url: 'https://www.unicode.org/reports/tr15/' }
+  - { title: 'Unicode Standard Annex #29 - Unicode Text Segmentation', url: 'https://www.unicode.org/reports/tr29/' }
+  - { title: 'WHATWG Encoding Standard', url: 'https://encoding.spec.whatwg.org/' }
+  - { title: 'ECMAScript Internationalization API - Segmenter objects', url: 'https://tc39.es/ecma402/#segmenter-objects' }
+  - { title: 'MDN - String.prototype.normalize()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Unicode 为文本分配码点，编码则把标量值转换为字节。一个用户感知的字符可能包含多个码点，并占用多个存储单元。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    字节长度、字符串长度、码点数量与字素数量回答的是不同问题。按错误单位切片或比较，可能拆开文本或漏掉等价输入。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    在字节边界严格解码，保留原始文本，并为每项操作明确选择单位和比较策略。只有契约要求时才做规范化。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Unicode 是跨书写系统处理文本时共用的字符表与算法集合。它给抽象字符分配称为<Term id="unicode-code-point">码点（code point）</Term>的编号位置，例如 `A` 对应 `U+0041`。它并未规定每个字符只占一个字节、一个字符串索引或一个可见光标位置。
+
+程序会在多个层次上接触文本。文件或网络消息包含按 UTF-8 等编码形成的字节；运行时字符串通过 API 暴露存储单元或标量值；渲染器与用户通常关心字素簇，其中可能组合基础字母、附加符号、emoji 修饰符和连接符。
+
+这些层次相互分离，是因为没有一个整数能回答所有文本问题。字节限制用于保护协议帧，码点循环用于检查 Unicode 值，字素限制用于约束用户实际看到的内容。把这些计数混为一谈，会在边界处破坏数据。
+
+数据库键、用户名、文件导入、表单限制、日志、正则表达式、光标移动、搜索和排序都会遇到这种差异。只用 ASCII 测试会隐藏多数错误，因为一个 ASCII 字符恰好是一个 UTF-8 字节、一个 UTF-16 代码单元、一个码点，通常也是一个字素簇。
+
+Unicode 还允许外观相同的文本采用不同码点序列。字母 `é` 既可存为 `U+00E9`，也可存为 `e` 后接组合锐音符 `U+0301`。规范化为这些表示提供了确定的转换方式，但它是一项策略工具，不是重写所有字符串的命令。
+
+文本比较有多种合理含义。协议标识符可能要求精确相等，规范文本可能先经过 NFC 规范化再比较，供人阅读的名称排序则可能使用区域敏感的比较器。程序必须从这些含义中明确选择，不能假定存在一种通用的「Unicode 安全比较」。
+
+这里使用 JavaScript，是因为它的字符串 API 清楚暴露了一个重要边界：索引与 `length` 使用 UTF-16 代码单元，迭代则使用码点。其他运行时即使内部字符串表示或标准库 API 不同，也面临相同的设计问题。
+
+## 工作原理
+
+### 必须区分的五种单位
+
+字节是序列化数据中取值为 0 到 255 的整数。编码把 Unicode 标量值映射成字节序列，解码器则把有效字节序列还原为文本。缺少编码标签时，字节本身无法唯一确定文本。
+
+码点是 Unicode 代码空间中从 `U+0000` 到 `U+10FFFF` 的位置。代理项范围 `U+D800` 到 `U+DFFF` 保留给 UTF-16 的实现机制，不属于<Term id="unicode-scalar-value">Unicode 标量值（Unicode scalar value）</Term>。UTF-8 编码标量值，不编码孤立的代理项码点。
+
+一个<Term id="utf-16-code-unit">UTF-16 代码单元（UTF-16 code unit）</Term>包含 16 位。基本多文种平面中的码点通常使用一个单元，补充平面码点则使用一对高、低代理项。JavaScript 的 `length`、方括号索引和 `slice()` 都按这种单元操作。
+
+<Term id="grapheme-cluster">字素簇（grapheme cluster）</Term>是文本分段规则视为一个用户感知字符的序列。`e` 加组合重音符号是一个簇。许多 emoji 序列由多个码点连接成一个簇，因此按码点迭代对于面向用户的字符限制仍然太细。
+
+| 单位 | 示例问题 | JavaScript 中合适的机制 |
+| --- | --- | --- |
+| UTF-8 字节 | 编码后的字段是否符合 64 字节限制？ | `TextEncoder().encode(text).length` |
+| UTF-16 代码单元 | 这个旧 API 按哪种单元索引？ | `text.length` 或 `text.slice()` |
+| 码点 | 字符串中出现了哪些已分配值？ | `for...of`、`[...text]`、`codePointAt()` |
+| 字素簇 | 用户能看到多少个可编辑字符？ | 使用 `granularity: "grapheme"` 的 `Intl.Segmenter` |
+| 区域排序元素 | 面向该受众时，标签应怎样排序？ | `Intl.Collator` |
+
+同一个字符串在每一行都可能得到不同计数。变量与限制的名称必须带上单位：`maximumUtf8Bytes` 比 `maximumLength` 更安全。只说「字符」的 API 契约并不完整。
+
+### 编码是一份边界契约
+
+UTF-8 是变长编码，每个标量值使用一到四个字节。ASCII 字节保留熟悉的值，非 ASCII 文本则会展开。UTF-16 用一个或两个 16 位代码单元表示标量值，因此两种编码提供的有效偏移量不同。
+
+在系统边界用明确编码解码一次字节。只有再次进入面向字节的协议或存储格式时才编码。把 UTF-8 字节误当作 Latin-1 字符再编码，会产生乱码，而不是可逆的文本转换。
+
+畸形输入需要声明处理策略。替换式解码器会填入 `U+FFFD`，适合尽力展示，却会销毁原始字节的证据。严格解码器会拒绝输入，更适合标识符、签名内容、导入任务，以及任何不能静默修改数据的路径。
+
+分块输入还带有状态。一个多字节 UTF-8 序列可能从某个网络块开始，在下一个块中结束；独立解码每个块，会错误拒绝或替换本来有效的数据。应使用能保留部分序列状态的流式解码器，并在输入结束时明确收尾。
+
+### JavaScript 字符串暴露 UTF-16 语义
+
+JavaScript 字符串是 UTF-16 代码单元序列。`"💡".length` 等于 `2`，只取第一个单元会得到未配对代理项，而不是半个有效 Unicode 标量值。方括号索引具有相同的单元边界。
+
+字符串迭代会识别代理项对，并产出码点字符串。因此 `[..."💡"]` 的长度为 `1`。迭代仍不会组合重音符号或连接的 emoji，所以不能取代字素分段。
+
+JavaScript 允许任意 16 位单元序列，所以字符串可以包含孤立代理项。`String.prototype.isWellFormed()` 可以检测它们，`toWellFormed()` 则用 `U+FFFD` 替换。替换是有损的；需要保留精确输入时，应拒绝无效的内部文本。
+
+偏移量必须携带单位。数据库字节偏移、JavaScript 代码单元索引、码点序号和字素位置不能未经转换就在 API 之间传递。如果文本可能规范化或编辑，应存储稳定的语义锚点，因为任何转换都可能移动数字偏移。
+
+### 字素边界由算法确定
+
+Unicode 文本分段依据字符属性和规则，定义默认的扩展字素簇边界。`Intl.Segmenter` 通过 JavaScript 国际化 API 提供区域敏感的分段。它通常是实现光标步进、截断和用户可见计数的起点。
+
+字素簇不一定等于单词、字形或固定宽度的显示单元。字体可能把多个字素簇渲染成一个连字，一个字素簇在不同字体或终端中的可见宽度也可能不同。布局测量仍应交给渲染系统。
+
+随着 Unicode 增加字符和改进规则，分段数据也会演进。如果只持久化字素索引，多年后用不同 Unicode 版本重新计算时，可能选中不同边界。结果必须可复现时，应保留源文本与应用级锚点。
+
+### 规范化定义等价转换
+
+规范化形式 C（`NFC`）先执行规范分解，再在有定义的位置重新组合。规范化形式 D（`NFD`）则保留规范分解。两者会让规范等价序列收敛，但不会把兼容字符当作普通替代项处理。
+
+`NFKC` 与 `NFKD` 还会执行兼容分解。带圈数字、宽度变体和一些表现形式会因此与普通字符收敛。这种更宽的折叠可能适合明确规定的搜索键，却也可能消除存储、显示或标识符需要保留的差异。
+
+规范化具有幂等性：再次应用同一种形式，结果不会变化。它不是音译、拼写修正、去除重音符号或区域敏感的大小写转换。这些操作各自具有不同的数据损失和语言影响。
+
+应在明确的比较或摄取边界规范化，而不是散布在代码库各处。用户可能需要原始形式时，应保留显示文本，并在旁边生成规范化键。如果数据库中已有混合形式，只改变新写入会造成契约分裂，直到旧数据迁移完成或读取逻辑同时处理两者。
+
+### 比较方式取决于目的
+
+精确相等比较 JavaScript 中存储的代码单元序列。规范把标识符定义为精确字符串，或需要确认字节是否解码为预期文本时，这种方式很合适。它会有意把规范等价序列视为不同。
+
+规范化相等先对两个操作数应用同一种选定形式，再做精确比较。只有领域明确声明这些规范化等价项可互换时，这种方式才合适。每条写入与查询路径都必须一致地存储或计算键。
+
+区域敏感排序回答的是客户姓名应怎样展示排序等问题。`Intl.Collator` 需要明确的区域设置，以及 `sensitivity`、`numeric` 和 `usage` 等选项。比较结果为 0 只表示在该排序策略下等价，不代表两者完全相同或可以安全合并。
+
+| 目的 | 常见策略 | 重要警告 |
+| --- | --- | --- |
+| 协议标记 | 按协议规范执行精确相等 | 不要静默加入规范化或大小写折叠 |
+| 规范文本键 | 两侧采用同一种规范化形式 | 迁移现有数据，并统一写入路径 |
+| 用户搜索 | 采用产品定义的规范化、大小写与区域规则 | 保留原文，并测试特定语言情况 |
+| 展示排序 | 使用一个明确区域与选项的 `Intl.Collator` | 用稳定次级键保证同值项顺序确定 |
+| 安全标识符 | 采用规范指定的标准化方案 | 排序等价不能作为授权规则 |
+
+不区分大小写的匹配并不等于在所有位置调用 `toLowerCase()`。大小写行为可能取决于语言，完整大小写折叠还可能改变字符串长度。应遵循对应协议或产品规范，测试它的精确映射，而不是自行发明一套通用的规范化加小写转换顺序。
+
+### 可靠的处理顺序
+
+1. 在从可信契约确定编码之前，把传入数据保留为字节。
+2. 按选定的畸形输入策略解码；审计或恢复需要时，保留原始字节。
+3. 使用应用约束真正指定的单位做验证：字节、标量值、字素或领域专用单位。
+4. 保留原始字符串，只为明确用途派生规范化键或搜索键。
+5. 按标识符规范进行标识比较，按明确的区域策略处理面向用户的文本。
+6. 在传出边界编码，然后对编码结果执行面向字节的协议限制。
+
+这种顺序能防止意外的重复解码，也让有损转换保持可见。某些系统会为性能合并步骤，但 API 契约仍应描述相同的逻辑边界。
+
+## 示例
+
+下面的示例先检查文本单位，再实施严格字节边界、建立规范化查询键，最后对面向用户的文本分段和排序。每个文件都用 Node 24.14.0 运行；紧随其后的文本块是完整真实输出。
+
+### 测量真正需要的单位
+
+同一组样本分别按 UTF-16 代码单元、码点、字素簇和 UTF-8 字节测量。这些名称能避免只报告一个含义不明的「长度」。
+
+<Depth level="quick">
+
+```js run title="inspect_units.js"
+const samples = ["A", "é", "e\u0301", "💡", "👨‍👩‍👧‍👦"];
+const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+const encoder = new TextEncoder();
+
+for (const sample of samples) {
+  const codeUnits = sample.length;
+  const codePoints = [...sample].length;
+  const graphemes = [...segmenter.segment(sample)].length;
+  const utf8Bytes = encoder.encode(sample).length;
+
+  console.log(
+    `${JSON.stringify(sample)}: units=${codeUnits}, points=${codePoints}, graphemes=${graphemes}, bytes=${utf8Bytes}`,
+  );
+}
+```
+
+```text
+"A": units=1, points=1, graphemes=1, bytes=1
+"é": units=1, points=1, graphemes=1, bytes=2
+"é": units=2, points=2, graphemes=1, bytes=3
+"💡": units=2, points=1, graphemes=1, bytes=4
+"👨‍👩‍👧‍👦": units=11, points=7, graphemes=1, bytes=25
+```
+
+<TryToBreak items={['空字符串', '旗帜 emoji', '带两个组合符号的字母', '新近支持的 emoji 序列']} />
+
+</Depth>
+
+预组和形式与分解形式的重音字母外观相同，也各自形成一个字素，但代码单元、码点和字节计数不同。家庭 emoji 是更明显的反例：一个用户感知的簇由七个码点组成，占用十一个 JavaScript 字符串单元。
+
+这里仅有 `Intl.Segmenter` 用于计算可编辑字符。编码器给出的计数适合 UTF-8 协议限制。两者不能互相替代。
+
+### 在摄取时拒绝畸形字节
+
+这个导入边界先编码消息，以生成自包含的字节，然后输出存储表示，并在严格模式下解码。去掉最后一个字节后，四字节 emoji 序列便不完整。
+
+```js run title="decode_utf8.js"
+const encoder = new TextEncoder();
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+const message = "订单 💡";
+const stored = encoder.encode(message);
+
+const hex = [...stored]
+  .map((byte) => byte.toString(16).padStart(2, "0"))
+  .join(" ");
+
+console.log(hex);
+console.log(strictUtf8.decode(stored));
+
+const truncated = stored.slice(0, -1);
+try {
+  strictUtf8.decode(truncated);
+} catch (error) {
+  console.log(`rejected: ${error.constructor.name}`);
+}
+```
+
+```text
+e8 ae a2 e5 8d 95 20 f0 9f 92 a1
+订单 💡
+rejected: TypeError
+```
+
+严格失败后，调用方可以隔离原始字节、返回验证错误或请求重新传输。替换模式解码器会生成含 `�` 的字符串，可能让两个不同的畸形标识符变成同一个可见值。
+
+本例解码的是完整缓冲区。处理网络分块时，应复用启用流模式的解码器，并在流结束时再调用一次，以检测未完成序列。
+
+### 同时保留显示文本与规范化键
+
+目录保留最初提供的拼写用于展示，并生成 NFC 键用于精确查询。示例还说明，在缺少领域决策时改用 NFKC 会扩大相等关系。
+
+```js run title="normalize_keys.js"
+const composed = "Am\u00e9lie";
+const decomposed = "Ame\u0301lie";
+
+function exactComparisonKey(value) {
+  return value.normalize("NFC");
+}
+
+const directory = new Map();
+directory.set(exactComparisonKey(composed), { id: "customer-17", displayName: composed });
+
+console.log(composed === decomposed);
+console.log(exactComparisonKey(composed) === exactComparisonKey(decomposed));
+console.log(directory.get(exactComparisonKey(decomposed)).id);
+console.log(`NFC circled one equals 1: ${"①".normalize("NFC") === "1"}`);
+console.log(`NFKC circled one equals 1: ${"①".normalize("NFKC") === "1"}`);
+```
+
+```text
+false
+true
+customer-17
+NFC circled one equals 1: false
+NFKC circled one equals 1: true
+```
+
+NFC 让两个规范等价的姓名序列收敛，又不改变存储的显示名称。带圈数字在 NFC 下保持不同，在 NFKC 下却与普通 `1` 收敛，说明规范化形式是数据契约的一部分。
+
+生产目录还必须决定大小写、空白、区域设置、重复项和迁移策略。只有 NFC 并不能构成完整的用户名或搜索策略。
+
+### 对显示文本分段并排列姓名
+
+最后一个示例只在字素边界截断预览，再用法语显示排序器排列客户姓名。对所选敏感度而言比较相等的姓名，由稳定标识符决定顺序。
+
+```js run title="segment_and_sort.js"
+const message = "👍🏽 café e\u0301lan 👨‍👩‍👧‍👦";
+const segmenter = new Intl.Segmenter("fr", { granularity: "grapheme" });
+
+function takeGraphemes(text, maximum) {
+  return [...segmenter.segment(text)]
+    .slice(0, maximum)
+    .map(({ segment }) => segment)
+    .join("");
+}
+
+console.log(takeGraphemes(message, 8));
+console.log([...segmenter.segment(message)].length);
+
+const customers = [
+  { id: "u3", name: "Élodie" },
+  { id: "u1", name: "Elodie" },
+  { id: "u2", name: "Zoë" },
+];
+const collator = new Intl.Collator("fr", { sensitivity: "base" });
+const ordered = customers.toSorted(
+  (left, right) => collator.compare(left.name, right.name) || left.id.localeCompare(right.id),
+);
+
+console.log(collator.compare("Élodie", "elodie") === 0);
+console.log(ordered.map(({ id }) => id).join(", "));
+```
+
+```text
+👍🏽 café é
+13
+true
+u1, u3, u2
+```
+
+预览完整保留带肤色的 emoji 和分解形式的重音字母。分段只查找边界，并不会规范化文本，因此原始码点序列仍然不变。
+
+在基础敏感度下，排序器认为 `Élodie` 与 `elodie` 对本次比较等价。标识符同值排序条件让输出可重复，却不会让两个姓名变成同一账户或授权身份。
+
+## 陷阱
+
+### 按代码单元实施用户限制
+
+> [!PITFALL]
+> `text.slice(0, 20)` 在 UTF-16 代码单元边界截断。它可能留下未配对代理项，或把组合符号、emoji 修饰符、连接符序列与用户输入的字素簇拆开。
+
+**修复方法：** 先说明限制用于保护编码字节，还是约束用户可见输入。用 `TextEncoder` 计算 UTF-8 字节，用 `Intl.Segmenter` 处理字素簇；两种限制同时存在时，还要再次检查编码结果。
+
+### 使用隐式或宽容的解码策略
+
+> [!PITFALL]
+> 编码错误的解码器会产生乱码，替换式解码器则会把畸形字节序列静默变成 `U+FFFD`。所得字符串不再能证明传入的原始字节。
+
+**修复方法：** 从协议获取编码，不要根据内容猜测。完整性敏感的数据应采用严格解码；允许时保留原始字节供诊断；跨分块边界时使用流式解码器。
+
+### 把规范化当成净化
+
+> [!PITFALL]
+> NFC 或 NFKC 不会去除书写系统、控制字符、双向行为、标记或视觉混淆字符。NFKC 还会合并兼容性差异，全局应用可能改变标识符与用户内容。
+
+**修复方法：** 只在有文档说明的比较或存储策略中使用指定的规范化形式。安全验证、转义、书写系统限制和混淆字符处理应作为独立控制措施，并由具体威胁模型决定。
+
+### 用区域比较判断身份
+
+> [!PITFALL]
+> `collator.compare(a, b) === 0` 只表示字符串在某个区域与选项组合下排序相等。基础敏感度可能忽略重音或大小写，运行时的区域数据也可能随升级变化。
+
+**修复方法：** 身份相等必须单独按规范定义。排序仅用于面向用户的搜索或顺序，需记录区域与选项；必须确定排序时，还应加入稳定次级键。
+
+### 因派生键丢失原文
+
+> [!PITFALL]
+> 如果用小写、规范化或去重音后的搜索键替换用户原文，转换就无法逆转。显示、法定姓名、审计证据，以及将来迁移到更好比较策略的能力都会受损。
+
+**修复方法：** 保留原始文本；索引需要派生键时，按带版本的策略另外存储。策略或 Unicode 数据版本变化时重建键，并确保写入与查询采用同一派生过程。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把 `string.length` 写成「字符」数量，用 `slice()` 截断 emoji，或展开字符串后声称码点等于可见字符。它还可能用隐式替换策略解码缓冲区、对所有字段执行 NFKC，或用 `localeCompare()` 判断账户身份。生成的迁移常只规范化新写入而不转换旧记录，使查询结果取决于数据由哪一代逻辑写入。
+
+**让 AI 检查**
+
+- 清点每个长度、索引、切片、正则表达式、编码器、解码器、规范化调用与比较，并写出各自使用的单位或相等策略。
+- 为分解重音、补充平面码点、连接 emoji、畸形与跨块 UTF-8、兼容字符，以及特定区域的大小写行为生成测试。
+- 跟踪原始文本与每个派生键在存储、日志、查询、迁移和渲染中的流向，包括畸形输入与键碰撞策略。
+
+**审查清单**
+
+- 确认每个边界都声明编码，以及对畸形输入的拒绝、替换或保留行为。
+- 确认限制与偏移使用预期的字节、代码单元、码点或字素单位，并且没有不安全转换。
+- 确认规范化、大小写与排序策略针对具体目的，在两个操作数上保持一致，也不会被静默复用于安全身份判断。
+
+**提示词词汇**
+
+使用准确术语：`Unicode code point`（Unicode 码点）、`Unicode scalar value`（Unicode 标量值）、`UTF-8 byte sequence`（UTF-8 字节序列）、`UTF-16 code unit`（UTF-16 代码单元）、`surrogate pair`（代理项对）、`extended grapheme cluster`（扩展字素簇）、`canonical equivalence`（规范等价）、`NFC`、`NFKC`、`fatal decoding`（严格失败解码）、`streaming decoder`（流式解码器）、`collation`（排序规则）和 `comparison key`（比较键）。要求输出一张边界表，注明编码、单位、规范化形式、区域设置、错误策略与保留要求；「让它支持 Unicode」没有规定任何关键选择。
+
+<Depth level="deep">
+
+## Unicode 边界与比较契约
+
+### 字符串内部的畸形 UTF-16
+
+Unicode 标量值排除代理项，但 JavaScript 字符串可以包含孤立的高代理项或低代理项。这种字符串可能来自代码单元切片、手动构造、旧数据，或暴露未经检查 UTF-16 的 API。它是有效的 JavaScript 值，却不是 Unicode 标量值序列。
+
+`TextEncoder` 把这种字符串编码为 UTF-8 时，会用 `U+FFFD` 替换孤立代理项。这种转换无法保持字节往返一致。如果标识符、签名输入或审计记录不能静默改变，编码前应调用 `isWellFormed()` 检查并拒绝。
+
+产品明确偏好可渲染替换文本时，可以使用 `toWellFormed()`。它不应被描述为修复原字符，因为缺失的另一半代理项无法推断。如果后续调查很重要，应另外保留源表示。
+
+### 增量解码持有部分序列
+
+UTF-8 解码器依据起始字节与续字节判断边界。传输分块没有义务在字符边界结束，所以解码器必须在调用之间保留未完成前缀。先拼接全部字节再统一解码是正确的，但对于数据流可能占用过多内存。
+
+流式方案会把每个块传给同一个已启用流状态的解码器。输入结束时，再做一次不带新字节的最终调用，强制验证所有待处理前缀。每个块重新创建解码器，会丢掉判断跨块有效序列所需的状态，无法把它与畸形输入区分开。
+
+协议限制必须说明应用在解码前还是解码后。最大线路大小是字节限制，最大显示长度可能是字素限制。两者要在各自边界执行，避免含大量多字节字符的输入绕过容量规划或被过早截断。
+
+### 组合符号的规范顺序
+
+规范化不只是把某个分解字符对替换成一个预组和码点。它还会依据规范组合类别排列组合符号，除非起始字符边界或阻塞规则要求保留顺序。只为少数带重音拉丁字母编写的手工映射无法重现该算法。
+
+并非每个序列都有预组和字符。因此，NFC 结果仍可能用多个码点表示一个字素簇。假定「NFC 意味着每个可见字符只有一个码点」仍然是错误的。
+
+派生数据应记录规范化形式。仅仅因为两个键都叫作规范化键，就不能安全比较分别由 NFC 与 NFKC 生成的结果。加入大小写折叠、空白规则或应用别名等其他映射时，应给键方案设置版本。
+
+### 分段对于布局必要但不充分
+
+扩展字素簇旨在为编辑与边界操作提供实用默认单位。它会把常见组合序列、emoji 修饰符、区域指示符旗帜和连接符序列保持在一起，但不保证每个用户群体都把每个簇视为一个有意义的「字符」。
+
+显示宽度取决于字体、塑形、终端约定和周围文本。计算字素簇无法预测像素或终端列数。布局应使用渲染器测量 API，文本边界则使用分段 API。
+
+正则表达式也有自己的操作单位与 Unicode 模式。点号、字符类或量词可能按代码单元或码点工作，仍会拆开字素簇。如果模式需要验证完整的用户感知字符，应组合明确的 Unicode 属性和分段，而不是假定一个 Unicode 标志就会把单位改成字素。
+
+### 存储文本与比较键职责不同
+
+原始文本回答「用户或来源提供了什么」，比较键回答「本次操作忽略哪些差异」，排序则根据区域策略产生顺序。把这些值合并到一个字段，会增加未来调整显示、审计与策略的难度。
+
+稳健的记录可以同时保存 `displayName`、精确规范化查询键，以及按另一套带版本策略生成的搜索索引。这些字段可能有意碰撞：两个显示名称可以共享搜索键，却不代表同一条记录。只有等价关系符合业务规则的键才应设置唯一约束。
+
+数据库排序规则与应用排序器可能采用不同 Unicode 版本、定制规则或敏感度。只有两层顺序契约一致时，才能在一层排序后到另一层应用二分查找边界。否则，应获取范围更宽的候选集，或让同一个所有者负责排序与查找。
+
+Unicode 或区域数据变化时，即使源文本不变，分段和排序也可能变化。需要复现的索引因此必须声明实现或数据版本，并准备重建方案。展示排序通常可以接受升级后的行为，持久化分页游标则可能需要稳定次级标识符。
+
+### 面向边界的测试矩阵
+
+应从能让单位产生差异的情况开始，而不是罗列大量普通单词：
+
+1. 空文本与 ASCII 用于建立普通边界行为。
+2. 补充平面码点用于暴露 UTF-16 代理项对处理。
+3. 分解形式的重音用于暴露规范等价与多码点字素。
+4. emoji 修饰符、旗帜和连接序列用于检验字素分段。
+5. 在每个字节边界拆分有效 UTF-8，用于检验流式解码器状态。
+6. 过长形式、截断、代理项编码和孤立续字节用于检验拒绝逻辑。
+7. 兼容字符用于区分 NFC 与 NFKC 策略。
+8. 特定区域的大小写与排序同值项用于暴露隐藏的比较默认值。
+
+断言应写明目标性质。应检查严格解码会拒绝畸形字节数组、截断结束于分段边界、比较键只在业务规则允许的位置发生碰撞。若没有声明区域与选项，只对某个运行时的姓名排序做快照，记录的是偶然结果而不是契约。
+
+性质测试还能加入实用不变量。用匹配编码器产生的字节解码后，应还原原始的格式正确标量序列；规范化两次等于一次；拼接所有分段可还原原文；基于排序器的排序结果在同一排序器下不会递减。
+
+如果源码编辑器可能规范化文本，测试夹具应使用明确的转义序列。包含分解形式 `e\u0301` 的测试应在代码中直接写明，否则格式化或复制过程把它静默变成 `é` 后，测试原本要覆盖的情况就消失了。
+
+</Depth>
+
+<Checkpoint id="foundations/unicode-text" />
+
+## 延伸阅读
+
+- [Unicode 标准附录 #15：Unicode 规范化形式](https://www.unicode.org/reports/tr15/)
+- [Unicode 标准附录 #29：Unicode 文本分段](https://www.unicode.org/reports/tr29/)
+- [WHATWG 编码标准](https://encoding.spec.whatwg.org/)
+- [ECMAScript 国际化 API：`Intl.Segmenter`](https://tc39.es/ecma402/#segmenter-objects)
+- [MDN：`String.prototype.normalize()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize)

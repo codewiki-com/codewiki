@@ -1,0 +1,426 @@
+---
+title: JavaScript Regular Expressions
+description: Match, capture, and transform text with JavaScript regular expressions while handling Unicode, stateful matching, dynamic input, and backtracking safely.
+track: javascript
+section: core
+difficulty: intermediate
+tags: [regexp, text-processing, unicode, pattern-matching]
+prerequisites: [javascript/fundamentals, javascript/string-methods]
+related: [javascript/form-validation, javascript/json]
+terms: [regular-expression, capturing-group, backtracking, unicode-code-point]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/regexp
+sources:
+  - { title: 'ECMAScript 2026 - RegExp objects', url: 'https://tc39.es/ecma262/multipage/text-processing.html#sec-regexp-regular-expression-objects' }
+  - { title: 'MDN JavaScript guide - Regular expressions', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions' }
+  - { title: 'MDN - RegExp.escape()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape' }
+  - { title: 'MDN - RegExp.prototype.unicodeSets', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/unicodeSets' }
+  - { title: 'OWASP - Regular expression denial of service', url: 'https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS' }
+origin: old/src/content/docs/javascript/regexp.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="regular-expression">regular expression</Term> describes the shape of text with a pattern. JavaScript uses `RegExp` and string methods to search, extract, and replace that text.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Expressions with `g` or `y` mutate `lastIndex`. Dynamic text inserted without `RegExp.escape()` can also change the pattern's meaning or create expensive backtracking.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Define the match boundary, Unicode unit, and state owner first. Escape dynamic literals, then test failures and long near-matches as well as successful inputs.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A regular expression is a text pattern. It can answer whether a shape occurs, where a match begins, and which substrings belong to individual fields. It can also pass matches to a replacement function. A JavaScript `RegExp` object holds the pattern, flags, and matching state, while a `String` method determines how the result is consumed.
+
+Regular expressions fit local text tasks with clear boundaries: extracting fields from a log line, finding several keywords, normalizing a fixed format, or restricting input to a character set. They put character choices, repetition, alternatives, and position constraints into a compact expression, which can map to the text format more directly than a long sequence of index checks.
+
+Compact syntax doesn't make regex suitable for every parser. URLs, HTML, JSON, and programming languages have dedicated parsers and error models. Rebuilding those grammars in one pattern usually misses escaping, nesting, or normalization rules. Give a regular expression a precise local contract, and give structured formats to APIs that know their full grammar.
+
+You'll meet regex literals such as `/pattern/flags`, `new RegExp(source, flags)`, form validation, routing, editor searches, and log-processing code. A literal is clearest when the pattern is fixed. Use the constructor when the pattern contains runtime text, and distinguish “this text is regex syntax” from “this text must match literally.”
+
+JavaScript regular expressions operate on UTF-16 strings. The `u` and `v` modes make many operations interpret Unicode code points, but that still isn't the same as processing user-perceived grapheme clusters, words, or language rules. Internationalized requirements must name the unit before you choose property escapes, `Intl.Segmenter`, or a specialized parser.
+
+## How it works
+
+### Patterns, flags, and construction
+
+A regex literal puts the pattern directly in source, as in `/invoice-(\d+)/i`. The `RegExp` constructor accepts a string and is useful for runtime fragments. An ordinary string processes backslashes first, so the literal `/\d+/` corresponds to `new RegExp("\\d+")`. `String.raw` can reduce double escaping in static fragments, but it doesn't protect interpolated values.
+
+Node 24 supports the following eight flags. Flags belong to the expression object and can't be added temporarily for one execution. Create another `RegExp` when you need a different flag set.
+
+| Flag | Property | Effect on matching |
+| --- | --- | --- |
+| `d` | `hasIndices` | Adds start and end indices for the full match and capture groups to `indices` |
+| `g` | `global` | Searches from `lastIndex` and leaves the successful end for the next match |
+| `i` | `ignoreCase` | Matches without case distinctions, with folding details affected by Unicode mode |
+| `m` | `multiline` | Lets `^` and `$` also match line starts and line ends |
+| `s` | `dotAll` | Lets `.` match line terminators too |
+| `u` | `unicode` | Enables Unicode-aware semantics, property escapes, and stricter pattern syntax |
+| `v` | `unicodeSets` | Enables Unicode sets mode, set operations, and properties of strings |
+| `y` | `sticky` | Allows a match only at the position specified by `lastIndex` |
+
+The `u` and `v` flags can't be combined. New code can choose `v` when it needs set intersection, set subtraction, or Unicode properties of strings. The `u` flag remains direct and common when you need code-point semantics and character properties. If your target environment includes more than Node, verify the browser support range too.
+
+### Pattern building blocks
+
+A pattern combines units that consume characters with assertions that only check positions. This table describes common building blocks; it isn't a recipe whose rows can be joined blindly.
+
+| Construct | Example | Meaning |
+| --- | --- | --- |
+| Literal characters | `cat` | Matches `c`, `a`, and `t` in order |
+| Character class | `[A-Z]`, `\p{Letter}` | Matches one member of a set at the current position |
+| Negated class | `[^,]` | Matches one character outside a set |
+| Quantifier | `+`, `*`, `?`, `{2,4}` | Controls how often the preceding unit repeats |
+| Alternation | `WARN|ERROR` | Tries alternatives from left to right |
+| Capturing group | `(?<year>\d{4})` | Groups units and records the substring on the successful path |
+| Noncapturing group | `(?:ab)+` | Groups without adding a capture slot to the result |
+| Backreference | `\1`, `\k<name>` | Matches the text previously matched by a capture group |
+| Anchor | `^`, `$` | Asserts an input or line boundary without consuming a character |
+| Lookaround | `(?=px)`, `(?<!\$)` | Checks following or preceding context without including it in the match |
+
+`\d` means only the ASCII digits `0` through `9`, and `\w` remains centered on ASCII letters, digits, and underscore. For letters or decimal digits across writing systems, explicitly use Unicode properties such as `\p{Letter}` and `\p{Decimal_Number}` in `u` or `v` mode instead of assuming shorthand classes follow the locale.
+
+Quantifiers are greedy by default, so they prefer to try more repetitions. Adding `?` after a quantifier makes it prefer fewer repetitions. Both forms can backtrack when a later unit fails, so “lazy” doesn't mean “no backtracking” or “always faster.” Choose the form that expresses the boundary you intend to capture.
+
+### Leftmost-first matching
+
+Without `y`, the engine looks for the leftmost position at which a successful match can begin. At one start position, alternation order, greediness, and later constraints determine the final path. If a later unit fails, the engine may return to an earlier choice and try another path. This is ordered, leftmost-first selection, not a search for the longest string among every possible result.
+
+Captures record only the successful path. If an optional branch didn't participate, its capture is `undefined`; a repeated capturing group normally retains the text from its final iteration. Use `(?:...)` when you only need precedence, so the result doesn't gain numbered slots that are easy to shift accidentally.
+
+Anchors and lookarounds consume no characters, so they can constrain the whole input or its context. `^...$` is common for format validation. Once `m` is enabled, those anchors may accept line boundaries and no longer mean the entire input. Lookaround is useful for local context constraints, but several nested assertions quickly make a pattern hard to read.
+
+### Methods define the result shape
+
+The same pattern returns different data and has different state behavior depending on the method. Choose the method only after deciding whether you need a Boolean, one detailed match, every detailed match, or a transformed string.
+
+| Call | Result | Key constraint |
+| --- | --- | --- |
+| `regexp.test(text)` | Boolean | Reads and writes `lastIndex` with `g` or `y` |
+| `regexp.exec(text)` | One detailed match or `null` | Supports incremental access to captures, indices, and state |
+| `text.match(regexp)` | One detailed match or all matched strings | With `g`, it doesn't return per-match capture details |
+| `text.matchAll(regexp)` | Iterator of all detailed matches | A supplied `RegExp` must have `g`; iteration uses a copy |
+| `text.search(regexp)` | First match index or `-1` | Finds only one position |
+| `text.replace(regexp, value)` | New string with replacements | A string replacement value interprets `$` replacement tokens |
+| `text.split(regexp)` | Array of substrings | Capture groups are inserted into the returned array |
+
+The item at index `0` of an `exec()` result is the full match, followed by numbered captures. `groups` holds named captures, while `index` holds the start position. With `d`, `indices` uses the same slot structure for `[start, end]` pairs. These string indices count UTF-16 code units.
+
+The `g` flag searches forward from `lastIndex`; `y` requires a match exactly at that position. On success both update `lastIndex` to the match end, and on failure both reset it to `0`. A plain expression's `exec()` doesn't use `lastIndex` as its starting position.
+
+## Examples
+
+These four examples progress through structured extraction, dynamic literals, contiguous scanning, and Unicode units. Every output below came from running the corresponding file with Node 24.14.0.
+
+### Extracting named fields and indices
+
+The log pattern uses `m` to apply anchors per line, `g` to collect every result, and `d` to retrieve the message field's absolute range. Named captures keep the calling code independent of capture order.
+
+<Depth level="quick">
+
+```javascript run title="log_extract.js"
+const log = `09:41 INFO cache warmed
+09:42 WARN retry scheduled
+09:43 ERROR upstream unavailable`;
+
+const linePattern =
+  /^(?<time>\d{2}:\d{2})\s+(?<level>INFO|WARN|ERROR)\s+(?<message>.+)$/gmd;
+
+const rows = [...log.matchAll(linePattern)].map(({ groups, indices }) => ({
+  time: groups.time,
+  level: groups.level,
+  message: groups.message,
+  messageSpan: indices.groups.message,
+}));
+
+console.log(JSON.stringify(rows, null, 2));
+```
+
+```text
+[
+  {
+    "time": "09:41",
+    "level": "INFO",
+    "message": "cache warmed",
+    "messageSpan": [
+      11,
+      23
+    ]
+  },
+  {
+    "time": "09:42",
+    "level": "WARN",
+    "message": "retry scheduled",
+    "messageSpan": [
+      35,
+      50
+    ]
+  },
+  {
+    "time": "09:43",
+    "level": "ERROR",
+    "message": "upstream unavailable",
+    "messageSpan": [
+      63,
+      83
+    ]
+  }
+]
+```
+
+<TryToBreak items={['a blank line', 'a line with no level', 'an emoji in the message']} />
+
+</Depth>
+
+`matchAll()` preserves every match's capture details and advances state on an internal copy, so this iteration doesn't leave `linePattern.lastIndex` changed. If a message contains a non-BMP character, `messageSpan` still contains UTF-16 indices and isn't directly a count of user-perceived characters.
+
+This pattern checks only the shape of a log line; it doesn't prove that a time exists. If hours and minutes have business ranges, convert the captures to numbers and perform semantic checks afterward. Adding calendar rules to the pattern would make the contract harder to read.
+
+### Inserting dynamic literals safely
+
+The keywords are data, not regex syntax. `RegExp.escape()` turns each term into source text that can be embedded safely in a larger pattern, and alternation then joins those escaped fragments.
+
+```javascript run title="dynamic_pattern.js"
+const keywords = ['C++', 'node.js', '[draft]'];
+const escaped = keywords.map(RegExp.escape);
+const keywordPattern = new RegExp(escaped.join('|'), 'gi');
+const title = 'Move [draft] C++ addon to Node.js; keep C+ notes.';
+
+console.log(escaped);
+console.log(title.match(keywordPattern));
+```
+
+```text
+[ '\\x43\\+\\+', '\\x6eode\\.js', '\\[draft\\]' ]
+[ '[draft]', 'C++', 'Node.js' ]
+```
+
+The hexadecimal escape for the leading letter is deliberate. It prevents an escaped fragment placed after text such as `\1` or `\x0` from being parsed as part of the preceding escape. A hand-written function that “adds backslashes to metacharacters” usually doesn't cover this concatenation context.
+
+`RegExp.escape()` guarantees only that text is interpreted literally. It doesn't implement authorization, length limits, or match boundaries. When the keyword array is empty, `escaped.join('|')` produces an empty pattern that matches at every position, so the caller must define “no keywords” separately.
+
+### Scanning contiguously with sticky matching
+
+A lexical scanner requires each new token to follow the preceding token; it mustn't silently jump over an unknown character. The `y` flag makes `lastIndex` a required start position, which fits this contiguous-consumption contract.
+
+```javascript run title="sticky_tokenizer.js"
+const tokenPattern =
+  /(?<space>\s+)|(?<number>\d+(?:\.\d+)?)|(?<operator>[()+\-*/])/y;
+
+function tokenize(expression) {
+  tokenPattern.lastIndex = 0;
+  const tokens = [];
+
+  while (tokenPattern.lastIndex < expression.length) {
+    const position = tokenPattern.lastIndex;
+    const match = tokenPattern.exec(expression);
+    if (!match) throw new SyntaxError(`Unexpected token at ${position}`);
+    if (match.groups.space) continue;
+
+    const type = match.groups.number === undefined ? 'operator' : 'number';
+    tokens.push(`${type}:${match[0]}@${position}`);
+  }
+
+  return tokens;
+}
+
+console.log(tokenize('12 + 3.5*(7-2)').join('\n'));
+try {
+  tokenize('2 + @');
+} catch (error) {
+  console.log(error.message);
+}
+```
+
+```text
+number:12@0
+operator:+@3
+number:3.5@5
+operator:*@8
+operator:(@9
+number:7@10
+operator:-@11
+number:2@12
+operator:)@13
+Unexpected token at 4
+```
+
+The code saves `position` before each `exec()` because failure resets a sticky expression's `lastIndex` to `0`. If this used `g` by mistake, the engine could pass `@` and search for another recognized token, allowing the scanner to accept a gap it should reject.
+
+This function only performs lexical tokenization; it doesn't evaluate the expression. Balanced parentheses, operator placement, precedence, and division by zero belong to later parsing or evaluation. Treating “all text can be tokenized” as “the whole expression is valid” would be a separate contract error.
+
+### Separating code units, code points, and graphemes
+
+Unicode properties can describe letters and combining marks across writing systems. At the same time, `\w` still doesn't mean every character in a natural-language word, and a Unicode-aware dot advances only one code point.
+
+```javascript run title="unicode_words.js"
+const label = 'naïve 中文 cafe\u0301 👩‍💻';
+const unicodeWords = label.match(/[\p{Letter}\p{Mark}]+/gu);
+const asciiWords = label.match(/\w+/g);
+const codePoints = '👩‍💻'.match(/./gu);
+const graphemes = [
+  ...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment('👩‍💻'),
+].map(({ segment }) => segment);
+
+console.log(unicodeWords);
+console.log(asciiWords);
+console.log(codePoints);
+console.log(graphemes);
+```
+
+```text
+[ 'naïve', '中文', 'café' ]
+[ 'na', 've', 'cafe' ]
+[ '👩', '‍', '💻' ]
+[ '👩‍💻' ]
+```
+
+`[\p{Letter}\p{Mark}]+` puts letters and combining marks in one class, so it retains the decomposed `e` plus accent. Real word segmentation also depends on language, punctuation, and writing system. Use `Intl.Segmenter` with an appropriate locale when you need user-facing text boundaries.
+
+`/./gu` treats each emoji surrogate pair as one code point but still splits the zero-width-joiner sequence into three code points. The final line segments grapheme clusters instead, treating the entire profession emoji as one user-perceived character.
+
+## Pitfalls
+
+### Reusing a stateful expression
+
+> [!PITFALL]
+> Keeping one `/.../g` or `/.../y` object in a module constant and calling `test()` or `exec()` from several sites makes results depend on the previous `lastIndex`. Even two Boolean tests against the same string can return different results.
+
+**Fix:** remove `g` when you don't need incremental state, or create the expression inside the function. For a deliberate scan, give one owner control of the loop and set `lastIndex` explicitly at entry. Don't share a mutable matcher across async operations.
+
+### Treating dynamic text as pattern syntax
+
+> [!PITFALL]
+> `new RegExp(query)` treats `.`, `[`, `*`, backreferences, and other content as syntax. An ordinary search term can widen the match, throw `SyntaxError`, or combine with its surrounding pattern into an expensive path.
+
+**Fix:** compile input directly only when it is explicitly allowed to describe regex syntax. For literal search on Node 24, use `RegExp.escape(query)`, and handle the empty string, maximum length, flags, and outer boundaries separately.
+
+### Confusing shape checks with semantic validation
+
+> [!PITFALL]
+> A pattern can establish that `2026-99-99` has digits and hyphens without proving that the date exists. Hand-written email, URL, and IP address patterns also tend to drift away from the protocols they imitate.
+
+**Fix:** let regex filter a precisely defined lexical shape, then validate captures with domain APIs or numeric rules. Use `URL` for URLs, `JSON.parse()` for JSON, and a parser for HTML. Error messages should identify the layer that actually failed.
+
+### Assuming `\w`, `\b`, and dot understand human text
+
+> [!PITFALL]
+> Generated internationalized code often extracts names with `\b\w+\b` or uses `/^.$/u` to require one user-perceived character. The first misses many writing systems, while the second counts a multi-code-point grapheme as several characters.
+
+**Fix:** state whether the unit is a UTF-16 code unit, Unicode code point, grapheme cluster, or language word. Use `\p{...}` with `u` or `v` for character properties, and use `Intl.Segmenter` or a domain library for grapheme and word boundaries.
+
+### Forgetting that replacement strings have syntax
+
+> [!PITFALL]
+> A string passed as `replacement` to `text.replace(pattern, replacement)` interprets `$&`, `$1`, `$<name>`, and `$$`. If `replacement` is user-provided literal text, its dollar tokens can turn into matched content.
+
+**Fix:** use replacement tokens deliberately when you want capture interpolation. To insert dynamic text verbatim, pass a function such as `text.replace(pattern, () => replacement)`. Test values containing `$&`, `$1`, and consecutive dollar signs.
+
+### Hiding backtracking risk with lazy quantifiers
+
+> [!PITFALL]
+> Nested quantifiers, overlapping alternatives, and long inputs that nearly match before failing can make the number of backtracking paths grow sharply. Changing `.*` to `.*?` changes the trial order; it doesn't automatically remove ambiguity.
+
+**Fix:** remove repeated structures that can divide the same text in several ways, narrow choices with mutually exclusive character classes and explicit delimiters, and limit untrusted input length. Test long near-miss failures. Use a linear scanner or specialized parser when you can't constrain the ambiguity clearly.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often pass search-box text directly to `new RegExp()`, add `g` to a shared validator to “match everything,” and then call `test()` across requests. They also use `\b\w+\b` for international names, describe an unanchored substring match as complete validation, or claim a lazy quantifier has fixed ReDoS. Replacement code has another failure mode: a model passes an external string as a replacement template, accidentally expanding `$&` and `$1`.
+
+**Ask your AI to check**
+
+- List the source of every pattern fragment and say whether each dynamic fragment is trusted regex syntax or literal text that needs `RegExp.escape()`.
+- Trace `lastIndex` before and after every `test()`, `exec()`, and `matchAll()`, including whether the expression is shared across calls or async tasks.
+- Generate the longest allowed input, a long failing near-match, an empty input, and inputs from multiple writing systems, then explain every expected result.
+
+**Review checklist**
+
+- Confirm that anchors, flags, capture optionality, and the chosen string method jointly implement the full contract.
+- Check that Unicode units, dynamic pattern text, and dynamic replacement text each have the correct boundary treatment.
+- For untrusted input, inspect length limits, ambiguous repetition, failure paths, and the effect of synchronous execution on the event loop.
+
+**Prompt vocabulary**
+
+Use the exact terms `regular expression`, `pattern source`, `capturing group`, `named capture`, `backreference`, `lookaround assertion`, `greedy quantifier`, `sticky matching`, `lastIndex state`, `Unicode property escape`, `grapheme cluster`, and `catastrophic backtracking`. Ask for an input trust boundary, a state timeline, and failing near-match cases instead of merely asking to “optimize this regex.”
+
+<Depth level="deep">
+
+## Match state and API contracts
+
+A `RegExp` object isn't only an immutable pattern description. Its `source` and flags describe the rule, while `lastIndex` is a writable data property that `exec()` uses with `g` or `y`. Exporting such an object as a shared constant also shares a matcher with a cursor.
+
+Global matching can search forward from `lastIndex`, so a successful position may be later than the starting position. Sticky matching tries only that position, which suits scanners that can't skip invalid text. Both reset `lastIndex` to `0` on failure, so code must save the cursor before the call if it needs to report the failure position.
+
+Zero-length matches need special attention. When a global pattern can match an empty string, a direct `while ((match = regexp.exec(text)))` loop may leave `lastIndex` unchanged after success and repeat the same result. The `matchAll()` iteration protocol advances after a zero-length result. A hand-written `exec()` loop must detect the case and advance correctly for its Unicode mode.
+
+`matchAll()` requires a supplied `RegExp` to have `g`, then copies the expression and its current `lastIndex` into an internal matcher. Iteration mutates that copy rather than writing the final cursor back to the original. Don't generalize this behavior to `test()`, `exec()`, or every string method; each follows its own protocol.
+
+`match()` has an easy-to-miss fork. Without `g`, it returns one detailed match. With `g`, it returns every full matched string but drops per-match captures and indices. When you need every match and each one's named captures, `matchAll()` provides the more stable result shape.
+
+### Capture participation and indices
+
+A <Term id="capturing-group">capturing group</Term> adds a slot to the result. When a group inside an alternative didn't participate in the successful path, its value and corresponding index are `undefined`. That differs from successfully matching an empty string, which yields `""` and equal start and end indices.
+
+Numbered captures depend on opening-parenthesis order, so inserting a capture in the middle shifts later numbers. Prefer named captures for domain fields and `(?:...)` for structural grouping. Backreferences still add dependencies between matching paths, so giving a capture a name doesn't improve complexity by itself.
+
+Indices produced by the `d` flag follow JavaScript string indices: UTF-16 code-unit offsets. Even when `u` or `v` matches a surrogate pair as one code point, the index after that code point increases by two. Those offsets work directly with `slice()`, but a display column may require a separate conversion.
+
+### Replacement function arguments
+
+String replacement templates provide `$&` for the full match, `$1` and similar tokens for numbered captures, `$<name>` for named captures, and `$$` for a literal dollar sign. This small language works for fixed templates, not for external text that must be emitted verbatim.
+
+A replacement function receives the full match, each captured value, the match offset, the original string, and a `groups` object when named captures exist. Optional captures can be `undefined`, and the shape at the end of the argument list changes when named captures are present. A generic wrapper can't identify fields safely from fixed positions counted from the end.
+
+The function's return value is converted to a string and inserted literally; `$` replacement tokens aren't interpreted again. That makes a function suitable for dynamic literal replacements and for validating named captures before transformation. The function may still have side effects and runs once per replaced match, which matters during review.
+
+## Unicode modes and sets
+
+Without `u` or `v`, many pattern units advance by UTF-16 code units, and a non-BMP code point consists of a surrogate pair. Unicode-aware mode treats a valid surrogate pair as one code point, enables `\p{...}` property escapes, and turns some ambiguous or legacy escapes into syntax errors.
+
+The `v` flag is also Unicode-aware and extends character-class syntax. It supports intersection with `&&`, subtraction with `--`, and Unicode properties that can match finite-length strings. The class parsing rules aren't identical between `u` and `v`, so migration requires rerunning tests rather than changing only the flag.
+
+A property escape must express the set the contract actually needs. `\p{Letter}` selects Unicode letters, `\p{Decimal_Number}` selects decimal digits, and `\p{Script=Han}` selects a script property. None of these automatically defines a username policy, natural-language word, or permitted normalization form.
+
+Visually identical text can have precomposed and decomposed encodings. Regular expressions don't normalize Unicode automatically, so two visually equal strings can produce different results. If the contract accepts equivalent forms, choose and document a `normalize()` form before matching instead of enumerating spellings encountered by chance.
+
+Case-insensitive matching isn't locale-sensitive comparison either. The `i` flag uses specification-defined case folding; it can't replace the language collation and locale rules of a user-facing search product. Decide which layer owns normalization, case, accents, and segmentation before implementing the search.
+
+## Backtracking and trust boundaries
+
+Backtracking occurs when an earlier choice makes a later part fail. The engine returns to a choice point, shortens or extends a quantifier, or tries a later alternative. If many paths can consume the same text, a failing input can force exploration of a large number of combinations. <Term id="backtracking">Backtracking</Term> is a normal mechanism; its combination with ambiguity and untrusted scale creates the risk.
+
+Common dangerous shapes include nested repetition, repeated alternatives that accept the same prefix, and a failure condition placed after a broad repetition. Real engines may optimize some simple patterns, but one fast run isn't a complexity guarantee across all inputs and runtimes.
+
+Review should first look for one clear consumption path through the text. Replace “any character” with a class that excludes the delimiter, factor common prefixes out of overlapping alternatives, and cap input size before synchronous matching. Security tests need long failures or near-successes because ordinary successful examples often finish quickly.
+
+Normal JavaScript regex methods return synchronously and expose no standard timeout or cancellation argument for one match. An expensive match on an event-loop thread blocks other work. Untrusted patterns or inputs that can't be bounded need stronger isolation, a constrained engine, or a different algorithm, not only `try...catch`.
+
+Don't label an unmeasured rewrite “faster.” A pattern optimization must preserve the accepted language, captured content, and state behavior. When correcting security complexity, explain which ambiguity the new structure removes without inventing throughput numbers.
+
+## The responsibility boundary
+
+Regular expressions excel at local lexical structures, but the API choice should reflect the data's real grammar. `URL` handles URL parsing and normalization, `JSON.parse()` handles escapes and nesting, an HTML parser handles tree structure, and `Intl.Segmenter` handles user-facing text boundaries.
+
+That doesn't ban regex inside structured-input workflows. You might locate candidate records line by line or check a local format inside a field after parsing. The important constraint is that the pattern doesn't silently inherit the full parser's responsibility. Explicit inputs, outputs, and failure modes make a composition easier to test than one giant pattern.
+
+A pattern is code and deserves a named constant, nearby rationale, and boundary-focused tests. The rationale should explain the format contract, Unicode unit, and trust assumptions instead of narrating every character. When a pattern can't be described in two or three sentences, named stages are usually the clearer design.
+
+</Depth>
+
+<Checkpoint id="javascript/regexp" />
+
+## Further reading
+
+- [ECMAScript 2026: RegExp objects](https://tc39.es/ecma262/multipage/text-processing.html#sec-regexp-regular-expression-objects)
+- [MDN JavaScript guide: Regular expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions)
+- [MDN: `RegExp.escape()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/escape)
+- [MDN: `unicodeSets` property](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/unicodeSets)
+- [OWASP: Regular expression denial of service](https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS)

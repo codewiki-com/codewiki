@@ -1,0 +1,404 @@
+---
+title: Move semantics
+description: C++ move semantics through rvalue references, std::move, move operations, moved-from states, and noexcept-aware container behavior.
+track: cpp
+section: modern-cpp
+difficulty: intermediate
+tags: [move-semantics, rvalue-references, ownership, special-members]
+prerequisites: [cpp/references, cpp/classes, cpp/raii]
+related: [cpp/smart-pointers, cpp/templates, cpp/stl, cpp/operator-overloading]
+terms: [move-semantics, rvalue-reference, moved-from-state, copy-elision]
+verified: { version: 'C++23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/move-semantics
+sources:
+  - { title: 'C++23 working draft - Moved-from state of library types', url: 'https://timsong-cpp.github.io/cppwp/n4950/lib.types.movedfrom' }
+  - { title: 'C++ Core Guidelines - Default operations', url: 'https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#cdefop-default-operations' }
+  - { title: 'cppreference - std::move', url: 'https://en.cppreference.com/w/cpp/utility/move' }
+  - { title: 'cppreference - Move constructors', url: 'https://en.cppreference.com/w/cpp/language/move_constructor' }
+  - { title: 'cppreference - Copy elision', url: 'https://en.cppreference.com/w/cpp/language/copy_elision' }
+  - { title: 'cppreference - std::move_if_noexcept', url: 'https://en.cppreference.com/w/cpp/utility/move_if_noexcept' }
+origin: old/src/content/docs/cpp/move-semantics.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Move semantics lets an object give its resources to another object, avoiding a resource copy that would otherwise be needed. The constructor or assignment operator performs the transfer; `std::move` does not.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `std::move` is only a cast. A moved-from object remains alive, but you usually cannot assume that it is empty or keep using it as though it retained its old value.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Prefer the Rule of Zero. When you genuinely need custom resource ownership, preserve the source object's invariants and mark an operation `noexcept` only when it cannot throw.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+<Term id="move-semantics">Move semantics</Term> lets one object be initialized or assigned from another object whose value is about to be abandoned. A copy usually creates an independent resource for the target. A move can instead take over a resource the source already owns, such as a dynamic array's buffer pointer, without copying every element.
+
+This mechanism concerns ownership transfer, not ordinary integer assignment. You meet it when returning objects by value, inserting temporary values into containers, transferring a `std::unique_ptr`, or letting an object take ownership of a function argument. For a type containing only a few scalar values, moving can cost the same as copying; the language never promises that a move is faster.
+
+C++ expresses the intent through overload selection. A copy constructor commonly accepts `const T&`, while a move constructor commonly accepts `T&&`. Overload resolution gets a chance to choose the move operation only when the source expression can bind to the latter; the selected constructor or assignment operator still decides how much work happens.
+
+Resource owners are a natural fit for move semantics. File handles, sockets, and exclusive pointers cannot safely duplicate ownership, but they can change the one object that owns the resource. The source object is still destroyed after the move, so it must remain safe to destroy.
+
+## How it works
+
+C++ expressions have value categories. An lvalue commonly denotes an object with identity that can be referred to again. A prvalue computes a value or initializes a result object. An xvalue denotes an object with identity whose resources can be reused. Xvalues and prvalues are collectively rvalues.
+
+An <Term id="rvalue-reference">rvalue reference</Term> is written `T&&`. It can bind to an rvalue, letting an overload set distinguish a transferable source from an ordinary lvalue. The rule applies to expressions, not the type written in a variable declaration: an expression consisting of a variable's name is always an lvalue, even when the variable has type `T&&`.
+
+`std::move(value)` does not inspect a buffer, empty a container, or call a constructor. Roughly speaking, it casts the expression to an xvalue of the corresponding type. The initialization, assignment, or function call that follows then performs overload resolution; if no usable move overload exists, the code may still copy.
+
+A move constructor obtains resources from a source while establishing a new object. A move assignment operator must first deal with resources already owned by its target, then take the source resources. Both operations must account for self-move, base classes, every member, and the source object's invariants. Missing one of them can cause a leak, a double release, or a logical error.
+
+Unless otherwise specified, standard-library types put their source in a <Term id="moved-from-state">valid but unspecified state</Term>. Valid means the object's invariants still hold and it can be destroyed or assigned a new value; unspecified means you cannot guess which value it retained. A custom type's moved-from contract comes from that type's own interface and implementation.
+
+The following table covers common expression forms. Function return types, casts, and rules involving `decltype` create more combinations, but move-heavy code starts with these four cases.
+
+| Expression | Value category | Effect on typical overloads |
+|---|---|---|
+| Named object `value` | lvalue | Prefers `T&` or `const T&` |
+| Literal or same-type temporary result | prvalue | Can initialize a result object or bind to `T&&` |
+| `std::move(value)` | xvalue | Can bind to `T&&` |
+| Named `T&&` parameter `value` | lvalue | Does not move again merely because of its declared type |
+
+A value category does not say that an object's lifetime is actually about to end. `std::move` can make a long-lived object an xvalue, so correctness depends on the programmer honoring the promise that its old value is no longer needed. The compiler mainly checks whether types can bind; it usually cannot decide whether the ownership intent makes sense.
+
+## Examples
+
+### Observing value categories and overloads
+
+The first example only observes overload selection; neither `inspect` overload modifies its argument. Its output therefore also shows that `std::move` itself did not move the string's contents.
+
+<Depth level="quick">
+
+```cpp title="value_categories.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+
+void inspect(const std::string& value) {
+    std::cout << "lvalue overload: " << value << '\n';
+}
+
+void inspect(std::string&& value) {
+    std::cout << "rvalue overload: " << value << '\n';
+}
+
+int main() {
+    std::string order = "tea";
+
+    inspect(order);
+    inspect(std::move(order));
+    std::cout << "after std::move: " << order << '\n';
+
+    // A named rvalue-reference expression is still an lvalue.
+    std::string&& alias = std::move(order);
+    inspect(alias);
+    inspect(std::move(alias));
+}
+```
+
+```text
+lvalue overload: tea
+rvalue overload: tea
+after std::move: tea
+lvalue overload: tea
+rvalue overload: tea
+```
+
+</Depth>
+
+`inspect(order)` sees an lvalue, so it selects `const std::string&`. `inspect(std::move(order))` sees an xvalue, so it selects `std::string&&`. Once the rvalue-reference variable `alias` has a name, the expression `alias` is an lvalue too; passing it to the rvalue overload again requires an explicit cast.
+
+Do not infer that a moved-from string always retains its contents. The rvalue overload here never constructs or assigns another string from its parameter, so no resource transfer takes place. As soon as the function body genuinely takes ownership of `value`, the source value must be interpreted using that type's moved-from contract.
+
+This distinction appears frequently inside move constructors. Although the parameter `other` has declared type `Buffer&&`, the expression `other` is an lvalue. Moving one of its members requires `std::move(other.member)` or a member operation that expresses the same transfer.
+
+### Implementing an ownership transfer
+
+The following `ByteBuffer` owns a dynamic array. Copying is deleted. Its move operations take the `std::unique_ptr` and use `std::exchange` to reset the source size to `0`. Resetting the size is not a language requirement; this class chooses it to preserve an invariant that pairs `size() == 0` with a null pointer.
+
+```cpp title="byte_buffer.cpp"
+#include <cstddef>
+#include <iostream>
+#include <memory>
+#include <utility>
+
+class ByteBuffer {
+public:
+    explicit ByteBuffer(std::size_t size)
+        : data_(size ? std::make_unique<unsigned char[]>(size) : nullptr),
+          size_(size) {}
+
+    ByteBuffer(const ByteBuffer&) = delete;
+    ByteBuffer& operator=(const ByteBuffer&) = delete;
+
+    ByteBuffer(ByteBuffer&& other) noexcept
+        : data_(std::move(other.data_)),
+          size_(std::exchange(other.size_, 0)) {
+        std::cout << "move-constructed\n";
+    }
+
+    ByteBuffer& operator=(ByteBuffer&& other) noexcept {
+        if (this != &other) {
+            data_ = std::move(other.data_);
+            size_ = std::exchange(other.size_, 0);
+        }
+        std::cout << "move-assigned\n";
+        return *this;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+private:
+    std::unique_ptr<unsigned char[]> data_;
+    std::size_t size_ = 0;
+};
+
+int main() {
+    ByteBuffer incoming(4);
+    ByteBuffer stored(std::move(incoming));
+    std::cout << "sizes: " << incoming.size() << ", " << stored.size() << '\n';
+
+    ByteBuffer replacement(2);
+    stored = std::move(replacement);
+    std::cout << "sizes: " << replacement.size() << ", " << stored.size() << '\n';
+}
+```
+
+```text
+move-constructed
+sizes: 0, 4
+move-assigned
+sizes: 0, 2
+```
+
+Move construction initializes a target that owns nothing yet. The move-assignment target already owns a four-byte buffer. Move-assigning `data_` makes `std::unique_ptr` release the old array before taking the two-byte array. The self-move check prevents an object from releasing its own resource and then trying to take that resource back.
+
+This implementation deliberately exposes the resource pair and the source invariant, but production code usually does not need to spell it out. If a class consists only of RAII members such as `std::vector`, `std::string`, and smart pointers, and their default moved-from states satisfy the class invariant, compiler-generated member operations are often more reliable.
+
+`noexcept` is an interface promise, not a performance decoration. Both member operations used here cannot throw, so the move operations can honestly be marked `noexcept`. If the function body calls code that might throw, forcing the annotation would make an escaping exception call `std::terminate`.
+
+### Transferring exclusive ownership
+
+`std::unique_ptr` encodes its ownership constraint in the type: copying is deleted, while moving gives the managed pointer to the target and leaves the source pointer empty. A function taking `std::unique_ptr<T>` by value clearly says that it becomes an owner. The caller must use `std::move` to surrender a named pointer.
+
+```cpp title="publish_report.cpp"
+#include <iostream>
+#include <memory>
+#include <string>
+#include <utility>
+
+struct Report {
+    explicit Report(std::string report_name)
+        : name(std::move(report_name)) {}
+
+    ~Report() {
+        std::cout << "destroyed: " << name << '\n';
+    }
+
+    std::string name;
+};
+
+void publish(std::unique_ptr<Report> report) {
+    std::cout << "publishing: " << report->name << '\n';
+}
+
+int main() {
+    auto draft = std::make_unique<Report>("weekly");
+    std::cout << "before: " << (draft ? "present" : "empty") << '\n';
+
+    publish(std::move(draft));
+
+    std::cout << "after: " << (draft ? "present" : "empty") << '\n';
+}
+```
+
+```text
+before: present
+publishing: weekly
+destroyed: weekly
+after: empty
+```
+
+The `publish` parameter is destroyed when the function ends, so the report is destroyed before `after` is printed. Here it is safe to rely on `draft` becoming empty because `std::unique_ptr` specifies that postcondition. That is more specific than assuming every standard-library type becomes empty after a move.
+
+If a function only uses a report and does not take ownership of its lifetime, it should accept `Report&`, `const Report&`, or a suitable observing pointer. Passing a `std::unique_ptr` by value merely to read the object forces the caller to surrender ownership and gives the interface the wrong meaning.
+
+A temporary pointer can be passed directly, as in `publish(std::make_unique<Report>("daily"))`, because the temporary expression already follows the move path. Do not wrap every temporary in another `std::move`; it adds no ownership information and can conceal a misunderstanding of value-category rules.
+
+### How `noexcept` affects transfer strategy
+
+Generic code that must choose between preserving a source value and transferring it can use `std::move_if_noexcept`. When `T` has a non-throwing move constructor, or cannot be copied at all, the function returns an rvalue reference suitable for moving. Otherwise, it returns a `const T&` suitable for copying.
+
+```cpp title="move_if_noexcept.cpp"
+#include <iostream>
+#include <utility>
+
+template<bool Nothrow>
+struct Record {
+    static inline int copies = 0;
+    static inline int moves = 0;
+
+    int id;
+
+    explicit Record(int value) : id(value) {}
+
+    Record(const Record& other) : id(other.id) {
+        ++copies;
+    }
+
+    Record(Record&& other) noexcept(Nothrow) : id(other.id) {
+        ++moves;
+    }
+};
+
+template<class T>
+void relocate(const char* label) {
+    T::copies = 0;
+    T::moves = 0;
+    T source(7);
+    T destination(std::move_if_noexcept(source));
+    std::cout << label << ": copies=" << T::copies
+              << ", moves=" << T::moves
+              << ", id=" << destination.id << '\n';
+}
+
+int main() {
+    relocate<Record<false>>("throwing move");
+    relocate<Record<true>>("noexcept move");
+}
+```
+
+```text
+throwing move: copies=1, moves=0, id=7
+noexcept move: copies=0, moves=1, id=7
+```
+
+If a potentially throwing move changes the source before failing, the caller may be unable to restore its original value. Copying can instead build an independent new object while preserving the source if construction fails. Standard-library components such as `std::vector` use type properties when selecting relocation strategies, although their exact guarantees also depend on whether elements are copyable, the allocator, and the operations involved.
+
+Do not read this output as a move-speed benchmark. It records only which constructor was selected and measures no time. A move might swap one pointer or process elements one by one; a copy can also be cheap because of a small-object representation. Performance claims require a benchmark of the real type, data size, standard-library implementation, and build configuration.
+
+## Pitfalls
+
+### Treating a moved-from object as empty
+
+> [!PITFALL]
+> Generated and handwritten code often asserts `source.empty()` after a move or keeps reading the source through old indices. Valid but unspecified does not mean guaranteed empty.
+
+Standard-library objects can generally be destroyed, assigned a new value, or used by operations whose preconditions their current state satisfies. Treat the move as the last meaningful read of that value, and assign a new value before deliberately reusing the variable. If an API promises a more specific moved-from state, cite that type's own documentation rather than guessing from one run.
+
+### Calling `std::move` on a `const` object
+
+> [!PITFALL]
+> `std::move(const_value)` preserves `const`, commonly producing `const T&&`. The usual move constructor `T(T&&)` cannot bind to it, so a copy overload may be selected.
+
+Do not make a local object `const` when its ownership is meant to be transferred, and inspect the overloads actually offered by the receiver. Do not remove necessary constness just to make the code look as though it moves; sometimes copying is the correct outcome.
+
+### Forcing a move from a returned local
+
+> [!PITFALL]
+> `return std::move(result);` changes the name expression into an xvalue and can prevent named return value optimization (NRVO). It is usually worse than a direct return.
+
+Write `return result;`. When NRVO applies, the compiler can construct the result object directly. When it cannot elide the operation, return statements have implicit-move rules for eligible automatic local objects. Use an explicit `std::move` only when changing the value category is genuinely required and no elision opportunity is being lost.
+
+### Missing or dishonest `noexcept`
+
+> [!PITFALL]
+> Without `noexcept` on a custom move operation, containers and `std::move_if_noexcept` may choose to copy. A false `noexcept` promise turns an ordinary exception into program termination.
+
+Derive the exception specification from the real member operations. Defaulted move operations can usually infer the right conditional specification. For handwritten operations, use traits such as `std::is_nothrow_move_constructible_v<T>` in compile-time checks and keep the interface honest when a path can throw.
+
+### Handwriting an incomplete set of special members
+
+> [!PITFALL]
+> A model can easily generate a raw-pointer move constructor while forgetting to delete copying, release the target's old resource during move assignment, move a base class, or reset the length paired with a pointer.
+
+Put resources in RAII members and follow the Rule of Zero first. When custom operations are unavoidable, review the destructor, copy constructor, copy assignment, move constructor, and move assignment as a set. Test construction, assignment, self-assignment, exception paths, and destruction separately.
+
+### Moving unconditionally inside a template wrapper
+
+> [!PITFALL]
+> `T&&` is a forwarding reference only in specific contexts such as template argument deduction. Applying `std::move` unconditionally to that named parameter treats even an lvalue supplied by the caller as consumable.
+
+First decide whether the parameter receives ownership or transparently forwards. An ownership-taking interface can use a by-value parameter or a concrete rvalue reference. A transparent wrapper uses `std::forward<T>(value)` to preserve the caller's value category. The complete deduction rules for perfect forwarding belong to the templates topic.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often add `std::move` mechanically to every return statement and container insertion. That can block NRVO or move from a variable that later code still reads. They also assume that moved-from `std::string` and `std::vector` objects must be empty. In handwritten resource owners, worse failures include leaking the target's old resource, leaving the source pointer and size inconsistent, copying a base while moving members, and marking an allocating move operation `noexcept`.
+
+**Ask your AI to check**
+
+- List the source object, receiving overload, and next use for every `std::move`; flag any use-after-move or ineffective move from `const`.
+- Expand all five special members plus base and member operations, then verify that ownership transfers once and both source and target invariants hold.
+- Find explicit moves of return-local variables, and use type traits to confirm that each `noexcept` declaration matches the actual member operations.
+
+**Review checklist**
+
+- Trace the source after every transfer point; allow only destruction, reassignment, or operations whose preconditions its current state meets.
+- Compile test paths for move-only types, copyable types with potentially throwing moves, and self-move assignment.
+- Check that resources, sizes, ownership flags, and base classes are handled as one invariant.
+
+**Prompt vocabulary**
+
+Use the exact terms `move semantics`, `rvalue reference`, `xvalue`, `moved-from state`, `valid but unspecified`, `move constructor`, `move assignment operator`, `copy elision`, `NRVO`, `noexcept move`, and `forwarding reference`. Ask for the overload-resolution result and an ownership timeline; a vague request to optimize copies is less likely to expose a mistake.
+
+<Depth level="deep">
+
+## Special members and the Rule of Zero
+
+The compiler implicitly declares a move constructor only under a set of conditions. One often missed condition is that the class has no user-declared destructor; user-declared copy construction or copy assignment also affects implicit move declaration. Code can therefore appear to accept an rvalue while actually invoking a copy constructor through `const T&`.
+
+The common declaration patterns can be screened with this table. The final result still depends on whether every base class and member supports the corresponding operation.
+
+| Declaration in the class | Result to check |
+|---|---|
+| No user-declared special members | Copy and move operations may be implicitly declared |
+| User-declared destructor | Move construction and move assignment are not implicitly declared |
+| User-declared copy construction or assignment | Move operations are not implicitly declared |
+| User-declared move construction or assignment | Implicit copy operations are defined as deleted |
+| Explicit `= default` or `= delete` | Intent is visible, but availability still depends on members and bases |
+
+If a class needs a declaration such as a virtual destructor and should remain movable, review the operations explicitly and write `= default` or `= delete` where appropriate. Defaulting does not guarantee availability: if a base or member cannot perform the corresponding operation, a defaulted special member can still be defined as deleted. Type traits and compiled call sites give better evidence than declarations alone.
+
+A defaulted move processes base classes and non-static data members individually with move initialization or move assignment. A member such as `std::unique_ptr` transfers ownership; moving an integer still just copies its numeric value. A default-moved object can therefore contain a null pointer alongside an unchanged length, and the class invariant decides whether that combination is valid.
+
+That is the practical value of the Rule of Zero. When a class wraps both a resource and its metadata in one member that already owns them correctly, there is less state to synchronize. A `std::vector<std::byte>` obtains correct copy, move, and destruction behavior more easily than a raw pointer paired with a length, while removing repeated special-member code.
+
+The Rule of Five does not require every class to handwrite five functions. It warns that after you customize one operation, the remaining defaults may disappear or no longer match its semantics. Aim for the Rule of Zero first. If that is impossible, decide explicitly whether each operation is defaulted, deleted, or custom.
+
+Move assignment differs from move construction in one more respect: its target is already a complete object. The implementation must end the target's old ownership correctly and leave self-move in a valid state that can be destroyed or assigned. Swap-based implementations and assignment of RAII members can reduce branching, but business invariants still need review beyond checking whether a pointer is null.
+
+## Copy elision, implicit moves, and cost
+
+<Term id="copy-elision">Copy elision</Term> lets an implementation omit a copy or move that might otherwise occur. Since C++17, several cases that initialize a result object from a prvalue of the same type use direct construction semantics; they do not first create a temporary and then move it. The absence of a move-constructor log does not mean move semantics failed. There may be no intermediate object to move.
+
+When a function returns a named local object of the same type, NRVO can construct that local directly in the caller's result location. If NRVO is not performed, an eligible local can still be handled by the return statement's implicit-move rules. Writing `return std::move(local);` changes the expression's shape so the NRVO condition no longer applies, which is why returning the name is the default.
+
+`noexcept` affects the recovery strategy. When moving cannot throw, moving several elements cannot be interrupted by the move itself. When moving may throw and copying is available, copying into new storage often makes the strong exception guarantee easier to preserve. If a type cannot be copied, a container may have no option but to try the potentially throwing move; consult the operation's specification for its exact guarantee.
+
+Move complexity depends on representation and context. An ordinary `std::vector` can often transfer its internal storage, but operations affected by allocator propagation and equality rules may have to move elements individually. Moving a `std::array` moves each element. The mere presence of `std::move` proves neither constant time nor a particular speedup.
+
+Design an API around ownership before deciding which copy to avoid. Use a reference when merely observing an object. A concrete rvalue reference can accept unconditional ownership of an existing object. When both lvalues and rvalues are accepted and the function stores an independent value, taking by value and then moving into a member can sometimes be simpler. Each choice imposes different costs on callers, so one move rule cannot replace interface analysis.
+
+Finally, `std::move` does not guarantee that the callee consumes its argument. A `T&&` parameter can merely read the object, move it into a member, or incorrectly retain a dangling reference. When reviewing move-heavy code, follow the call chain to the point where ownership actually changes instead of stopping at the cast.
+
+</Depth>
+
+<Checkpoint id="cpp/move-semantics" />
+
+## Further reading
+
+- [C++23 working draft: moved-from state of library types](https://timsong-cpp.github.io/cppwp/n4950/lib.types.movedfrom)
+- [C++ Core Guidelines: default operations and the Rule of Zero](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#cdefop-default-operations)
+- [cppreference: `std::move`](https://en.cppreference.com/w/cpp/utility/move)
+- [cppreference: move constructors](https://en.cppreference.com/w/cpp/language/move_constructor)
+- [cppreference: copy elision](https://en.cppreference.com/w/cpp/language/copy_elision)
+- [cppreference: `std::move_if_noexcept`](https://en.cppreference.com/w/cpp/utility/move_if_noexcept)

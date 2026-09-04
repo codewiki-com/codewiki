@@ -1,0 +1,400 @@
+---
+title: 类型收窄
+description: TypeScript 如何根据控制流收窄联合类型与 unknown，并用穷尽检查、可信谓词和稳定的局部绑定防止类型错误。
+track: typescript
+section: type-system
+difficulty: intermediate
+tags: [typescript, type-narrowing, control-flow-analysis, discriminated-unions]
+prerequisites: [typescript/basics, typescript/union-intersection]
+related: [typescript/type-guards, typescript/type-inference, typescript/literal-types, typescript/strict-mode]
+terms: [control-flow-narrowing, type-guard, union-type, tagged-union, type-predicate, assertion-function, type-erasure]
+verified: { version: 'TypeScript 6', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: typescript/type-narrowing
+sources:
+  - { title: 'TypeScript Handbook - Narrowing', url: 'https://www.typescriptlang.org/docs/handbook/2/narrowing.html' }
+  - { title: 'TypeScript 5.4 - Preserved narrowing in closures following last assignments', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html' }
+  - { title: 'TypeScript TSConfig - strictNullChecks', url: 'https://www.typescriptlang.org/tsconfig/strictNullChecks.html' }
+  - { title: 'TypeScript 2.0 - Control flow based type analysis', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-2-0.html' }
+origin: old/src/content/docs/typescript/type-narrowing.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="control-flow-narrowing">控制流收窄（control-flow narrowing）</Term>让 TypeScript 根据检查、赋值和可达路径，缩小值在当前位置的可能类型。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    收窄是编译器在某个程序点得出的结论，不是运行时转换；赋值、可变别名或说谎的类型谓词都可能让这份结论失效。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    用与运行时事实匹配的守卫，在联合类型中设置稳定的判别字段，并用 `never` 检查每个分支是否穷尽。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+类型收窄是 TypeScript 在控制流的某个位置，把宽类型精化成更具体类型的过程。参数可以声明为 `string | number`，但在 `typeof value === "string"` 成立的分支中，编译器只把 `value` 当作 `string`。离开这条路径后，它会根据仍可到达该位置的分支重新计算类型。
+
+这套机制解决了<Term id="union-type">联合类型（union type）</Term>的操作安全问题。若一个值可能是字符串或数字，未经检查时只能使用两者共有的能力。守卫给编译器提供运行时证据，之后才能安全调用 `toUpperCase()` 或 `toFixed()`。
+
+收窄同样用于 `unknown`、可空值、可选属性和状态对象。它常出现在 API 边界、事件处理、解析结果和错误处理代码中。开启 `strictNullChecks` 后，`null` 与 `undefined` 是独立类型，空值检查才能形成有意义的静态证明。
+
+类型收窄不会修改数据，也不会把类型信息带入 JavaScript。`typeof`、相等比较和属性读取会在运行时执行，接口与联合类型则会被<Term id="type-erasure">类型擦除（type erasure）</Term>。因此，外部数据必须经过真实检查，不能靠类型注解变得可信。
+
+## 工作原理
+
+一个变量同时有声明类型和当前位置的观察类型。声明类型决定整个作用域中允许赋入什么值；观察类型描述沿当前控制流还能到达这里的值。守卫只缩小观察类型，不会永久改写声明。
+
+编译器为分支建立流事实。条件成立与不成立会产生不同事实，`return`、`throw`、`break` 等控制流终止会删除无法到达的可能性，多条路径汇合时则重新合并剩余类型。赋值也会产生新事实，所以同一个名称在相邻两行可以有不同的观察类型。
+
+### 编译器理解的守卫
+
+<Term id="type-guard">类型守卫（type guard）</Term>是编译器能够用于收窄的运行时条件。不同检查提供的证据不同，不能互相替代。
+
+| 检查 | 成立时证明什么 | 边界 |
+| --- | --- | --- |
+| `typeof value === "string"` | JavaScript 的原始类型分类 | `typeof null` 仍是 `"object"` |
+| `value instanceof Error` | 原型链中存在指定构造函数的 `prototype` | 普通 JSON 对象不会通过，跨 realm 也可能失败 |
+| `"id" in value` | 对象或其原型链上能找到属性 | 不证明属性值类型，也不证明它是自有属性 |
+| `value === null` | 值与某个字面量或另一变量的关系 | `value == null` 会同时排除 `null` 与 `undefined` |
+| `Array.isArray(value)` | 运行时值是数组 | 仍需逐项验证元素 |
+| `result.status === "ok"` | 具有该字面量判别字段的联合成员 | 前提是对象本身已经可信 |
+
+真值检查也会收窄，但它回答的是 JavaScript 的真假值问题。`if (value)` 会排除 `null` 和 `undefined`，同时也让 `0`、`NaN`、`""`、`0n` 与 `false` 无法进入成立分支。若这些值在领域中有效，应明确检查空值。
+
+相等比较可以关联两个变量。若 `left` 是 `string | number`，`right` 是 `string | boolean`，那么 `left === right` 成立时，两者只能同时为 `string`。这种结论来自两个联合类型的共同可能性，而不是比较操作进行了类型转换。
+
+### 可达性、赋值与汇合
+
+提前返回通常能让剩余路径更清楚。若数字分支已经 `return`，函数后面的同一参数就不再包含 `number`。这比在每个使用点重复类型断言更容易随联合类型变化而保持正确。
+
+赋值后的观察类型来自实际赋入的值，但后续赋值仍按声明类型检查。一个声明为 `string | number` 的变量在赋入字符串后可以暂时观察为 `string`，稍后仍允许赋入数字。赋入布尔值则始终报错，因为它不属于声明类型。
+
+路径重新汇合时，编译器合并每条可达路径的结果。若一个分支赋入字符串，另一个分支赋入数字，汇合处的观察类型重新成为 `string | number`。理解这个过程比背诵某个编辑器悬浮提示更可靠。
+
+### 可辨识联合与穷尽性
+
+<Term id="tagged-union">可辨识联合（discriminated union）</Term>让每个成员共享一个字面量字段，例如 `status`。检查这个字段会一起收窄对象和对应载荷，避免通过若干可选属性猜测当前状态。判别字段应稳定，不能同时承担普通可变数据的职责。
+
+当所有成员都被排除后，剩余类型是 `never`。把默认分支中的值传给接受 `never` 的函数，就能把新增但未处理的成员变成编译错误。若默认分支直接返回通用文本，类型检查器无法提醒你补上新状态。
+
+### 自定义谓词与断言函数
+
+内置检查难以复用复杂结构验证时，函数可以返回<Term id="type-predicate">类型谓词（type predicate）</Term>，例如 `value is Command`。成立分支保留 `Command`，不成立分支会排除它。编译器只检查谓词类型能否用于参数，不会证明函数体检查了签名承诺的每个字段。
+
+<Term id="assertion-function">断言函数（assertion function）</Term>使用 `asserts value is Type` 或 `asserts condition`。函数正常返回后，调用方获得收窄结果；失败路径必须抛出或永不返回。它适合不可恢复的不变量，而普通无效输入通常更适合返回可辨识结果。
+
+## 示例
+
+下面四个程序依次展示内置守卫、赋值后的控制流、可辨识联合与 `unknown` 边界。每段代码都用 TypeScript 6 在 `strict` 模式下完成类型检查，并由本地 `tsx` 实际执行。
+
+### 通过提前返回排除成员
+
+第一个函数依次处理空值、字符串和 `Date`。前三条路径都已经返回，所以最后一行只剩 `number`。
+
+<Depth level="quick">
+
+```typescript run title="builtin-narrowing.ts"
+type Input = string | number | Date | null;
+
+function describe(value: Input): string {
+  if (value === null) {
+    return "missing";
+  }
+
+  if (typeof value === "string") {
+    return `text:${value.trim().toUpperCase()}`;
+  }
+
+  if (value instanceof Date) {
+    return `date:${value.toISOString().slice(0, 10)}`;
+  }
+
+  return `number:${value.toFixed(1)}`;
+}
+
+const inputs: Input[] = [null, "  ready ", 12.25, new Date("2026-09-04T00:00:00Z")];
+
+for (const input of inputs) {
+  console.log(describe(input));
+}
+```
+
+```text
+missing
+text:READY
+number:12.3
+date:2026-09-04
+```
+
+<TryToBreak items={['空字符串', 'NaN', '无效的 Date', 'null']} />
+
+</Depth>
+
+`value === null` 必须先于宽泛的对象处理，因为 `typeof null === "object"`。这里用 `instanceof Date` 检查代码创建的实例；JSON 中的日期仍是字符串，不会因为类型注解自动变成 `Date`。
+
+最后的数字分支没有 `as number`。它的安全性来自前面所有可达路径，而不是作者对编译器的指令。给 `Input` 增加新成员时，这一行会迫使实现重新处理分支。
+
+### 赋值后保留收窄结果
+
+字符串形式的基础地址先被转换并重新赋给 `base`。走出 `if` 后，两条路径上的 `base` 都是 `URL`，而箭头函数创建在最后一次赋值之后，因此可以继续使用这个收窄结果。
+
+```typescript run title="assignment-flow.ts"
+function makeJobUrls(base: string | URL, jobIds: number[]): string[] {
+  if (typeof base === "string") {
+    base = new URL(base);
+  }
+
+  // 箭头函数创建在 base 的最后一次赋值之后。
+  return jobIds.map((jobId) => `${base.origin}/jobs/${jobId}`);
+}
+
+const urls = makeJobUrls("https://queue.example/api?legacy=1", [7, 11]);
+
+for (const url of urls) {
+  console.log(url);
+}
+```
+
+```text
+https://queue.example/jobs/7
+https://queue.example/jobs/11
+```
+
+参数的声明类型仍是 `string | URL`，所以更早的分支允许给它赋入 `URL`。控制流证明的是箭头函数创建时的观察类型。若任何嵌套函数还会给 `base` 赋值，编译器就不能继续依赖这份证明。
+
+生产代码中常把稳定结果另存为 `const normalizedBase = base`。这不仅方便编译器，也明确告诉读者后续回调依赖哪一个不会重新赋值的值。
+
+### 用判别字段驱动状态处理
+
+每个任务状态都有同一个 `status` 字段，但载荷不同。`switch` 的每个分支只能访问对应成员的字段，默认分支则要求已经没有剩余成员。
+
+```typescript run title="job-state.ts"
+type JobState =
+  | { status: "queued"; position: number }
+  | { status: "running"; worker: string }
+  | { status: "failed"; reason: string }
+  | { status: "done"; artifact: string };
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled state: ${JSON.stringify(value)}`);
+}
+
+function summarize(state: JobState): string {
+  switch (state.status) {
+    case "queued":
+      return `queued:${state.position}`;
+    case "running":
+      return `running:${state.worker}`;
+    case "failed":
+      return `failed:${state.reason}`;
+    case "done":
+      return `done:${state.artifact}`;
+    default:
+      return assertNever(state);
+  }
+}
+
+const states: JobState[] = [
+  { status: "queued", position: 2 },
+  { status: "running", worker: "runner-3" },
+  { status: "done", artifact: "build-91.zip" },
+];
+
+for (const state of states) {
+  console.log(summarize(state));
+}
+```
+
+```text
+queued:2
+running:runner-3
+done:build-91.zip
+```
+
+如果加入 `{ status: "paused"; until: string }` 却没有新增 `case`，`assertNever(state)` 会收到 `paused` 成员并产生类型错误。这项检查只覆盖静态联合；未经验证的外部对象仍可能带着任意 `status` 到达运行时。
+
+为每个成员保留专属必填字段比堆叠可选字段更安全。`{ status: string; position?: number; worker?: string }` 无法表达哪个载荷与哪个状态同时成立，收窄也就不能恢复这层关系。
+
+### 从 `unknown` 收窄到领域联合
+
+最后一个例子把 JSON 解析结果立即放进 `unknown`。谓词先验证非空、非数组对象，再检查判别字段和每个分支所需的载荷。
+
+```typescript run title="command-boundary.ts"
+type Command =
+  | { kind: "retry"; attempts: number }
+  | { kind: "cancel"; reason: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCommand(value: unknown): value is Command {
+  if (!isRecord(value)) return false;
+
+  return (
+    (value.kind === "retry" &&
+      typeof value.attempts === "number" &&
+      Number.isInteger(value.attempts) &&
+      value.attempts >= 0) ||
+    (value.kind === "cancel" && typeof value.reason === "string")
+  );
+}
+
+function decodeCommand(raw: string): Command | undefined {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return isCommand(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+for (const raw of [
+  '{"kind":"retry","attempts":0}',
+  '{"kind":"cancel","reason":"duplicate"}',
+  '{"kind":"retry","attempts":"3"}',
+  "not json",
+]) {
+  const command = decodeCommand(raw);
+  console.log(command ? command.kind : "rejected");
+}
+```
+
+```text
+retry
+cancel
+rejected
+rejected
+```
+
+`"kind" in value` 本身不够，因为它不验证值是否是允许的字面量，也不验证关联载荷。`isCommand()` 的实现与签名必须同步变化；新增联合成员时，谓词、处理函数与测试都要一起更新。
+
+捕获 `JSON.parse()` 的语法错误是边界契约的一部分。成功解析只说明文本是合法 JSON，不说明得到的对象符合 `Command`。这两类失败应分别被测试，即使接口最后都返回 `undefined`。
+
+## 陷阱
+
+### 用真值代替空值检查
+
+> [!PITFALL]
+> `if (attempts)` 会把 `0` 与 `null` 一起送入不成立分支，`if (name)` 也会丢掉合法空字符串。代码虽然被收窄，却可能违反领域规则。
+
+**修复：** 只想排除空值时，写 `value !== null`、`value !== undefined` 或 `value != null`。为 `0`、空字符串和 `false` 各写一个边界测试，确认它们是否应被保留。
+
+### 让守卫承诺超过检查内容
+
+> [!PITFALL]
+> `function isUser(value): value is User` 只检查 `"id" in value`，却让调用方相信所有必填字段及其类型都正确。类型谓词是可信声明，不是自动生成的证明。
+
+**修复：** 从 `unknown` 开始，检查容器、判别字段、必填字段和业务约束。若函数只回答较窄的问题，就返回 `boolean` 或声明一个与实际证据相符的更小类型。
+
+### 把类型断言当作收窄
+
+> [!PITFALL]
+> `JSON.parse(raw) as Order` 不运行任何检查。它压掉了编译错误，却让错误形状以一个看似精确的类型进入整个调用链。
+
+**修复：** 外部数据先赋给 `unknown`，再通过守卫或验证器产生领域类型。`as` 只应用在已有独立运行时保证、而检查器无法表达该保证的狭窄位置。
+
+### 在可变边界后复用旧证明
+
+> [!PITFALL]
+> 属性通过检查后，对对象或属性的赋值可能改变观察类型。回调、别名和异步间隔还会让读者难以判断运行时值是否仍符合原条件。
+
+**修复：** 把真正需要的已收窄值复制到 `const` 局部变量，再交给回调。检查从守卫到使用之间的每个写入点，不要只依赖编辑器在某一行显示的类型。
+
+### 用宽泛默认分支隐藏新成员
+
+> [!PITFALL]
+> 可辨识联合的 `default: return "unknown"` 会吞掉以后新增的成员。代码继续编译，但新状态没有得到领域处理。
+
+**修复：** 在必须穷尽的分支中把剩余值交给 `assertNever()`。若协议确实允许未知外部状态，应先在解码边界把它建模为明确成员，而不是让内部联合悄悄变宽。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常在 `JSON.parse()` 后直接添加 `as Payload`，或者生成一个只检查判别字段存在的 `value is Payload` 谓词。它还会用 `if (count)` 同时处理缺失值与零，把可辨识联合的 `default` 分支写成通用回退，并在 `await` 或回调之后继续使用之前对可变属性得出的结论。这些代码往往能通过类型检查，因为断言和谓词正是在告诉编译器「相信我」。
+
+**让 AI 检查**
+
+- 列出每次收窄使用的具体运行时证据，并说明成立与不成立分支各自剩余哪些类型。
+- 找出从守卫到使用点之间对变量、属性及其别名的所有写入，并检查每个异步或回调边界。
+- 为每个自定义谓词生成真假两侧的反例，再确认联合类型新增成员时 `never` 检查会失败。
+
+**审查清单**
+
+- 用 `0`、`""`、`false`、`null`、`undefined` 和错误对象形状测试边界。
+- 确认外部值从 `unknown` 开始，且类型断言没有替代运行时验证。
+- 检查每个状态分支的专属载荷、穷尽性，以及回调捕获的是否为稳定局部值。
+
+**提示词词汇**
+
+使用准确术语：`declared type`（声明类型）、`observed type`（观察类型）、`control-flow narrowing`（控制流收窄）、`reachability`（可达性）、`type guard`（类型守卫）、`discriminated union`（可辨识联合）、`exhaustiveness check`（穷尽性检查）、`type predicate`（类型谓词）、`assertion function`（断言函数）。要求模型输出分支后的剩余联合成员和写入点清单；「让类型更安全」不足以约束结果。
+
+<Depth level="deep">
+
+## 流事实、赋值与路径汇合
+
+TypeScript 的收窄结果属于程序位置，而不属于变量的永久身份。检查器沿控制流图传播事实，每次分支、赋值和终止都可能更新它们。查看类型错误时，先问哪些路径能够到达该行，再问每条路径最近一次写入了什么。
+
+声明类型是赋值的上限，观察类型是当前位置的可用精度。下面的顺序合法：一个 `string | number` 变量先赋入字符串，调用字符串方法，再赋入数字并调用数字方法。前后两个观察类型不同，但两次赋值都满足同一个声明类型。
+
+路径汇合会丢掉只属于单条路径的事实。若两个分支都把变量变成 `URL`，汇合后仍是 `URL`；若一个分支保留字符串，另一个变成 `URL`，汇合后就是 `string | URL`。通过提前返回移除分支，通常比在汇合后重新检查更清楚。
+
+判别字段与载荷应保持相关。若先把 `const { status } = state` 解构出来，再独立修改原对象，读者需要重新判断两者是否仍描述同一状态。对于会变化的状态，创建新的联合成员对象比原地改判别字段更容易维持不变量。
+
+### 别名条件与属性
+
+稳定的 `const` 条件可以携带收窄信息。例如把 `typeof input === "string"` 保存到一个未修改的常量后，再检查该常量，编译器可以关联回原表达式。若条件变量或被检查对象后来发生写入，这种关联就不再可靠。
+
+对象属性比局部原始值更容易受到别名影响。即使检查器在某处接受属性访问，另一个引用仍可能在运行时修改同一对象。TypeScript 刻意在实用性与完全健全之间取舍，因此通过类型检查不等于证明对象在并发、回调或外部库调用后保持不变。
+
+需要跨边界使用时，可以在守卫之后读取一次并保存到 `const`。这个局部值明确了快照时机，也缩短了需要审查的控制流范围。若对象本身必须保持不变量，则需要不可变更新、封装或运行时同步，而不只是更强的类型注解。
+
+## 闭包中的收窄
+
+TypeScript 6 可以在特定闭包中保留参数或 `let` 变量的收窄结果。条件是非提升函数创建在该变量可确定的最后一次赋值之后，并且嵌套函数中没有对该变量的赋值。`assignment-flow.ts` 正是这种情况。
+
+只要某个嵌套函数给变量赋值，即使赋回相同值，检查器也不能确定其他闭包执行时看到什么。函数何时被调用通常无法由局部控制流证明，因此旧的收窄结果会被放弃。这是时间与可变性问题，不是箭头函数和普通函数的语法差异。
+
+这里可以用一个简单模式：先在创建闭包前完成验证与规范化，再把结果保存到名称清楚的 `const`。例如先把 `string | URL` 规范化成 `URL`，再让回调只读取 `normalizedUrl`。这样代码结构本身就记录了边界，而不必依赖读者重建最后赋值分析。
+
+`await` 不会自动把所有局部收窄清空，但它允许其他代码在恢复前运行。对于不可重新赋值的局部原始值，这通常没有问题；对于共享可变对象，静态类型无法阻止另一个任务通过别名改写属性。审查异步代码时要同时看编译器结论和实际所有权。
+
+## 谓词契约与测试
+
+类型谓词同时描述真假两侧。若 `isSmallNumber(value): value is number` 只对较小数字返回 `true`，那么较大数字会进入调用方可能已经排除 `number` 的假分支。实际条件比谓词类型更窄时，应返回普通 `boolean` 或为该子集定义真实类型。
+
+断言函数的契约更强：正常返回意味着条件成立。实现如果在失败时只记录日志然后返回，后续代码会在没有运行时保证的情况下得到收窄类型。断言函数的负面测试必须确认失败路径确实抛出或终止。
+
+谓词测试至少要覆盖每个合法联合成员、每种缺失字段、错误原始类型和领域边界。还要测试「属于目标类型但谓词意外返回 false」的值，因为假分支同样依赖契约。对解码器而言，损坏 JSON、数组、`null` 和额外字段策略也应明确。
+
+静态测试用于确认期望的分支可编译、遗漏成员会失败；运行时测试用于确认守卫与真实值一致。两类测试回答不同问题，不能互相替代。尤其不要把一次成功的 `tsc` 运行当成外部数据已经得到验证。
+
+## 证据的边界
+
+收窄只提供与检查相符的结论，不会自动补上领域约束。`typeof amount === "number"` 仍允许 `NaN` 与无穷大，`typeof id === "string"` 也允许空字符串。后续代码依赖有限数、非空文本或特定格式时，守卫必须继续验证这些条件。
+
+| 已有证据 | 尚未证明 |
+| --- | --- |
+| `typeof value === "number"` | 有限、整数、范围与单位 |
+| `typeof value === "string"` | 非空、格式、长度与规范化形式 |
+| `Array.isArray(value)` | 元素类型、长度与元素之间的关系 |
+| `"token" in value` | 属性值类型、自有属性与秘密是否有效 |
+
+结构类型允许额外属性，所以一个对象满足所需字段不代表它只含这些字段。若协议要求拒绝未知键，解码器必须明确比较键集合。若协议允许向前兼容，就应接受额外字段，但只把经过验证的字段交给业务逻辑。
+
+收窄也不会证明两个独立读取发生在同一时刻。访问器、代理和共享可变对象可能让连续属性读取返回不同结果。遇到这类边界，应先读取到局部变量，再验证并使用同一个值。
+
+</Depth>
+
+<Checkpoint id="typescript/type-narrowing" />
+
+## 延伸阅读
+
+- [TypeScript Handbook：类型收窄](https://www.typescriptlang.org/docs/handbook/2/narrowing.html)
+- [TypeScript 5.4：最后赋值之后闭包中的收窄保留](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-4.html)
+- [TypeScript TSConfig：`strictNullChecks`](https://www.typescriptlang.org/tsconfig/strictNullChecks.html)
+- [TypeScript 2.0：基于控制流的类型分析](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-2-0.html)

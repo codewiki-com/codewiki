@@ -11,4 +11,5 @@ export const VERSIONS = [
   'Rust 1.98',
   'React 19',
   'Java 25 LTS',
+  'C++23',
 ] as const;
