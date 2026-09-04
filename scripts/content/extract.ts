@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { z } from 'astro/zod';
-import { termSchema } from '../../src/schemas/glossary';
+import { termSchema, type Term } from '../../src/schemas/glossary';
 import { interviewSchema } from '../../src/schemas/interview';
 import { quizSchema } from '../../src/schemas/quiz';
 import { parseFrontmatter } from './lib/frontmatter';
@@ -43,8 +43,11 @@ export const REPORT_PATH = 'reports/extract.json';
 /** Spec §4 caps a glossary card's definition; repeated here to name the limit in the reason. */
 const SHORT_LIMIT = 140;
 
-/** Key order of a glossary file, matching the hand-written terms. `id` is normally absent. */
-const TERM_KEYS = ['id', 'en', 'zh', 'aliases', 'short', 'topics'];
+/** A plain scalar starts with a letter and stays clear of every flow indicator. */
+const PLAIN = /^[A-Za-z\u00C0-\uFFFF][^,[\]{}:#'"\\]*$/;
+
+/** Words YAML reads as a boolean or a null rather than as the string they spell. */
+const RESERVED = /^(?:true|false|null|yes|no|on|off|y|n)$/i;
 
 export interface MergeConflict {
   /** The proposed term's id. */
@@ -72,13 +75,11 @@ export interface MergeOptions {
   dryRun?: boolean;
 }
 
-type TermRecord = Record<string, unknown>;
-
 interface ExistingTerm {
   id: string;
   file: string;
-  /** The file's own mapping, so fields this script does not know about survive a rewrite. */
-  record: TermRecord;
+  /** The file exactly as it stands on disk; a merge patches one line of it and nothing else. */
+  text: string;
   en: string;
   zh: string;
   topics: string[];
@@ -119,18 +120,19 @@ async function readGlossary(dir: string): Promise<ExistingTerm[]> {
   const terms: ExistingTerm[] = [];
   for (const name of await listYaml(dir)) {
     const file = path.join(dir, name);
-    const parsed: unknown = YAML.parse(await readFile(file, 'utf8'));
+    const text = await readFile(file, 'utf8');
+    const parsed: unknown = YAML.parse(text);
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error(`${file}: expected a mapping`);
     }
-    const record = parsed as TermRecord;
+    const record = parsed as Record<string, unknown>;
     const id = name.slice(0, -'.yaml'.length);
     const en = str(record.en);
     const aliases = strings(record.aliases);
     terms.push({
       id,
       file,
-      record,
+      text,
       en,
       zh: str(record.zh),
       topics: strings(record.topics),
@@ -141,7 +143,7 @@ async function readGlossary(dir: string): Promise<ExistingTerm[]> {
 }
 
 /** The terms of one proposal file, in file order. */
-function readProposal(file: string, text: string): TermRecord[] {
+function readProposal(file: string, text: string): Record<string, unknown>[] {
   const parsed: unknown = YAML.parse(text);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${file}: expected a mapping with a \`terms\` list`);
@@ -152,20 +154,83 @@ function readProposal(file: string, text: string): TermRecord[] {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
       throw new Error(`${file}: terms.${index} is not a mapping`);
     }
-    return entry as TermRecord;
+    return entry as Record<string, unknown>;
   });
 }
 
-/** Lay a term out for the file: the known keys in order, then anything else, untouched. */
-function orderTerm(record: TermRecord): TermRecord {
-  const ordered: TermRecord = {};
-  for (const name of TERM_KEYS) if (name in record) ordered[name] = record[name];
-  for (const [name, value] of Object.entries(record)) if (!(name in ordered)) ordered[name] = value;
-  return ordered;
+/** True when `value` can be written without quotes, in a flow collection or out of one. */
+function isPlain(value: string): boolean {
+  return PLAIN.test(value) && !/\s$/.test(value) && !RESERVED.test(value);
 }
 
-function serializeTerm(record: TermRecord): string {
-  return YAML.stringify(orderTerm(record), { lineWidth: 0 });
+/** A single-quoted YAML scalar; doubling the quote is the only escape such a scalar has. */
+function quoted(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** A scalar as the glossary files write one: plain where that is unambiguous, quoted otherwise. */
+function scalar(value: string): string {
+  return isPlain(value) ? value : quoted(value);
+}
+
+/** A flow sequence, `[a, b]`, the way every hand-written term writes `aliases` and `topics`. */
+function flowList(values: string[]): string {
+  return `[${values.map(scalar).join(', ')}]`;
+}
+
+/**
+ * Render a term in the house style of `src/content/glossary/*.yaml`: five lines, flow
+ * collections, and a definition that is always quoted because it is prose, and prose has
+ * commas in it. The id is not written — the collection loader takes it from the filename.
+ */
+export function serializeTerm(term: Pick<Term, 'en' | 'zh' | 'aliases' | 'short' | 'topics'>): string {
+  return [
+    `en: ${scalar(term.en)}`,
+    `zh: ${scalar(term.zh)}`,
+    `aliases: ${flowList(term.aliases)}`,
+    `short: { en: ${quoted(term.short.en)}, zh: ${quoted(term.short.zh)} }`,
+    `topics: ${flowList(term.topics)}`,
+    '',
+  ].join('\n');
+}
+
+/** The top-level `topics:` entry; `^` under `m` pins it to column 0, so nested keys are safe. */
+const TOPICS_LINE = /^topics:[ \t]*(.*)$/m;
+
+/**
+ * Replace the `topics` value of a glossary file and change nothing else — not the key order,
+ * not the quoting, not a comment. The file's own style wins: a flow list stays a flow list and
+ * a block list stays a block list, so folding one topic into a hand-written term is a one-line
+ * diff rather than a re-serialization of the whole file.
+ */
+export function patchTopics(text: string, topics: string[]): string {
+  const match = TOPICS_LINE.exec(text);
+  if (!match) {
+    // No `topics` key at all: append one in the house style.
+    const body = text === '' || text.endsWith('\n') ? text : `${text}\n`;
+    return `${body}topics: ${flowList(topics)}\n`;
+  }
+  const start = match.index;
+  const after = text.slice(start + match[0].length);
+  const value = match[1].trim();
+
+  if (value.startsWith('[')) {
+    // A flow list, possibly wrapped over several lines: replace up to its closing bracket.
+    const end = text.indexOf(']', start);
+    const stop = end < 0 ? start + match[0].length : end + 1;
+    return `${text.slice(0, start)}topics: ${flowList(topics)}${text.slice(stop)}`;
+  }
+  if (value !== '') {
+    // Something unexpected on the line itself: replace the line and leave the rest alone.
+    return `${text.slice(0, start)}topics: ${flowList(topics)}${after}`;
+  }
+
+  // A block list: replace the run of `- item` lines that follows, keeping their indentation.
+  const items = /^(?:\n[ \t]*-[ \t][^\n]*)+/.exec(after);
+  if (!items) return `${text.slice(0, start)}topics: ${flowList(topics)}${after}`;
+  const indent = /\n([ \t]*)-/.exec(items[0])?.[1] ?? '  ';
+  const block = topics.map((topic) => `\n${indent}- ${scalar(topic)}`).join('');
+  return `${text.slice(0, start)}topics:${block}${after.slice(items[0].length)}`;
 }
 
 /**
@@ -230,62 +295,53 @@ export async function mergeGlossaryProposals(
       const match = sameId ?? byKey(proposalKeys);
       const identical = match && key(match.en) === key(term.en) && key(match.zh) === key(term.zh);
 
-      if (match && !identical) {
-        if (sameId) {
-          const fields = (['en', 'zh'] as const)
-            .filter((field) => key(match[field]) !== key(term[field]))
-            .map(
-              (field) =>
-                `${field}: ${JSON.stringify(match[field])} vs proposed ${JSON.stringify(term[field])}`,
-            );
-          result.conflicts.push({
-            id: term.id,
-            reason: `term already exists with a different ${fields.join('; ')}`,
-          });
-        } else {
-          // A different name for a term that is already in the glossary: nothing to decide.
-          result.skipped.push(term.id);
-          result.notes.push({ id: term.id, note: `already covered by ${match.id}` });
-        }
+      // Only an id collision is a conflict: a disagreement under the same id needs a person.
+      if (sameId && !identical) {
+        const fields = (['en', 'zh'] as const)
+          .filter((field) => key(sameId[field]) !== key(term[field]))
+          .map(
+            (field) =>
+              `${field}: ${JSON.stringify(sameId[field])} vs proposed ${JSON.stringify(term[field])}`,
+          );
+        result.conflicts.push({
+          id: term.id,
+          reason: `term already exists with a different ${fields.join('; ')}`,
+        });
         continue;
       }
 
       if (match) {
         result.skipped.push(term.id);
-        const added = term.topics.filter((topic) => !match.topics.includes(topic));
-        if (added.length === 0) continue;
-        const topics = [...new Set([...match.topics, ...term.topics])].sort((a, b) => a.localeCompare(b));
-        // Only `topics` may change: the rest of the file is copied through as it stands.
-        match.record = { ...match.record, topics };
-        match.topics = topics;
-        result.notes.push({
-          id: term.id,
-          note: `merged topics: ${added.sort((a, b) => a.localeCompare(b)).join(', ')}`,
-        });
-        if (!options.dryRun) await writeFile(match.file, serializeTerm(match.record));
+        // An alias hit means the term is in the glossary under another name; either way its
+        // topics are worth having, so they are folded in whichever way the match was found.
+        const parts = identical ? [] : [`already covered by ${match.id}`];
+        const added = term.topics
+          .filter((topic) => !match.topics.includes(topic))
+          .sort((a, b) => a.localeCompare(b));
+        if (added.length > 0) {
+          match.topics = [...match.topics, ...added].sort((a, b) => a.localeCompare(b));
+          match.text = patchTopics(match.text, match.topics);
+          parts.push(`merged topics: ${added.join(', ')}`);
+          if (!options.dryRun) await writeFile(match.file, match.text);
+        }
+        if (parts.length > 0) result.notes.push({ id: term.id, note: parts.join('; ') });
         continue;
       }
 
       const target = path.join(glossaryDir, `${term.id}.yaml`);
       // The id lives in the filename, exactly as for the hand-written terms.
-      const record: TermRecord = {
-        en: term.en,
-        zh: term.zh,
-        aliases: term.aliases,
-        short: term.short,
-        topics: term.topics,
-      };
+      const text = serializeTerm(term);
       result.added.push(term.id);
       claimed.set(term.id, {
         id: term.id,
         file: target,
-        record,
+        text,
         en: term.en,
         zh: term.zh,
         topics: term.topics,
         keys: proposalKeys,
       });
-      if (!options.dryRun) await writeFile(target, serializeTerm(record));
+      if (!options.dryRun) await writeFile(target, text);
     }
   }
 

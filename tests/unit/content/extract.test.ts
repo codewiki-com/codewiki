@@ -5,7 +5,15 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import YAML from 'yaml';
 import { interviewSchema } from '../../../src/schemas/interview';
-import { mergeGlossaryProposals, validateSidecars } from '../../../scripts/content/extract';
+import { readdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import {
+  GLOSSARY_ROOT,
+  mergeGlossaryProposals,
+  patchTopics,
+  serializeTerm,
+  validateSidecars,
+} from '../../../scripts/content/extract';
 
 /** A scratch pair of directories for one merge case. */
 async function dirs(): Promise<{ proposals: string; glossary: string }> {
@@ -54,16 +62,18 @@ describe('mergeGlossaryProposals', () => {
     expect(result.added).toEqual(['free-variable']);
     expect(result.skipped).toEqual([]);
     expect(result.conflicts).toEqual([]);
+    // The id lives in the filename, and the layout is the house style, byte for byte.
     const written = await readFile(path.join(glossary, 'free-variable.yaml'), 'utf8');
-    // The id lives in the filename, and the key order matches the hand-written terms.
-    expect(Object.keys(YAML.parse(written))).toEqual(['en', 'zh', 'aliases', 'short', 'topics']);
-    expect(YAML.parse(written)).toEqual({
-      en: 'Free variable',
-      zh: '自由变量',
-      aliases: [],
-      short: FREE_VARIABLE.short,
-      topics: ['python/closures'],
-    });
+    expect(written).toBe(
+      [
+        'en: Free variable',
+        'zh: 自由变量',
+        'aliases: []',
+        "short: { en: 'A name a function uses but does not bind itself.', zh: '函数使用但并非自己绑定的名字。' }",
+        'topics: [python/closures]',
+        '',
+      ].join('\n'),
+    );
   });
 
   it('writes nothing on a dry run but still reports what it would add', async () => {
@@ -116,14 +126,44 @@ describe('mergeGlossaryProposals', () => {
     expect(result.skipped).toEqual(['closure']);
     expect(result.conflicts).toEqual([]);
     expect(result.notes).toEqual([{ id: 'closure', note: 'merged topics: javascript/closures' }]);
-    const merged = YAML.parse(await readFile(path.join(glossary, 'closure.yaml'), 'utf8'));
-    expect(merged.topics).toEqual(['javascript/closures', 'python/closures']);
-    expect(merged.aliases).toEqual(['Lexical closure']);
-    expect(merged.short).toEqual({
-      en: 'A function that keeps its defining scope.',
-      zh: '保留定义作用域的函数。',
-    });
-    expect(Object.keys(merged)).toEqual(['en', 'zh', 'aliases', 'short', 'topics']);
+    // Everything but the `topics` line survives untouched, flow style and all.
+    const merged = await readFile(path.join(glossary, 'closure.yaml'), 'utf8');
+    expect(merged).toBe(
+      CLOSURE.replace('topics: [python/closures]', 'topics: [javascript/closures, python/closures]'),
+    );
+    expect(merged.split('\n').filter((line) => !line.startsWith('topics:'))).toEqual(
+      CLOSURE.split('\n').filter((line) => !line.startsWith('topics:')),
+    );
+  });
+
+  it('keeps a block-style topics list in block style', async () => {
+    const { proposals, glossary } = await dirs();
+    const blockStyle = [
+      '# a hand-written term',
+      'en: Closure',
+      'zh: 闭包',
+      'aliases: []',
+      "short: { en: 'A function that keeps its defining scope.', zh: '保留定义作用域的函数。' }",
+      'topics:',
+      '  - python/closures',
+      '',
+    ].join('\n');
+    await term(glossary, 'closure', blockStyle);
+    await proposal(proposals, 'javascript-closures', [
+      {
+        id: 'closure',
+        en: 'Closure',
+        zh: '闭包',
+        short: { en: 'A function that keeps its defining scope.', zh: '保留定义作用域的函数。' },
+        topics: ['javascript/closures'],
+      },
+    ]);
+
+    await mergeGlossaryProposals(proposals, glossary);
+
+    expect(await readFile(path.join(glossary, 'closure.yaml'), 'utf8')).toBe(
+      blockStyle.replace('  - python/closures', '  - javascript/closures\n  - python/closures'),
+    );
   });
 
   it('skips a proposal an existing term already lists as an alias, whatever the case', async () => {
@@ -145,6 +185,31 @@ describe('mergeGlossaryProposals', () => {
     expect(result.conflicts).toEqual([]);
     expect(result.notes).toEqual([{ id: 'lexical-closure', note: 'already covered by closure' }]);
     expect(existsSync(path.join(glossary, 'lexical-closure.yaml'))).toBe(false);
+    expect(await readFile(path.join(glossary, 'closure.yaml'), 'utf8')).toBe(CLOSURE);
+  });
+
+  it('folds the topics of an alias-matched proposal into the term that covers it', async () => {
+    const { proposals, glossary } = await dirs();
+    await term(glossary, 'closure', CLOSURE);
+    await proposal(proposals, 'javascript-closures', [
+      {
+        id: 'lexical-closure',
+        en: 'lexical closure',
+        zh: '词法闭包',
+        short: { en: 'A closure, by another name.', zh: '闭包的另一种叫法。' },
+        topics: ['javascript/closures', 'python/closures'],
+      },
+    ]);
+
+    const result = await mergeGlossaryProposals(proposals, glossary);
+
+    expect(result.skipped).toEqual(['lexical-closure']);
+    expect(result.notes).toEqual([
+      { id: 'lexical-closure', note: 'already covered by closure; merged topics: javascript/closures' },
+    ]);
+    expect(await readFile(path.join(glossary, 'closure.yaml'), 'utf8')).toBe(
+      CLOSURE.replace('topics: [python/closures]', 'topics: [javascript/closures, python/closures]'),
+    );
   });
 
   it('conflicts when the id exists with a different zh', async () => {
@@ -202,6 +267,67 @@ describe('mergeGlossaryProposals', () => {
     const { glossary } = await dirs();
     const result = await mergeGlossaryProposals(path.join(glossary, 'nope'), glossary);
     expect(result).toEqual({ added: [], skipped: [], conflicts: [], notes: [] });
+  });
+});
+
+describe('serializeTerm', () => {
+  it('reproduces every committed glossary term byte for byte', async () => {
+    // The committed terms are the definition of the house style, so they are the fixture.
+    const root = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..', GLOSSARY_ROOT);
+    const files = (await readdir(root)).filter((name) => name.endsWith('.yaml'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const name of files) {
+      const text = await readFile(path.join(root, name), 'utf8');
+      expect(serializeTerm(YAML.parse(text)), name).toBe(text);
+    }
+  });
+
+  it('quotes only what YAML would otherwise misread, and doubles an apostrophe', () => {
+    expect(
+      serializeTerm({
+        en: "Don't panic",
+        zh: '别慌',
+        aliases: ['no worries', 'yes'],
+        short: { en: "It's fine, really", zh: '没事的。' },
+        topics: ['python/a'],
+      }),
+    ).toBe(
+      [
+        "en: 'Don''t panic'",
+        'zh: 别慌',
+        "aliases: [no worries, 'yes']",
+        "short: { en: 'It''s fine, really', zh: '没事的。' }",
+        'topics: [python/a]',
+        '',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('patchTopics', () => {
+  it('rewrites only the topics line of a flow-style file', () => {
+    const text = 'en: Closure\naliases: [a, b]\ntopics: [python/closures]\n';
+    expect(patchTopics(text, ['javascript/closures', 'python/closures'])).toBe(
+      'en: Closure\naliases: [a, b]\ntopics: [javascript/closures, python/closures]\n',
+    );
+  });
+
+  it('keeps a block list a block list, at its own indentation', () => {
+    const text = 'en: Closure\ntopics:\n    - python/closures\n';
+    expect(patchTopics(text, ['a/b', 'python/closures'])).toBe(
+      'en: Closure\ntopics:\n    - a/b\n    - python/closures\n',
+    );
+  });
+
+  it('appends a topics key to a file that has none', () => {
+    expect(patchTopics('en: Closure\n', ['python/closures'])).toBe(
+      'en: Closure\ntopics: [python/closures]\n',
+    );
+  });
+
+  it('leaves a nested `topics:` key alone', () => {
+    const text = 'en: Closure\ntopics: [x/y]\nmeta:\n  topics: [do/not/touch]\n';
+    expect(patchTopics(text, ['a/b'])).toBe('en: Closure\ntopics: [a/b]\nmeta:\n  topics: [do/not/touch]\n');
   });
 });
 
