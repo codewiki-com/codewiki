@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkMdx from 'remark-mdx';
@@ -7,9 +8,13 @@ import type { Root as MdastRoot } from 'mdast';
 import type { Root as HastRoot, Element } from 'hast';
 import { remarkCallouts } from '@/markdown/remark-callouts';
 import { remarkDepth } from '@/markdown/remark-depth';
+import { rehypeBlockIds } from '@/markdown/rehype-block-ids';
 import { rehypeCodebox } from '@/markdown/rehype-codebox';
 import { rehypeDepthHeadings } from '@/markdown/rehype-depth-headings';
+import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
+import { rehypeSectionActions } from '@/markdown/rehype-section-actions';
 import { parseFenceMeta } from '@/markdown/shiki-meta';
+import { runnableFences } from '@/lib/examples';
 
 describe('parseFenceMeta', () => {
   it('parses run and title', () => {
@@ -20,6 +25,25 @@ describe('parseFenceMeta', () => {
       title: 'a b.py',
       highlight: '2-3',
     });
+  });
+
+  it('parses SQL seed declarations and uses', () => {
+    expect(parseFenceMeta('seed="users"')).toEqual({ run: false, seed: 'users' });
+    expect(parseFenceMeta('run seed="users"')).toEqual({ run: true, seed: 'users' });
+  });
+});
+
+describe('runnableFences', () => {
+  it('carries a same-page SQL seed into its runnable example', () => {
+    const source = readFileSync(new URL('../fixtures/sql-seed.mdx', import.meta.url), 'utf8');
+    expect(runnableFences(source)).toEqual([
+      {
+        lang: 'sql',
+        title: 'list-users.sql',
+        code: 'SELECT * FROM users;',
+        seed: "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\nINSERT INTO users (name) VALUES ('Ada'), ('Grace');",
+      },
+    ]);
   });
 });
 
@@ -47,6 +71,18 @@ describe('remarkCallouts', () => {
     expect(out).toContain('role="note"');
     expect(out).toContain('data-callout="pitfall"');
     expect(out).toContain('<p class="callout-label" data-i18n="callout.pitfall">Pitfall</p>');
+  });
+
+  it('renders the initial label in Chinese when requested', async () => {
+    const out = String(
+      await unified()
+        .use(remarkParse)
+        .use(remarkCallouts, { locale: 'zh' })
+        .use(remarkRehype, { allowDangerousHtml: true })
+        .use(rehypeStringify, { allowDangerousHtml: true })
+        .process('> [!PITFALL]\n> 不要这样做。'),
+    );
+    expect(out).toContain('<p class="callout-label" data-i18n="callout.pitfall">陷阱</p>');
   });
 
   it('supports every documented type and leaves plain blockquotes alone', async () => {
@@ -175,13 +211,13 @@ describe('remarkDepth', () => {
 });
 
 /** Minimal hast fixture: the `<pre>` Shiki hands to `rehype-codebox`, with the meta already applied. */
-function preFixture(properties: Record<string, string>): Element {
+function preFixture(properties: Record<string, string>, source = 'print(1)'): Element {
   return {
     type: 'element',
     tagName: 'pre',
     properties: { className: ['astro-code'], ...properties },
     children: [
-      { type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: 'print(1)' }] },
+      { type: 'element', tagName: 'code', properties: {}, children: [{ type: 'text', value: source }] },
     ],
   };
 }
@@ -244,6 +280,48 @@ describe('rehypeCodebox', () => {
     expect((head.children[1] as Element).children).toHaveLength(1);
   });
 
+  it('keeps SQL seed declarations visible and resolves the first one onto a runnable query', () => {
+    const first = 'CREATE TABLE users (name TEXT);';
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users' }, first),
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users' }, 'SELECT broken;'),
+        preFixture({ 'data-lang': 'sql', 'data-seed': 'users', 'data-run': 'true' }, 'SELECT * FROM users;'),
+      ],
+    };
+
+    rehypeCodebox()(tree);
+
+    const [declaration, duplicate, query] = tree.children as Element[];
+    expect(declaration.properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+    expect(duplicate.properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+    expect(query.properties).toMatchObject({
+      className: ['codebox'],
+      'data-lang': 'sql',
+      'data-run': 'true',
+      'data-seed': first,
+    });
+    const declarationPre = declaration.children[1] as Element;
+    const declarationCode = declarationPre.children[0] as Element;
+    expect(declarationCode.children[0]).toEqual({ type: 'text', value: first });
+  });
+
+  it('localizes server-rendered controls before hydration', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [preFixture({ 'data-lang': 'python', 'data-run': 'true' })],
+    };
+    rehypeCodebox({ locale: 'zh' })(tree);
+
+    const head = (tree.children[0] as Element).children[0] as Element;
+    const buttons = (head.children[1] as Element).children as Element[];
+    expect(buttons.map((item) => item.children[0])).toEqual([
+      { type: 'text', value: '复制' },
+      { type: 'text', value: '运行' },
+    ]);
+  });
+
   it('renders a text fence as a headerless output box', () => {
     const tree: HastRoot = { type: 'root', children: [preFixture({ 'data-lang': 'text' })] };
     rehypeCodebox()(tree);
@@ -258,6 +336,48 @@ describe('rehypeCodebox', () => {
     const tree: HastRoot = { type: 'root', children: [preFixture({ dataLanguage: 'sql' })] };
     rehypeCodebox()(tree);
     expect((tree.children[0] as Element).properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+  });
+
+  it('leaves a preformatted prose block without a code child alone', () => {
+    const pre: Element = {
+      type: 'element',
+      tagName: 'pre',
+      properties: { dataLanguage: 'python' },
+      children: [{ type: 'text', value: 'not a code fence' }],
+    };
+    const tree: HastRoot = { type: 'root', children: [pre] };
+    rehypeCodebox()(tree);
+    expect(tree.children[0]).toBe(pre);
+  });
+});
+
+describe('rehypeMermaidDiagrams', () => {
+  it('renders Mermaid fences as semantic inline SVG and leaves Python fences alone', async () => {
+    const source = readFileSync(new URL('../fixtures/mermaid.mdx', import.meta.url), 'utf8');
+    const out = String(
+      await unified()
+        .use(remarkParse)
+        .use(remarkRehype)
+        .use(rehypeMermaidDiagrams)
+        .use(rehypeStringify)
+        .process(source),
+    );
+
+    expect(out.match(/<figure class="diagram"/g)).toHaveLength(3);
+    expect(out.match(/<svg [^>]*data-diagram=""/g)).toHaveLength(3);
+    const svgTags = out.match(/<svg\b[^>]*>/g) ?? [];
+    expect(svgTags).toHaveLength(3);
+    for (const svg of svgTags) {
+      const viewBox = svg.match(/viewBox="[^"]*\s([\d.]+)\s([\d.]+)"/);
+      expect(viewBox).not.toBeNull();
+      expect(svg).toContain(`width="${viewBox?.[1]}"`);
+      expect(svg).toContain(`height="${viewBox?.[2]}"`);
+    }
+    expect(out).toContain('role="img" aria-label="sequenceDiagram"');
+    expect(out).toContain('role="img" aria-label="flowchart LR"');
+    expect(out).toContain('role="img" aria-label="classDiagram"');
+    expect(out).not.toContain('language-mermaid');
+    expect(out).toContain('<pre><code class="language-python">print("ordinary code")');
   });
 });
 
@@ -298,5 +418,235 @@ describe('rehypeDepthHeadings', () => {
     // Only h2/h3 reach the table of contents, so nothing else is marked.
     expect(other.properties['data-depth']).toBeUndefined();
     expect((tree.children[2] as Element).properties['data-depth']).toBeUndefined();
+  });
+});
+
+describe('rehypeBlockIds', () => {
+  it('uses unique TLDR, intro and per-heading ids and marks shared code blocks', () => {
+    const element = (tagName: string, properties: Element['properties'] = {}): Element => ({
+      type: 'element',
+      tagName,
+      properties,
+      children: [],
+    });
+    const tldrParagraph = element('p');
+    const intro = element('p');
+    const first = element('p');
+    const code = element('figure', { className: ['codebox'] });
+    const calloutText = element('p');
+    const callout = element('aside', { className: ['callout', 'callout-note'] });
+    callout.children.push(calloutText);
+    const list = element('ul');
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { className: ['tldr'] },
+          children: [
+            {
+              type: 'element',
+              tagName: 'div',
+              properties: { className: ['tldr-cell'] },
+              children: [tldrParagraph],
+            },
+          ],
+        },
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { 'data-depth': 'standard' },
+          children: [
+            intro,
+            element('h2', { id: 'first-section' }),
+            first,
+            code,
+            callout,
+            element('h3', { id: 'details' }),
+            list,
+          ],
+        },
+      ],
+    };
+
+    const file = { data: { astro: { frontmatter: {} as Record<string, unknown> } } };
+    rehypeBlockIds()(tree, file as never);
+
+    const ids = [tldrParagraph, intro, first, code, callout, list].map((node) => node.properties['data-bi']);
+    expect(ids).toEqual([
+      'tldr:1',
+      'intro:1',
+      'first-section:1',
+      'first-section:2',
+      'first-section:3',
+      'details:1',
+    ]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(calloutText.properties['data-bi']).toBeUndefined();
+    expect(file.data.astro.frontmatter.biSig).toBe('p,p,h2,p,figure,aside,h3,ul');
+  });
+});
+
+describe('rehypeSectionActions', () => {
+  /** A heading as `rehypeHeadingIds` leaves it: text, and the id the anchors use. */
+  const h2 = (id?: string): Element => ({
+    type: 'element',
+    tagName: 'h2',
+    properties: id ? { id } : {},
+    children: [{ type: 'text', value: 'Late binding' }],
+  });
+
+  it('puts an ask button after every h2, as its sibling', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { 'data-depth': 'standard' },
+          children: [h2('late-binding'), { type: 'element', tagName: 'p', properties: {}, children: [] }],
+        },
+      ],
+    };
+    rehypeSectionActions()(tree);
+
+    const [heading, button, paragraph] = (tree.children[0] as Element).children as Element[];
+    expect(heading!.tagName).toBe('h2');
+    // The heading keeps its own children: the table of contents reads them.
+    expect(heading!.children).toHaveLength(1);
+    expect(button!.tagName).toBe('button');
+    expect(button!.properties).toEqual({
+      type: 'button',
+      className: ['sec-ask'],
+      'data-section': 'late-binding',
+      'data-i18n': 'ai.section',
+      'aria-label': 'Ask AI about this section',
+    });
+    expect(paragraph!.tagName).toBe('p');
+  });
+
+  it('leaves the deep teaser and unidentified headings alone', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { className: ['depth-teaser'] },
+          children: [h2('teased')],
+        },
+        h2(),
+      ],
+    };
+    rehypeSectionActions()(tree);
+
+    expect((tree.children[0] as Element).children).toHaveLength(1);
+    expect(tree.children).toHaveLength(2);
+  });
+
+  it('localizes both the visible and accessible section-action labels', () => {
+    const tree: HastRoot = { type: 'root', children: [h2('scope')] };
+    rehypeSectionActions({ locale: 'zh' })(tree);
+
+    const button = tree.children[1] as Element;
+    expect(button.properties['aria-label']).toBe('让 AI 讲讲这一节');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这一节' });
+  });
+
+  it('localizes both the visible and accessible block-action labels', () => {
+    const codebox: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox'] },
+      children: [preFixture({ 'data-lang': 'python' })],
+    };
+    const tree: HastRoot = { type: 'root', children: [codebox] };
+    rehypeSectionActions({ locale: 'zh' })(tree);
+
+    const button = tree.children[1] as Element;
+    expect(button.properties['aria-label']).toBe('让 AI 讲讲这段代码');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这段代码' });
+  });
+
+  it('adds focused actions after code and pitfall blocks', () => {
+    const codebox: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox'], 'data-lang': 'python', 'data-run': 'true' },
+      children: [preFixture({ 'data-lang': 'python' })],
+    };
+    const pitfall: Element = {
+      type: 'element',
+      tagName: 'aside',
+      properties: { className: ['callout', 'callout-pitfall'], dataCallout: 'pitfall' },
+      children: [
+        {
+          type: 'element',
+          tagName: 'p',
+          properties: {},
+          children: [{ type: 'text', value: 'Late binding' }],
+        },
+      ],
+    };
+    const tree: HastRoot = { type: 'root', children: [codebox, pitfall] };
+    rehypeSectionActions()(tree);
+
+    const [code, codeAction, warning, warningAction] = tree.children as Element[];
+    expect(code.properties['data-block']).toBe('ask-block-1');
+    expect(codeAction.properties).toEqual({
+      type: 'button',
+      className: ['ask-block'],
+      'data-preset': 'explain-code|port|tests',
+      'data-block': 'ask-block-1',
+      'data-i18n': 'ask.block',
+      'aria-label': 'Ask AI about this block',
+    });
+    expect(codeAction.children[0]).toEqual({ type: 'text', value: 'Ask AI about this block' });
+    expect(warning.properties['data-block']).toBe('ask-block-2');
+    expect(warningAction.properties['data-preset']).toBe('check-pitfall');
+  });
+
+  it('adds a code action after an output codebox too', () => {
+    const output: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox', 'codebox-output'] },
+      children: [preFixture({ 'data-lang': 'text' })],
+    };
+    const tree: HastRoot = { type: 'root', children: [output] };
+    rehypeSectionActions()(tree);
+
+    expect(tree.children).toHaveLength(2);
+    expect((tree.children[1] as Element).properties['data-preset']).toBe('explain-code|port|tests');
+  });
+
+  it('moves the nearest runnable code onto TryToBreak without replacing authored items', () => {
+    const source = preFixture({ 'data-lang': 'python', 'data-run': 'true' });
+    const codeTree: HastRoot = { type: 'root', children: [source] };
+    rehypeCodebox()(codeTree);
+    const figure = codeTree.children[0] as Element;
+    const output: Element = {
+      type: 'element',
+      tagName: 'figure',
+      properties: { className: ['codebox', 'codebox-output'] },
+      children: [],
+    };
+    const nudge = {
+      type: 'mdxJsxFlowElement',
+      name: 'TryToBreak',
+      attributes: [{ type: 'mdxJsxAttribute', name: 'items', value: null }],
+      children: [],
+    };
+    const tree = { type: 'root', children: [figure, output, nudge] } as unknown as HastRoot;
+    rehypeSectionActions()(tree);
+
+    const transformed = tree.children.at(-1) as unknown as typeof nudge;
+    expect(transformed.attributes).toContainEqual({
+      type: 'mdxJsxAttribute',
+      name: 'data-code',
+      value: 'print(1)',
+    });
+    expect(transformed.attributes[0]?.name).toBe('items');
   });
 });

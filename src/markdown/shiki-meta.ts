@@ -14,6 +14,10 @@ export interface FenceMeta {
   title?: string;
   /** `highlight="2-3"` — carried through for the P2 line-highlighting transformer. */
   highlight?: string;
+  /** `seed="name"` — declares or consumes a page-local SQL fixture. */
+  seed?: string;
+  /** `tests="…"` — an optional kata assertion carried by examples.json. */
+  tests?: string;
 }
 
 /** `key`, `key=value` or `key="value with spaces"`, in any order. */
@@ -30,6 +34,8 @@ export function parseFenceMeta(meta: string): FenceMeta {
     if (key === 'run') parsed.run = value !== 'false';
     else if (key === 'title' && value) parsed.title = value;
     else if (key === 'highlight' && value) parsed.highlight = value;
+    else if (key === 'seed' && value) parsed.seed = value;
+    else if (key === 'tests' && value) parsed.tests = value;
   }
   return parsed;
 }
@@ -64,5 +70,6 @@ export const shikiMetaTransformer: ShikiMetaTransformer = {
     if (meta.title) node.properties['data-title'] = meta.title;
     if (meta.run) node.properties['data-run'] = 'true';
     if (meta.highlight) node.properties['data-highlight'] = meta.highlight;
+    if (meta.seed) node.properties['data-seed'] = meta.seed;
   },
 };

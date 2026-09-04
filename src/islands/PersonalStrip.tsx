@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { formatCount } from '@/i18n';
 import {
   dueFlashcards,
   getContinue,
@@ -9,6 +10,7 @@ import {
   type Flashcards,
   type Progress,
 } from '@/lib/prefs';
+import type { Locale } from '@/lib/urls';
 
 /** What the page knows about one topic, so the island never touches the content collections. */
 export interface TopicRef {
@@ -19,31 +21,36 @@ export interface TopicRef {
 }
 
 export interface PersonalStripProps {
+  locale: Locale;
   /** Localised copy. Islands never import `t`, because the locale is a page-level fact. */
   labels: {
     continue: string;
+    kata: string;
     recall: string;
     review: string;
     /** Carries a `{count}` slot. */
     due: string;
+    /** Carries a `{min}` slot. */
+    minutes: string;
     /** Accessible name of the reading-progress bar; carries a `{title}` slot. */
     progress: string;
   };
   /** Every public topic of this locale, keyed by `${track}/${slug}`. */
   titles: Record<string, TopicRef>;
+  /** Deterministic daily practice item chosen while the static home page is built. */
+  kata?: { title: string; url: string; minutes: number };
   /** Where the "Review" link goes. */
   reviewUrl: string;
 }
 
 /**
- * The personal strip under the hero: what the visitor was reading and what is due for review.
- * Everything it shows comes from this browser's local storage, so it renders nothing on the
- * server and nothing at all for a first-time visitor — the page must look finished without it.
+ * The personal strip under the hero: what the visitor was reading, today's kata and what is due
+ * for review. It renders nothing on the server; the visitor-specific cards come from local data.
  *
- * The kata card from the mockup needs a kata bank, which P1 does not have; it is left out rather
- * than faked.
+ * The daily kata is selected at build time and passed in as plain data; the visitor-specific
+ * cards are read only after hydration.
  */
-export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStripProps) {
+export default function PersonalStrip({ locale, labels, titles, kata, reviewUrl }: PersonalStripProps) {
   const [state, setState] = useState<{ progress: Progress; cards: Flashcards } | null>(null);
 
   useEffect(() => {
@@ -61,7 +68,7 @@ export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStr
   const cards = Array.isArray(state.cards?.cards) ? state.cards.cards : [];
   const due = dueFlashcards(cards, new Date());
 
-  if (!topic && due === 0) return null;
+  if (!topic && !kata && due === 0) return null;
 
   const readPct = Number(cont?.readPct);
   const pct = Number.isFinite(readPct) ? Math.max(0, Math.min(100, Math.round(readPct))) : 0;
@@ -86,10 +93,27 @@ export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStr
           </div>
         </a>
       ) : null}
+      {kata ? (
+        <a class="cont" href={kata.url} data-personal-kata>
+          <span class="lbl">{labels.kata}</span>
+          <span class="pstrip-text">
+            <strong>{kata.title}</strong>
+          </span>
+          <span class="pstrip-link">
+            {labels.minutes.replace(
+              '{count}',
+              formatCount(locale, kata.minutes, 'unit.minute', 'unit.minutes'),
+            )}{' '}
+            →
+          </span>
+        </a>
+      ) : null}
       {due > 0 ? (
         <div class="cont">
           <span class="lbl">{labels.recall}</span>
-          <span class="pstrip-text">{labels.due.replace('{count}', String(due))}</span>
+          <span class="pstrip-text">
+            {labels.due.replace('{count}', formatCount(locale, due, 'unit.card', 'unit.cards'))}
+          </span>
           <a class="pstrip-link" href={reviewUrl}>
             {labels.review} →
           </a>

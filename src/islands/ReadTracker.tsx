@@ -1,13 +1,21 @@
 import { useEffect } from 'preact/hooks';
 import {
+  DEFAULT_PREFS,
+  EMPTY_FLASHCARDS,
   EMPTY_PROGRESS,
   KEYS,
+  cardSources,
   flushStore,
   readStore,
+  writeStore,
   writeStoreDebounced,
+  type Flashcards,
+  type Prefs,
   type Progress,
   type TopicProgress,
 } from '@/lib/prefs';
+import { enqueueCards, termCardId } from '@/lib/score';
+import { DEPTH_EVENT } from '@/islands/DepthDial';
 
 export interface ReadTrackerProps {
   /** `${track}/${slug}` of the topic being read. */
@@ -45,11 +53,12 @@ function checkIcon(): SVGSVGElement {
  * How far down the article the reader has come — spec §6.2. Progress is a fact about this
  * browser: it is written to local storage, debounced, and never leaves the machine.
  *
- * The measure is sections seen, not pixels scrolled: an `IntersectionObserver` over the article's
- * `h2` elements records the furthest one reached, so re-reading the top never walks the number
- * back. Reaching the checkpoint (or the last section, on a topic without one) is what completes a
- * topic — it is the end of the article as the reader experiences it, and the depth dial can hide
- * whole sections below it.
+ * The measure is sections seen, not pixels scrolled, and only the sections the current depth
+ * actually shows: Quick hides most of the article, so counting the hidden headings would leave a
+ * reader who finished everything in front of them stuck below 100%. The observed set is rebuilt on
+ * `cw:depth`, and the percentage never walks back within a page view. Reaching the checkpoint, or
+ * the last section shown, is what completes a topic — that is the end of the article as this
+ * reader meets it.
  *
  * On mount it also marks the topics already finished in the left rail, which is why it renders
  * nothing of its own.
@@ -72,27 +81,61 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
     const counter = document.querySelector('[data-tree-count]');
     if (counter) counter.textContent = `${done}/${links.length}`;
 
-    const sections = [...article.querySelectorAll<HTMLElement>('h2')];
-    if (sections.length === 0) return;
     const checkpoint = article.querySelector<HTMLElement>('[data-checkpoint]');
 
-    let furthest = -1;
-    let complete = false;
+    /* What counts as a section depends on the depth: a heading the dial hides is not part of the
+       article this reader is being asked to read, so counting it would cap them below 100%. */
+    const isShown = (element: HTMLElement) => element.getClientRects().length > 0;
+    const shownSections = () => [...article.querySelectorAll<HTMLElement>('h2')].filter(isShown);
 
-    const write = () => {
-      const seen = furthest + 1;
-      const readPct = complete ? 100 : Math.round((seen / sections.length) * 100);
+    let sections: HTMLElement[] = [];
+    const seen = new Set<Element>();
+    let complete = false;
+    /**
+     * The highest percentage reached so far; it never walks back. Seeded from what is already
+     * stored, so neither a second visit nor a depth switch that hides sections can un-read a topic.
+     */
+    let best = Math.min(100, Math.max(0, Math.round(Number(progress.topics?.[topicId]?.readPct)) || 0));
+
+    const write = (readPct: number) => {
       // Read again rather than reusing the snapshot above: the same store holds the flashcards,
       // the quiz scores and the "was this clear?" answer, and any of them may have moved since.
       const current = readStore<Progress>(KEYS.progress, EMPTY_PROGRESS);
       const previous = current.topics?.[topicId];
-      // Progress never goes backwards: a second visit to the top is not un-reading the page.
-      if (previous && Number(previous.readPct) >= readPct && !complete) return;
       const now = new Date().toISOString();
+      let termsAdded = previous?.termsAdded;
+
+      if (readPct >= 90 && !termsAdded) {
+        const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
+        if (cardSources(prefs).terms !== false) {
+          const terms = (article.dataset.terms ?? '')
+            .split(',')
+            .map((term) => term.trim())
+            .filter(Boolean);
+          const stored = readStore<Flashcards>(KEYS.flashcards, EMPTY_FLASHCARDS);
+          const deck = Array.isArray(stored?.cards) ? stored : EMPTY_FLASHCARDS;
+          const next = enqueueCards(
+            deck,
+            terms.map((term) => {
+              const ref = termCardId(term);
+              return { id: ref, kind: 'term' as const, ref, source: 'terms' as const };
+            }),
+            new Date(now),
+          );
+          if (next !== deck) {
+            writeStore(KEYS.flashcards, next);
+            document.dispatchEvent(new CustomEvent('cw:flashcards'));
+          }
+          termsAdded = true;
+        }
+      }
+
       const entry: TopicProgress = {
+        ...previous,
         readPct,
         lastAt: now,
-        ...(readPct >= 100 ? { completedAt: previous?.completedAt ?? now } : {}),
+        ...(readPct >= 100 || previous?.completedAt ? { completedAt: previous?.completedAt ?? now } : {}),
+        ...(termsAdded ? { termsAdded: true } : {}),
       };
       writeStoreDebounced<Progress>(KEYS.progress, {
         ...current,
@@ -100,31 +143,73 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
       });
     };
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        let changed = false;
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          if (entry.target === checkpoint) {
-            complete = true;
-            changed = true;
-            continue;
-          }
-          const index = sections.indexOf(entry.target as HTMLElement);
-          if (index > furthest) {
-            furthest = index;
-            changed = true;
-            // The last section counts as the end on a topic that has no checkpoint.
-            if (!checkpoint && index === sections.length - 1) complete = true;
-          }
-        }
-        if (changed) write();
-      },
-      { rootMargin: '0px 0px -20% 0px' },
-    );
+    /* Readers may already have crossed the threshold before this feature shipped. Their first
+       visit with automatic term cards enabled performs the same one-time enrollment. */
+    const storedTopic = progress.topics?.[topicId];
+    if (
+      best >= 90 &&
+      !storedTopic?.termsAdded &&
+      cardSources(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).terms !== false
+    ) {
+      write(best);
+    }
 
-    for (const section of sections) observer.observe(section);
-    if (checkpoint) observer.observe(checkpoint);
+    /** How far up the viewport a section has to come before it counts as reached. */
+    const REACHED = 0.8;
+
+    const evaluate = () => {
+      /* Anything the reader has scrolled past counts, not only what the observer caught: jumping
+         to an anchor skips the sections in between, and they have still been left behind. */
+      const limit = innerHeight * REACHED;
+      for (const section of sections) {
+        if (section.getBoundingClientRect().top <= limit) seen.add(section);
+      }
+      if (checkpoint && checkpoint.getClientRects().length > 0) {
+        if (checkpoint.getBoundingClientRect().top <= limit) seen.add(checkpoint);
+      }
+
+      const last = sections[sections.length - 1];
+      // The end of the article as this reader meets it: the checkpoint, or the last section shown.
+      if ((checkpoint && seen.has(checkpoint)) || (last && seen.has(last))) complete = true;
+
+      const reached = sections.filter((section) => seen.has(section)).length;
+      const measured = sections.length > 0 ? Math.round((reached / sections.length) * 100) : best;
+      const readPct = complete ? 100 : Math.max(best, measured);
+      if (readPct <= best) return;
+      best = readPct;
+      write(readPct);
+    };
+
+    const observer = new IntersectionObserver(evaluate, { rootMargin: '0px 0px -20% 0px' });
+
+    /** Re-reads which sections the current depth shows and observes exactly those. */
+    let refreshFrame = 0;
+    const refresh = () => {
+      if (refreshFrame) return;
+      refreshFrame = requestAnimationFrame(() => {
+        refreshFrame = 0;
+        sections = shownSections();
+        observer.disconnect();
+        for (const section of sections) observer.observe(section);
+        if (checkpoint) observer.observe(checkpoint);
+        evaluate();
+      });
+    };
+
+    refresh();
+    document.addEventListener(DEPTH_EVENT, refresh);
+
+    /* The observer reports crossings; a jump can cross nothing at all, so the scroll is watched
+       too. One frame at a time is enough for a percentage. */
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        evaluate();
+      });
+    };
+    addEventListener('scroll', onScroll, { passive: true });
 
     // A debounced write would be lost when the tab goes away mid-window.
     const flush = () => flushStore(KEYS.progress);
@@ -132,6 +217,10 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
 
     return () => {
       observer.disconnect();
+      document.removeEventListener(DEPTH_EVENT, refresh);
+      removeEventListener('scroll', onScroll);
+      if (refreshFrame) cancelAnimationFrame(refreshFrame);
+      if (frame) cancelAnimationFrame(frame);
       removeEventListener('pagehide', flush);
       flush();
     };

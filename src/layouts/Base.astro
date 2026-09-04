@@ -14,10 +14,12 @@ import ThemeScript from '@/components/ThemeScript.astro';
 import Seo from '@/components/Seo.astro';
 import Nav from '@/components/Nav.astro';
 import Footer from '@/components/Footer.astro';
+import Palette from '@/islands/Palette';
 import { t } from '@/i18n';
+import { paletteLabels } from '@/lib/search-labels';
 import { SITE } from '@/data/site';
 import type { HeadModel } from '@/lib/seo';
-import type { Locale } from '@/lib/urls';
+import { localizePath, type Locale } from '@/lib/urls';
 
 interface Props {
   locale: Locale;
@@ -43,15 +45,26 @@ export interface PagefindBody {
 const { locale, head, width = 'home', currentPath, pagefind } = Astro.props;
 const lang = locale === 'zh' ? 'zh-Hans' : 'en';
 
-/** Pagefind reads both attributes as a comma-separated `key:value` list. */
-const pairs = (values: Record<string, string> | undefined): string | undefined =>
+/**
+ * Pagefind splits `data-pagefind-filter` / `data-pagefind-meta` on commas only for the
+ * `key[attribute]` form: a literal `key:value` swallows the rest of the string, so a second pair
+ * written that way would be lost inside the first one's value. Every pair is therefore emitted as
+ * a reference to a `data-pf-*` attribute carrying the value, on the same element.
+ */
+const refs = (kind: string, values: Record<string, string> | undefined): string | undefined =>
   values && Object.keys(values).length > 0
-    ? Object.entries(values)
-        .map(([key, value]) => `${key}:${value}`)
+    ? Object.keys(values)
+        .map((key) => `${key}[data-pf-${kind}-${key}]`)
         .join(', ')
     : undefined;
 
+/** The `data-pf-*` attributes those references point at. */
+const backing = (kind: string, values: Record<string, string> | undefined): Record<string, string> =>
+  Object.fromEntries(Object.entries(values ?? {}).map(([key, value]) => [`data-pf-${kind}-${key}`, value]));
+
 const body = pagefind && pagefind !== 'ignore' ? pagefind : undefined;
+
+const pagefindAttrs = { ...backing('filter', body?.filter), ...backing('meta', body?.meta) };
 
 /**
  * Strings the markdown pipeline cannot localise on its own. `remark-callouts` and `rehype-codebox`
@@ -70,13 +83,38 @@ const uiStrings = {
   'code.copyFailed': t(locale, 'code.copyFailed'),
   'code.run': t(locale, 'code.run'),
   'code.running': t(locale, 'code.running'),
+  // The runner island creates its Reset button after the swap below has already run, and it
+  // writes the footer of every run, so it reads these strings out of the published map itself.
+  'code.reset': t(locale, 'code.reset'),
+  'code.loadingPython': t(locale, 'code.loadingPython'),
+  'code.exit': t(locale, 'code.exit'),
+  'code.error': t(locale, 'code.error'),
+  'code.timeout': t(locale, 'code.timeout'),
   'depth.switchDeep': t(locale, 'depth.switchDeep'),
+  // Task 16: the section buttons `rehype-section-actions` writes into the article.
+  'ai.section': t(locale, 'ai.section'),
+  // Task 15: build-time block actions and runnable-example nudges.
+  'ask.block': t(locale, 'ask.block'),
+  'nudge.title': t(locale, 'nudge.title'),
+  'nudge.try': t(locale, 'nudge.try'),
 };
 ---
 
 <html lang={lang}>
   <head>
     <ThemeScript />
+    <script is:inline>
+      // Task 17: the stored font size, applied before paint for the same reason the theme is —
+      // resizing the prose after first paint is a visible jump. Keep the key in step with
+      // `KEYS.prefs`; the settings island owns every write to it.
+      (function () {
+        try {
+          var prefs = JSON.parse(localStorage.getItem('cw:v1:prefs') || '{}');
+          var f = prefs && !Array.isArray(prefs) ? prefs.fontSize : undefined;
+          if (f === 's' || f === 'm' || f === 'l') document.documentElement.setAttribute('data-font', f);
+        } catch {}
+      })();
+    </script>
     <Seo head={head} />
     <link
       rel="preload"
@@ -86,7 +124,12 @@ const uiStrings = {
       crossorigin
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="alternate" type="application/rss+xml" title={SITE.name} href="/rss.xml" />
+    <link
+      rel="alternate"
+      type="application/rss+xml"
+      title={SITE.name}
+      href={localizePath('/rss.xml', locale)}
+    />
   </head>
   <body data-width={width}>
     <a class="skip-link" href="#main">{t(locale, 'a11y.skip')}</a>
@@ -94,20 +137,31 @@ const uiStrings = {
     <main
       id="main"
       data-pagefind-body={body ? '' : undefined}
-      data-pagefind-filter={pairs(body?.filter)}
-      data-pagefind-meta={pairs(body?.meta)}
+      data-pagefind-filter={refs('filter', body?.filter)}
+      data-pagefind-meta={refs('meta', body?.meta)}
       data-pagefind-ignore={pagefind === 'ignore' ? '' : undefined}
+      {...pagefindAttrs}
     >
       <slot />
     </main>
     <Footer locale={locale} currentPath={currentPath} />
+    <!-- The command palette: one instance per page, opened by ⌘K, `/` and every [data-palette-open]. -->
+    <Palette
+      client:idle
+      locale={locale}
+      searchUrl={localizePath('/search/', locale)}
+      labels={paletteLabels(locale)}
+    />
     <script is:inline define:vars={{ uiStrings }}>
       // Published for every later island; the code runner reads `code.running` from it too.
       window.__cw_i18n = uiStrings;
 
       for (const node of document.querySelectorAll('[data-i18n]')) {
         const value = uiStrings[node.dataset.i18n];
-        if (value) node.textContent = value;
+        if (!value) continue;
+        node.textContent = value;
+        // A label that also names the element for assistive technology has to move with it.
+        if (node.hasAttribute('aria-label')) node.setAttribute('aria-label', value);
       }
 
       // One delegated listener for every Copy button the markdown pipeline emitted.
@@ -126,7 +180,9 @@ const uiStrings = {
           }, 1500);
 
         navigator.clipboard
-          .writeText(pre.textContent ?? '')
+          // `innerText`, not `textContent`: a `<pre>` the reader edited may hold its newlines
+          // as <br> or block elements, and Copy has to hand over what is on screen.
+          .writeText(pre.innerText ?? pre.textContent ?? '')
           .then(() => {
             button.textContent = uiStrings['code.copied'];
             restore();

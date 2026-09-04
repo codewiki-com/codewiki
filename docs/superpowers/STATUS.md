@@ -15,22 +15,26 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-03 Visual: light = "Studio Precision", dark = "Night Lab" palette; one layout, IBM Plex type; theme follows system, user-toggleable. Mockups: https://claude.ai/code/artifact/81ecf530-fd51-468d-86e2-1ba247b85067
 - 2026-09-03 AI-era integration added to spec §6.1 (content: "In the AI era" block per topic, ai-era track, rules packs, review katas; form: prompt-ready pages, JSON API, MCP server later).
 - 2026-09-03 Execution mode: subagent-driven development, one Opus subagent per plan task, Fable reviews between tasks. P1 first (Tasks 0–8), then P0 in parallel once P1 Task 6 (schemas) exists.
+- 2026-09-04 P2 learning-layer mockups drafted by Fable (practice hub, review-the-AI's-code kata, flashcards, interview bank, cheatsheet, bilingual topic, prompt builder; light + dark). Sources `docs/design/mockups/p2/`, canvas: https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137 — awaiting user review before the P2 plan.
+- 2026-09-04 P2 sub-spec `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (user: “你自己决策，选最佳的”); decisions: 4 flashcard ratings, 2-column print, paired bilingual default, kata with line comments, CodeMirror 6 lazy. Next: P2 plan.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are
+## Where things are (updated 2026-09-04 17:40 local)
 | Item | State |
 |---|---|
-| Master spec | done, approved |
-| Design mockups (16 artboards, light/dark) | done, approved |
-| P1 plan (site foundation) | done: `docs/superpowers/plans/2026-09-03-p1-site-foundation.md` (20 tasks) |
-| P0 plan (content pipeline) | done: `docs/superpowers/plans/2026-09-03-p0-content-pipeline.md` (14 tasks); briefs in `prompts/` |
-| Repo scaffold | done (P1 Task 1): Astro 7 + Tailwind 4 + Preact, ESLint/Prettier/Vitest/Playwright, CI |
-| Content collections | done (P1 Task 6): schemas in `src/schemas/`, `src/content.config.ts`, `src/lib/content.ts`; sample content pending Codex (`prompts/write-sample-topics.md`) |
-| Topic page | done (P1 Task 12): `src/pages-shared/Topic.astro`, depth dial, table of contents, read tracking |
-| Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
+| Specs / mockups | approved; P1 `docs/design/mockups/`, P2 `docs/design/mockups/p2/` |
+| **P1 site foundation** | merged into `main` 3644c06 |
+| **P2 learning layer** | **merged into `main` da204bd** (P2a + P2b: practice, kata pages, checkpoints, paths + map, interview banks, flashcards, cheatsheets, bilingual mode, playground with SQL/HTML, prompt builder, rules/context packs, block-level Ask-AI, try-to-break, content write runner). Gate on main: 363 unit, 1,939 links; branch e2e 234, Lighthouse 10 URLs ≥ 0.95. Ledger + reviews archived in `docs/superpowers/ledgers/`. Watch item: topic-page script is 61,429 B of the 61,440 B budget |
+| P0 content pipeline | Tasks 1–13 complete on `p0-content-pipeline`; wave 1 batch 8 running (`--n 10 --max 50`; 160+/257 polished). The P0 branch still lacks P1-final and all of P2: merge `main` into it after batch 8, then `p0-content-pipeline` into `main` |
+| Content generation (next) | with the P2 write runner in the P0 worktree: 8 interview banks, 6 paths (+ checkpoint banks), 12 cheatsheets, ~30 review katas, quiz banks for tier-1 topics lacking one; then ai-era/foundations new topics and the glossary to 300+ |
+
+## Active work (updated 2026-09-04 17:40 local)
+- **Codex ×N** (user: open as many as needed). Content polish batch 8 running in `.worktrees/p0-content-pipeline` (10 sessions). Nothing else running.
+- **Next steps in order:** (1) when batch 8 ends: `git merge main` in the P0 worktree (expect conflicts only in `src/schemas/quiz.ts`/`interview.ts`, `scripts/content/check.ts`, `tests/unit/content-fixtures.test.ts`; Task 17 copied P0 files verbatim so most is clean), run `pnpm test`, commit; (2) start batch 9 (`--tier 1 --n 10 --max 50`) and, in parallel from the same worktree? NO — one runner per worktree: run content generation later or in a second worktree of the same branch is unsafe; sequence generation after the polish wave, or run generation from a `p0-generate` worktree on a branch cut from P0 and merge back; (3) `conformance-v3-codex.md` (Codex); (4) merge P0 into `main`, rebuild, deploy prep.
+- Resume rule: `git log --oneline -3` per branch; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; an interrupted polish batch is resumed by re-running the same `content:polish` command.
 
 ## How to resume
-1. `git log --oneline | head` to see the last milestone.
+1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
 2. Open the active plan under `docs/superpowers/plans/` and find the first unchecked task.
 3. For content jobs, check `reports/polish/state.json` (created by the pipeline) before re-running anything.
 4. Keep this file current.

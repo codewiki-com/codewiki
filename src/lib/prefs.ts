@@ -7,8 +7,8 @@
  * the read/write pair is guarded so a page rendered on the server, a private window with storage
  * disabled or a corrupted value all degrade to the fallback instead of throwing.
  *
- * The theme is read a second time by `src/lib/theme.ts`, which the pre-paint bootstrap inlines and
- * therefore cannot import from here. `KEYS.prefs` and `PREFS_KEY` must stay the same string.
+ * The self-contained pre-paint bootstraps repeat only the key and their small validation rules;
+ * every importable reader and writer, including the theme controls, goes through this module.
  */
 import type { Locale } from '@/lib/urls';
 
@@ -25,6 +25,9 @@ export type Theme = 'system' | 'light' | 'dark';
 export type Depth = 'quick' | 'standard' | 'deep';
 export type BilingualMode = 'off' | 'en-zh' | 'zh-en';
 export type FontSize = 's' | 'm' | 'l';
+export type Plan = 15 | 30 | 60;
+export type BilingualLayout = 'paired' | 'side';
+export type RevealMode = 'one' | 'all';
 
 export interface Prefs {
   theme: Theme;
@@ -33,6 +36,12 @@ export interface Prefs {
   fontSize: FontSize;
   /** Last language the visitor chose, used to offer the other locale. */
   lang?: Locale;
+  /** Minutes a day the reader plans to spend; drives the "about N weeks" line on paths. */
+  plan?: Plan;
+  bilingualLayout?: BilingualLayout;
+  interviewReveal?: RevealMode;
+  /** Flashcard sources; every source defaults to on when the key is absent. */
+  cardSources?: { terms: boolean; quiz: boolean; manual: boolean };
 }
 
 /** One entry per topic read, keyed by `${track}/${slug}`. */
@@ -40,6 +49,7 @@ export interface TopicProgress {
   readPct: number;
   completedAt?: string;
   lastAt: string;
+  termsAdded?: boolean;
 }
 
 export interface QuizProgress {
@@ -67,20 +77,36 @@ export interface Progress {
 export interface Flashcard {
   id: string;
   kind: 'term' | 'quiz';
+  /** `glossary:{term}` or `quiz:{track}/{slug}#{item}` — what the card is about. */
   ref: string;
   /** ISO date the card comes back, compared against "now" as a date. */
   due: string;
   interval: number;
   ease: number;
   reps: number;
+  suspended?: boolean;
+  /** Where the card came from, for the source toggles. */
+  source?: 'terms' | 'quiz' | 'manual';
 }
 
 export interface Flashcards {
   cards: Flashcard[];
 }
 
+/**
+ * One page the command palette opened. Spec §6.2 writes `recents` as `{ pages: string[] }`; a URL
+ * alone cannot be listed again without re-reading the index, so an entry carries the title it was
+ * opened under and the time it was opened. `src/lib/search.ts` owns the read and write.
+ */
+export interface RecentPage {
+  url: string;
+  title: string;
+  /** ISO timestamp, so an entry can be aged out later without a second key. */
+  at: string;
+}
+
 export interface Recents {
-  pages: string[];
+  pages: RecentPage[];
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -88,6 +114,9 @@ export const DEFAULT_PREFS: Prefs = {
   depth: 'standard',
   bilingual: 'off',
   fontSize: 'm',
+  plan: 30,
+  bilingualLayout: 'paired',
+  interviewReveal: 'one',
 };
 
 export const EMPTY_PROGRESS: Progress = { topics: {}, quizzes: {}, paths: {} };
@@ -105,13 +134,138 @@ function storage(): Storage | null {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function oneOf<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
+  return typeof value === 'string' && choices.includes(value as T) ? (value as T) : fallback;
+}
+
+function isDate(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+}
+
+function validEntries(value: unknown, valid: (entry: unknown) => boolean): boolean {
+  return isRecord(value) && Object.values(value).every(valid);
+}
+
+function isTopicProgress(value: unknown): value is TopicProgress {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.readPct === 'number' &&
+    Number.isFinite(value.readPct) &&
+    value.readPct >= 0 &&
+    value.readPct <= 100 &&
+    isDate(value.lastAt) &&
+    (value.completedAt === undefined || isDate(value.completedAt)) &&
+    (value.termsAdded === undefined || typeof value.termsAdded === 'boolean')
+  );
+}
+
+function isQuizProgress(value: unknown): value is QuizProgress {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.score === 'number' &&
+    Number.isFinite(value.score) &&
+    value.score >= 0 &&
+    typeof value.total === 'number' &&
+    Number.isFinite(value.total) &&
+    value.total > 0 &&
+    value.score <= value.total &&
+    isDate(value.at)
+  );
+}
+
+function isPathProgress(value: unknown): value is PathProgress {
+  return isRecord(value) && isDate(value.startedAt);
+}
+
+function isProgress(value: Record<string, unknown>): boolean {
+  return (
+    validEntries(value.topics, isTopicProgress) &&
+    validEntries(value.quizzes, isQuizProgress) &&
+    validEntries(value.paths, isPathProgress) &&
+    (value.feedback === undefined ||
+      validEntries(value.feedback, (entry) => entry === 'yes' || entry === 'not-quite'))
+  );
+}
+
+function isFlashcard(value: unknown): value is Flashcard {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    (value.kind === 'term' || value.kind === 'quiz') &&
+    typeof value.ref === 'string' &&
+    value.ref.length > 0 &&
+    isDate(value.due) &&
+    typeof value.interval === 'number' &&
+    Number.isFinite(value.interval) &&
+    value.interval >= 0 &&
+    typeof value.ease === 'number' &&
+    Number.isFinite(value.ease) &&
+    value.ease > 0 &&
+    typeof value.reps === 'number' &&
+    Number.isInteger(value.reps) &&
+    value.reps >= 0 &&
+    (value.suspended === undefined || typeof value.suspended === 'boolean') &&
+    (value.source === undefined || ['terms', 'quiz', 'manual'].includes(String(value.source)))
+  );
+}
+
+function isFlashcards(value: Record<string, unknown>): boolean {
+  return Array.isArray(value.cards) && value.cards.every(isFlashcard);
+}
+
+function isRecents(value: Record<string, unknown>): boolean {
+  return Array.isArray(value.pages) && value.pages.every((page) => typeof page === 'string');
+}
+
+/** Validates each preference independently, so one corrupt field cannot poison the others. */
+export function sanitizePrefs(value: Record<string, unknown>): Prefs {
+  const lang = oneOf(value.lang, ['en', 'zh'] as const, '' as Locale | '');
+  const sources = isRecord(value.cardSources)
+    ? {
+        terms: typeof value.cardSources.terms === 'boolean' ? value.cardSources.terms : true,
+        quiz: typeof value.cardSources.quiz === 'boolean' ? value.cardSources.quiz : true,
+        manual: typeof value.cardSources.manual === 'boolean' ? value.cardSources.manual : true,
+      }
+    : undefined;
+  return {
+    theme: oneOf(value.theme, ['system', 'light', 'dark'] as const, DEFAULT_PREFS.theme),
+    depth: oneOf(value.depth, ['quick', 'standard', 'deep'] as const, DEFAULT_PREFS.depth),
+    bilingual: oneOf(value.bilingual, ['off', 'en-zh', 'zh-en'] as const, DEFAULT_PREFS.bilingual),
+    fontSize: oneOf(value.fontSize, ['s', 'm', 'l'] as const, DEFAULT_PREFS.fontSize),
+    plan:
+      typeof value.plan === 'number' && ([15, 30, 60] as const).includes(value.plan as Plan)
+        ? (value.plan as Plan)
+        : 30,
+    bilingualLayout: oneOf(value.bilingualLayout, ['paired', 'side'] as const, 'paired'),
+    interviewReveal: oneOf(value.interviewReveal, ['one', 'all'] as const, 'one'),
+    ...(lang ? { lang } : {}),
+    ...(sources ? { cardSources: sources } : {}),
+  };
+}
+
+export function cardSources(p: Prefs) {
+  return p.cardSources ?? { terms: true, quiz: true, manual: true };
+}
+
 /** Reads one key, returning `fallback` for a missing, unreadable or malformed value. */
 export function readStore<T>(key: StoreKey, fallback: T): T {
   const store = storage();
   if (!store) return fallback;
   try {
     const raw = store.getItem(key);
-    return raw === null ? fallback : (JSON.parse(raw) as T);
+    if (raw === null) return fallback;
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value)) return fallback;
+    if (key === KEYS.prefs) return sanitizePrefs(value) as T;
+    if (key === KEYS.progress) return (isProgress(value) ? value : fallback) as T;
+    if (key === KEYS.flashcards) return (isFlashcards(value) ? value : fallback) as T;
+    if (key === KEYS.recents) return (isRecents(value) ? value : fallback) as T;
+    return fallback;
   } catch {
     return fallback;
   }
@@ -176,6 +330,6 @@ export function dueFlashcards(cards: Flashcard[], now: Date): number {
   const at = now.getTime();
   return cards.filter((card) => {
     const due = Date.parse(card.due);
-    return !Number.isNaN(due) && due <= at;
+    return !card.suspended && !Number.isNaN(due) && due <= at;
   }).length;
 }

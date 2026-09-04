@@ -1,5 +1,7 @@
 import { useEffect } from 'preact/hooks';
+import { BILINGUAL_EVENT } from '@/lib/bilingual';
 import { filterHeadings, isDepth, type Depth, type TocHeading } from '@/lib/depth';
+import type { BilingualMode } from '@/lib/prefs';
 import { DEPTH_EVENT } from '@/islands/DepthDial';
 
 export interface TocProps {
@@ -85,14 +87,49 @@ export default function Toc({ labels }: TocProps) {
       if (tldr) tldr.hidden = mode !== 'quick';
     };
 
+    /** Mirrors alternate heading subtitles into the server-rendered TOC anchors. */
+    const applyBilingual = (mode: BilingualMode) => {
+      for (const [index, anchor] of anchors.entries()) {
+        anchor.querySelector(':scope > .toc-bi')?.remove();
+        if (mode === 'off') continue;
+        const slug = headings[index]?.slug;
+        if (!slug) continue;
+        const heading = article.querySelector<HTMLElement>(`#${CSS.escape(slug)}`);
+        const text = heading?.dataset.biH;
+        if (!text) continue;
+        const subtitle = document.createElement('span');
+        subtitle.className = 'bi-h toc-bi';
+        const headingSubtitle = heading.querySelector<HTMLElement>(':scope > .bi-h');
+        subtitle.lang = headingSubtitle?.lang ?? '';
+        const alternateFirst = heading.hasAttribute('data-bi-alt-first');
+        subtitle.textContent = alternateFirst ? text : ` ${text}`;
+        if (alternateFirst) {
+          const deep = anchor.querySelector(':scope > .toc-deep');
+          if (deep) deep.after(subtitle);
+          else anchor.prepend(subtitle);
+        } else {
+          anchor.append(subtitle);
+        }
+      }
+    };
+
     const current = article.getAttribute('data-depth-mode');
     apply(isDepth(current) ? current : 'standard');
+    const bilingual = article.getAttribute('data-bilingual');
+    applyBilingual(bilingual === 'en-zh' || bilingual === 'zh-en' ? bilingual : 'off');
 
     const onDepth = (event: Event) => {
       const detail = (event as CustomEvent<Depth>).detail;
       apply(isDepth(detail) ? detail : 'standard');
+      scheduleMark();
     };
     document.addEventListener(DEPTH_EVENT, onDepth);
+    const onBilingual = (event: Event) => {
+      const detail = (event as CustomEvent<BilingualMode>).detail;
+      applyBilingual(detail === 'en-zh' || detail === 'zh-en' ? detail : 'off');
+      scheduleMark();
+    };
+    document.addEventListener(BILINGUAL_EVENT, onBilingual);
 
     /* Which section is being read. The band the observer watches is the top of the viewport, so
        the active entry is the heading the reader is under rather than the one about to enter from
@@ -118,13 +155,22 @@ export default function Toc({ labels }: TocProps) {
         anchor.classList.toggle('on', headings[index]?.slug === active.slug);
     };
 
+    let frame = 0;
+    const scheduleMark = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        mark();
+      });
+    };
+
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) visible.add(entry.target.id);
           else visible.delete(entry.target.id);
         }
-        mark();
+        scheduleMark();
       },
       { rootMargin: '-80px 0px -65% 0px' },
     );
@@ -133,22 +179,16 @@ export default function Toc({ labels }: TocProps) {
     /* The observer only reports crossings, and a jump — an in-page link, a restored scroll
        position, a flick of the wheel — can skip the band entirely, so the scroll is watched too.
        One frame at a time is enough for a class swap. */
-    let frame = 0;
-    const onScroll = () => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        mark();
-      });
-    };
+    const onScroll = scheduleMark;
     addEventListener('scroll', onScroll, { passive: true });
-    mark();
+    scheduleMark();
 
     return () => {
       observer.disconnect();
       removeEventListener('scroll', onScroll);
       if (frame) cancelAnimationFrame(frame);
       document.removeEventListener(DEPTH_EVENT, onDepth);
+      document.removeEventListener(BILINGUAL_EVENT, onBilingual);
     };
   }, [labels]);
 

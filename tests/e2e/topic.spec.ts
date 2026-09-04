@@ -1,4 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
+import { unified } from 'unified';
+import rehypeStringify from 'rehype-stringify';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 
 /** The dial writes `prefs.depth`, so a test that changes depth must not leak into the next one. */
 async function openTopic(page: import('@playwright/test').Page, path = '/python/closures/') {
@@ -20,6 +26,61 @@ test('the English topic page renders the article', async ({ page }) => {
   await expect(codebox.locator('button[data-run]')).toHaveText('Run');
 
   await expect(page.locator('#article')).toHaveAttribute('data-depth-mode', 'standard');
+});
+
+test('Mermaid diagrams are inline SVGs whose text follows both theme palettes', async ({ page }) => {
+  const source = readFileSync(new URL('../fixtures/mermaid.mdx', import.meta.url), 'utf8');
+  const markup = String(
+    await unified()
+      .use(remarkParse)
+      .use(remarkRehype)
+      .use(rehypeMermaidDiagrams)
+      .use(rehypeStringify)
+      .process(source),
+  );
+
+  // The existing topic is the test page shell: replacing only its article keeps the production
+  // token stylesheet and avoids publishing a fixture route in the static site.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/python/closures/');
+  await page.locator('#article').evaluate((article, html) => {
+    article.innerHTML = html;
+  }, markup);
+
+  await expect(page.locator('#article figure.diagram > svg[data-diagram]')).toHaveCount(3);
+  await expect(page.locator('#article figure.diagram pre')).toHaveCount(0);
+
+  const renderedFontSizes = await page.locator('#article .diagram svg').evaluateAll((svgs) =>
+    svgs.flatMap((svg) => {
+      const scale =
+        svg.getBoundingClientRect().width / (svg as unknown as SVGSVGElement).viewBox.baseVal.width;
+      return [...svg.querySelectorAll('text, .nodeLabel')].map(
+        (node) => Number.parseFloat(getComputedStyle(node).fontSize) * scale,
+      );
+    }),
+  );
+  expect(Math.min(...renderedFontSizes)).toBeGreaterThanOrEqual(12);
+
+  for (const theme of ['light', 'dark'] as const) {
+    await page.locator('html').evaluate((html, value) => {
+      html.dataset.theme = value;
+    }, theme);
+
+    const palette = await page
+      .locator('#article .diagram')
+      .first()
+      .evaluate((diagram) => {
+        const text = diagram.querySelector('text');
+        if (!text) throw new Error('The sequence diagram has no SVG text node');
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--ink)';
+        document.body.append(probe);
+        const expected = getComputedStyle(probe).color;
+        probe.remove();
+        return { expected, actual: getComputedStyle(text).fill };
+      });
+    expect(palette.actual).toBe(palette.expected);
+  }
 });
 
 test('the depth dial switches depth and remembers it', async ({ page }) => {
@@ -59,6 +120,90 @@ test('the contents mark the section being read', async ({ page }) => {
   await expect(page.locator('[data-toc-nav] a.on')).toBeVisible();
 });
 
+test('progress is measured over the sections the depth shows', async ({ page }) => {
+  await openTopic(page);
+  await page.locator('#in-the-ai-era').scrollIntoViewIfNeeded();
+
+  // A deep section is hidden at Standard depth, so it is not part of what this reader was shown.
+  const expected = await page.evaluate(() => {
+    const shown = [...document.querySelectorAll<HTMLElement>('#article h2')].filter(
+      (heading) => heading.getClientRects().length > 0,
+    );
+    const index = shown.findIndex((heading) => heading.id === 'in-the-ai-era');
+    return Math.round(((index + 1) / shown.length) * 100);
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => JSON.parse(localStorage.getItem('cw:v1:progress') ?? '{}').topics?.['python/closures']?.readPct,
+      ),
+    )
+    .toBe(expected);
+});
+
+test('reading to the checkpoint completes the topic at any depth', async ({ page }) => {
+  await openTopic(page);
+
+  // Quick hides most of the article, so the sections it hides must not count against the reader.
+  await page.locator('[data-depth-tab="quick"]').click();
+  await page.locator('#checkpoint').scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem('cw:v1:progress') ?? '{}').topics?.['python/closures']?.completedAt,
+      ),
+    )
+    .toBeTruthy();
+
+  await page.reload();
+  await expect(page.locator('.tree a[data-topic-id="python/closures"]')).toHaveClass(/done/);
+});
+
+test('an inline term is a keyboard-reachable glossary link with a descriptive tooltip', async ({ page }) => {
+  await page.goto('/python/closures/');
+  // The card is built when the island hydrates, so waiting for it keeps the hover from arriving first.
+  const tip = page.locator('#cw-term-tip');
+  await expect(tip).toBeAttached();
+
+  const term = page.locator('a.term[href]').first();
+  await term.hover();
+  await expect(tip).toBeVisible();
+  await expect(tip).toContainText('Free variable');
+  await expect(tip).toContainText('自由变量');
+  await expect(tip.getByRole('link')).toHaveCount(0);
+  await expect(term).toHaveAttribute('href', '/glossary/free-variable/');
+  await expect(term).toHaveAttribute('aria-describedby', 'cw-term-tip');
+
+  await page.keyboard.press('Escape');
+  await expect(tip).toBeHidden();
+
+  // The section action immediately before the prose is the preceding tab stop. Tabbing from it
+  // reaches the first inline term link, focus opens the tooltip, and Enter follows the real href.
+  await page.locator('#article .sec-ask').first().focus();
+  await page.keyboard.press('Tab');
+  await expect(term).toBeFocused();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/glossary\/free-variable\/$/);
+});
+
+test('the breadcrumb and the JSON-LD trail agree', async ({ page }) => {
+  await page.goto('/python/closures/');
+  const pills = await page.locator('.crumbs .tag').allTextContents();
+  expect(pills.map((pill) => pill.trim())).toEqual(['Tracks', 'Python', 'Functions in depth', 'closures']);
+
+  const blocks = await page.locator('script[type="application/ld+json"]').allTextContents();
+  const crumbs = blocks.map((block) => JSON.parse(block)).find((ld) => ld['@type'] === 'BreadcrumbList');
+  expect(crumbs.itemListElement.map((item: { name: string }) => item.name)).toEqual([
+    'Tracks',
+    'Python',
+    'Functions in depth',
+    'Closures',
+  ]);
+});
+
 test('the URL can carry the depth', async ({ page }) => {
   await page.goto('/python/closures/?depth=deep');
   await expect(page.locator('#article')).toHaveAttribute('data-depth-mode', 'deep');
@@ -94,4 +239,131 @@ test('the page describes itself as a TechArticle', async ({ page }) => {
   expect(article.headline).toBe('Closures');
   expect(article.inLanguage).toBe('en');
   expect(article.dateModified).toBe('2026-09-03');
+});
+
+test('every section offers to hand itself to an assistant', async ({ page }) => {
+  await openTopic(page);
+
+  // The button the markdown pipeline writes after each h2, carrying that heading's id.
+  const first = page.locator('#article h2').first();
+  const ask = page.locator('#article .sec-ask').first();
+  await expect(ask).toBeVisible();
+  await expect(ask).toHaveAttribute('data-section', (await first.getAttribute('id')) ?? '');
+
+  await ask.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // Scoped to that section, and quoting it: the panel names the heading it was opened from.
+  await expect(dialog.locator('.lbl')).toContainText(await first.innerText());
+});
+
+test('a code block opens its three focused Ask-AI presets', async ({ page }) => {
+  await openTopic(page);
+  await expect(page.locator('[data-ask-ai]')).toHaveAttribute('data-ready', 'true');
+
+  const ask = page.locator('#article figure.codebox + .ask-block').first();
+  await expect(ask).toHaveAttribute('data-preset', 'explain-code|port|tests');
+  await ask.click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.ask-row')).toHaveCount(3);
+  await expect(dialog.getByText('Explain this code line by line')).toBeVisible();
+  await expect(dialog.getByText('Write tests for this code')).toBeVisible();
+
+  const language = dialog.locator('select.ask-language');
+  await expect(language.locator('option')).toHaveCount(11);
+  await language.selectOption('Rust');
+
+  const portHref = await dialog.locator('.ask-row').nth(1).getByRole('link').first().getAttribute('href');
+  expect(decodeURIComponent(portHref ?? '')).toContain('Port this code block to Rust.');
+  expect(decodeURIComponent(portHref ?? '')).toContain('def make_counter():');
+});
+
+test('a pitfall asks for reader code and a nudge offers two challenges', async ({ page }) => {
+  await openTopic(page);
+  await expect(page.locator('[data-ask-ai]')).toHaveAttribute('data-ready', 'true');
+
+  const pitfallAsk = page.locator('#article .callout-pitfall + .ask-block').first();
+  await pitfallAsk.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.ask-row')).toHaveCount(1);
+  const code = 'readers.append(lambda: index)';
+  await dialog.locator('textarea.ask-code').fill(code);
+  const href = await dialog.getByRole('link').first().getAttribute('href');
+  expect(decodeURIComponent(href ?? '')).toContain(code);
+
+  await page.keyboard.press('Escape');
+  const nudge = page.locator('#article .nudge').first();
+  await expect(nudge.locator('li')).toHaveCount(2);
+});
+
+for (const [topicPath, playgroundPath] of [
+  ['/python/closures/', '/playground/'],
+  ['/zh/python/closures/', '/zh/playground/'],
+] as const) {
+  test(`the first nudge on ${topicPath} opens its code in the localized playground`, async ({ page }) => {
+    await openTopic(page, topicPath);
+    const firstLine = await page
+      .locator('#article figure.codebox[data-run] pre')
+      .first()
+      .evaluate((pre) => (pre.textContent ?? '').split('\n')[0]?.trim() ?? '');
+
+    await page.locator('#article .nudge').first().getByRole('link').first().click();
+
+    await expect.poll(() => new URL(page.url()).pathname).toBe(playgroundPath);
+    await expect(page.locator('textarea[name="code"]')).toHaveValue(
+      new RegExp(firstLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  });
+}
+
+test('the action row opens the six Ask-AI presets for the page', async ({ page }) => {
+  await openTopic(page);
+
+  const trigger = page.locator('[data-ask-ai]');
+  await expect(trigger).toHaveAttribute('data-ready', 'true');
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.ask-row')).toHaveCount(6);
+  await expect(dialog.getByText('Explain it simpler')).toBeVisible();
+  await expect(dialog.getByText('Grade my explanation')).toBeVisible();
+
+  // Each preset offers both assistants, and the deep link carries the page in its query.
+  const claude = dialog.locator('.ask-row').first().getByRole('link').first();
+  const href = (await claude.getAttribute('href')) ?? '';
+  expect(href.startsWith('https://claude.ai/new?q=')).toBe(true);
+  expect(decodeURIComponent(href)).toContain('"Closures"');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
+test('the action row adds every page term to flashcards once', async ({ page }) => {
+  await openTopic(page);
+  const button = page.locator('[data-add-flashcards]');
+  await expect(button).toHaveAttribute('data-ready', 'true');
+  await expect(button).toBeEnabled();
+  await button.click();
+
+  const cards = await page.evaluate(
+    () => JSON.parse(localStorage.getItem('cw:v1:flashcards') ?? '{}').cards ?? [],
+  );
+  const terms = ((await button.getAttribute('data-terms')) ?? '').split(',').filter(Boolean);
+  expect(cards).toHaveLength(terms.length);
+  expect(cards.every((card: { source: string }) => card.source === 'manual')).toBe(true);
+  await expect(page.locator('[data-flashcards-confirm]')).toHaveText(`Added ${terms.length} cards`);
+  await expect(button).toBeDisabled();
+});
+
+test('the Markdown twin serves the page as plain Markdown', async ({ page }) => {
+  const response = await page.request.get('/python/closures.md');
+  expect(response.status()).toBe(200);
+  expect(response.headers()['content-type']).toContain('text/markdown');
+
+  const body = await response.text();
+  expect(body.startsWith('# Closures')).toBe(true);
+  expect(body).toContain('Source: https://codewiki.com/python/closures/');
+  expect(body).not.toContain('<TLDR>');
 });

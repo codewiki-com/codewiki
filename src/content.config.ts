@@ -3,9 +3,10 @@ import { glob } from 'astro/loaders';
 import { topicSchema } from '@/schemas/topic';
 import { quizSchema } from '@/schemas/quiz';
 import { termSchema } from '@/schemas/glossary';
-import { interviewSchema } from '@/schemas/interview';
 import { pathSchema } from '@/schemas/path';
-import { topicIdFromPath } from '@/lib/content-ids';
+import { interviewSchema } from '@/schemas/interview';
+import { cheatsheetSchema } from '@/schemas/cheatsheet';
+import { localizedIdFromPath, topicIdFromPath } from '@/lib/content-ids';
 
 // Topics are one MDX file per language; the entry id keeps the language so both files of a pair
 // live in the same collection: `python/closures.zh.mdx` -> `python/closures/zh`.
@@ -29,15 +30,25 @@ const glossary = defineCollection({
   schema: termSchema,
 });
 
-// One interview bank per track, so the entry id is the track slug (`python`).
-const interview = defineCollection({
-  loader: glob({ pattern: '*.yaml', base: './src/content/interview' }),
-  schema: interviewSchema,
-});
-
 const paths = defineCollection({
   loader: glob({ pattern: '**/*.yaml', base: './src/content/paths' }),
   schema: pathSchema,
 });
 
-export const collections = { topics, quizzes, glossary, interview, paths };
+const interview = defineCollection({
+  loader: glob({ pattern: '*.yaml', base: './src/content/interview' }),
+  schema: interviewSchema,
+});
+
+// Cheatsheets use the same paired-file convention without a track directory:
+// `python.zh.mdx` -> `python/zh`.
+const cheatsheets = defineCollection({
+  loader: glob({
+    pattern: '**/*.{en,zh}.mdx',
+    base: './src/content/cheatsheets',
+    generateId: ({ entry }) => localizedIdFromPath(entry),
+  }),
+  schema: cheatsheetSchema,
+});
+
+export const collections = { topics, quizzes, glossary, paths, interview, cheatsheets };

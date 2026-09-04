@@ -13,7 +13,20 @@ import Depth from './Depth.astro';
 import TLDR from './TLDR.astro';
 import TLDRCell from './TLDRCell.astro';
 import Term from './Term.astro';
+import Sheet from './Sheet.astro';
+import Row from './Row.astro';
+import TryToBreak from './TryToBreak.astro';
 
-export const mdxComponents = { TLDR, TLDRCell, Depth, Callout, Term, Checkpoint };
+export const mdxComponents = {
+  TLDR,
+  TLDRCell,
+  Depth,
+  Callout,
+  Term,
+  Checkpoint,
+  Sheet,
+  Row,
+  TryToBreak,
+};
 
 export default mdxComponents;

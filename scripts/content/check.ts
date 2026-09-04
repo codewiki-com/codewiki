@@ -19,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { z } from 'astro/zod';
 import { getSection, getTrack } from '@/data/tracks';
+import { cheatsheetSchema } from '@/schemas/cheatsheet';
 import { glossaryProposalSchema } from '@/schemas/glossary';
 import { interviewSchema } from '@/schemas/interview';
+import { pathSchema } from '@/schemas/path';
 import { quizSchema } from '@/schemas/quiz';
 import { topicSchema } from '@/schemas/topic';
 import { alignBlocks, blocks, formatMismatches } from './lib/alignment';
@@ -77,6 +79,17 @@ export interface CheckResult {
   ok: boolean;
   /** One line per finding, each prefixed with the number of the check that raised it. */
   failures: string[];
+}
+
+/** Content sidecars the write runner can produce. */
+export const CONTENT_KINDS = ['quiz', 'kata', 'interview', 'path', 'cheatsheet'] as const;
+export type ContentKind = (typeof CONTENT_KINDS)[number];
+
+export interface KindCheckOptions {
+  quizzesRoot?: string;
+  interviewRoot?: string;
+  pathsRoot?: string;
+  cheatsheetsRoot?: string;
 }
 
 /** Both languages of a topic: the raw file and its parsed frontmatter and body. */
@@ -280,10 +293,11 @@ async function sidecarFindings(id: string, documents: Documents, options: CheckO
   const [track, slug] = id.split('/');
   const out = await quizFindings(documents, options.quizzesRoot ?? repoPath('src/content/quizzes'));
   out.push(
-    ...(await optionalYamlSchemaFindings(
+    ...(await interviewSidecarFindings(
       path.join(options.interviewRoot ?? repoPath('src/content/interview'), `${track}.yaml`),
-      `interview "${track}"`,
-      interviewSchema,
+      track,
+      id,
+      documents.en.data.status === 'reviewed',
     )),
     ...(await optionalYamlSchemaFindings(
       path.join(options.proposalsRoot ?? repoPath('content/glossary-proposals'), `${track}-${slug}.yaml`),
@@ -350,7 +364,29 @@ async function quizFindings(documents: Documents, quizzesRoot: string): Promise<
   if (parsed.data.items.length < MIN_QUIZ_ITEMS) {
     return [`quiz "${quiz}" has ${parsed.data.items.length} items, fewer than ${MIN_QUIZ_ITEMS}`];
   }
-  return [];
+  const items = parsed.data.items as Array<Record<string, unknown>>;
+  const out = reviewLineFindings(items, `quiz "${quiz}"`);
+  if (documents.en.data.status === 'reviewed') out.push(...calibrationFindings(items, `quiz "${quiz}"`));
+  return out;
+}
+
+async function interviewSidecarFindings(
+  file: string,
+  track: string,
+  topicId: string,
+  reviewed: boolean,
+): Promise<string[]> {
+  const loaded = await requiredYaml(file, `interview "${track}"`);
+  if (loaded.failures.some((failure) => failure.endsWith('file does not exist'))) return [];
+  if (loaded.failures.length > 0) return loaded.failures;
+  const parsed = interviewSchema.safeParse(loaded.data);
+  const out = schemaFailures(`interview "${track}"`, parsed);
+  if (!parsed.success || !reviewed) return out;
+  const related = (parsed.data.items as Array<Record<string, unknown>>).filter(
+    (item) => Array.isArray(item.topics) && item.topics.includes(topicId),
+  );
+  out.push(...calibrationFindings(related, `interview "${track}"`));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +406,295 @@ function statusFindings(documents: Documents): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Write-runner sidecars
+// ---------------------------------------------------------------------------
+
+const SLUG = /^[a-z0-9-]+$/;
+const TOPIC_ID = /^[a-z0-9-]+\/[a-z0-9-]+$/;
+
+/** Validate one file produced by `content:write`, including constraints Zod cannot express. */
+export async function checkContent(
+  kind: ContentKind,
+  id: string,
+  options: KindCheckOptions = {},
+): Promise<CheckResult> {
+  if (kind === 'quiz' || kind === 'kata') return checkWrittenQuiz(kind, id, options);
+  if (kind === 'interview') return checkWrittenInterview(id, options);
+  if (kind === 'path') return checkWrittenPath(id, options);
+  return checkWrittenCheatsheet(id, options);
+}
+
+function schemaFailures(label: string, parsed: ReturnType<SchemaLike['safeParse']>): string[] {
+  if (parsed.success) return [];
+  return parsed.error.issues.map(
+    (issue) => `${label}: ${issue.path.join('.') || '(root)'}: ${issue.message}`,
+  );
+}
+
+async function requiredYaml(file: string, label: string): Promise<{ data?: unknown; failures: string[] }> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    const detail = (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'file does not exist' : String(error);
+    return { failures: [`${label}: ${detail}`] };
+  }
+  try {
+    return { data: YAML.parse(text), failures: [] };
+  } catch (error) {
+    return { failures: [`${label}: ${(error as Error).message}`] };
+  }
+}
+
+function withoutTrailingBlankLines(code: string): string[] {
+  const trimmed = code.replace(/\n+$/, '');
+  return trimmed === '' ? [] : trimmed.split('\n');
+}
+
+function reviewLineFindings(items: Array<Record<string, unknown>>, label: string): string[] {
+  const out: string[] = [];
+  for (const [itemIndex, item] of items.entries()) {
+    if (item.type !== 'review') continue;
+    const lines = withoutTrailingBlankLines(String(item.code ?? '')).length;
+    const issues = Array.isArray(item.issues) ? (item.issues as Array<Record<string, unknown>>) : [];
+    for (const [issueIndex, issue] of issues.entries()) {
+      const first = Number(issue.line);
+      const span = Number(issue.lines ?? 1);
+      const last = first + span - 1;
+      if (first > lines || last > lines) {
+        out.push(
+          `${label}: items.${itemIndex}.issues.${issueIndex} names line ${last}, but the code has ${lines} lines`,
+        );
+      }
+    }
+  }
+  return out;
+}
+
+function calibrationFindings(items: Array<Record<string, unknown>>, label: string): string[] {
+  return items.flatMap((item, index) =>
+    Array.isArray(item.tags) && item.tags.includes('calibration')
+      ? [`${label}: items.${index}.tags still contains the calibration placeholder`]
+      : [],
+  );
+}
+
+async function checkWrittenQuiz(
+  kind: 'quiz' | 'kata',
+  id: string,
+  options: KindCheckOptions,
+): Promise<CheckResult> {
+  if (!TOPIC_ID.test(id)) return { ok: false, failures: [`not a {track}/{slug} id: ${id}`] };
+  const file = path.join(options.quizzesRoot ?? repoPath('src/content/quizzes'), `${id}.yaml`);
+  const label = `${kind} "${id}"`;
+  const loaded = await requiredYaml(file, label);
+  if (loaded.failures.length > 0) return { ok: false, failures: loaded.failures };
+  const parsed = quizSchema.safeParse(loaded.data);
+  const failures = schemaFailures(label, parsed);
+  if (!parsed.success) return { ok: false, failures };
+  const items = parsed.data.items as Array<Record<string, unknown>>;
+  failures.push(...calibrationFindings(items, label), ...reviewLineFindings(items, label));
+  if (parsed.data.topic !== id) failures.push(`${label}: topic is "${parsed.data.topic}", expected "${id}"`);
+  if (kind === 'quiz' && (items.length < 4 || items.length > 8)) {
+    failures.push(`${label}: expected 4–8 items, got ${items.length}`);
+  }
+  if (kind === 'kata' && !items.some(isCompleteKata)) {
+    failures.push(
+      `${label}: no review item has a title, task, right, 15–25 code lines, 3–5 distinct issue kinds, and 3–4 checklist items`,
+    );
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+function isLocalized(value: unknown): value is { en: string; zh: string } {
+  if (value === null || typeof value !== 'object') return false;
+  const localized = value as Record<string, unknown>;
+  return typeof localized.en === 'string' && typeof localized.zh === 'string';
+}
+
+function isCompleteKata(item: Record<string, unknown>): boolean {
+  if (
+    item.type !== 'review' ||
+    !isLocalized(item.title) ||
+    !isLocalized(item.task) ||
+    !isLocalized(item.right)
+  ) {
+    return false;
+  }
+  if (Array.from(item.title.en).length > 60 || Array.from(item.title.zh).length > 60) return false;
+  const codeLines = withoutTrailingBlankLines(String(item.code ?? '')).length;
+  const issues = Array.isArray(item.issues) ? (item.issues as Array<Record<string, unknown>>) : [];
+  const checklist = Array.isArray(item.checklist) ? item.checklist : [];
+  const kinds = new Set(issues.map((issue) => issue.kind));
+  return (
+    codeLines >= 15 &&
+    codeLines <= 25 &&
+    issues.length >= 3 &&
+    issues.length <= 5 &&
+    kinds.size === issues.length &&
+    checklist.length >= 3 &&
+    checklist.length <= 4
+  );
+}
+
+async function checkWrittenInterview(id: string, options: KindCheckOptions): Promise<CheckResult> {
+  if (!SLUG.test(id)) return { ok: false, failures: [`not a track slug: ${id}`] };
+  const file = path.join(options.interviewRoot ?? repoPath('src/content/interview'), `${id}.yaml`);
+  const label = `interview "${id}"`;
+  const loaded = await requiredYaml(file, label);
+  if (loaded.failures.length > 0) return { ok: false, failures: loaded.failures };
+  const parsed = interviewSchema.safeParse(loaded.data);
+  const failures = schemaFailures(label, parsed);
+  if (!parsed.success) return { ok: false, failures };
+  const items = parsed.data.items as Array<Record<string, unknown>>;
+  failures.push(...calibrationFindings(items, label));
+  if (parsed.data.track !== id) failures.push(`${label}: track is "${parsed.data.track}", expected "${id}"`);
+  if (items.length < 30 || items.length > 45)
+    failures.push(`${label}: expected 30–45 items, got ${items.length}`);
+  return { ok: failures.length === 0, failures };
+}
+
+function scopedSlug(id: string): string | null {
+  const parts = id.split('/');
+  if (parts.length > 2 || parts.some((part) => !SLUG.test(part))) return null;
+  return parts.at(-1) ?? null;
+}
+
+async function checkWrittenPath(id: string, options: KindCheckOptions): Promise<CheckResult> {
+  const slug = scopedSlug(id);
+  if (!slug) return { ok: false, failures: [`not a path id or {track}/{path-id}: ${id}`] };
+  const pathsRoot = options.pathsRoot ?? repoPath('src/content/paths');
+  const quizzesRoot = options.quizzesRoot ?? repoPath('src/content/quizzes');
+  const label = `path "${slug}"`;
+  const loaded = await requiredYaml(path.join(pathsRoot, `${slug}.yaml`), label);
+  if (loaded.failures.length > 0) return { ok: false, failures: loaded.failures };
+  const parsed = pathSchema.safeParse(loaded.data);
+  const failures = schemaFailures(label, parsed);
+  if (!parsed.success) return { ok: false, failures };
+  const topics = parsed.data.milestones.flatMap((milestone) => milestone.topics);
+  if (topics.length < 18 || topics.length > 30)
+    failures.push(`${label}: expected 18–30 topics, got ${topics.length}`);
+  if (parsed.data.milestones.length < 4 || parsed.data.milestones.length > 6) {
+    failures.push(`${label}: expected 4–6 milestones, got ${parsed.data.milestones.length}`);
+  }
+  if (parsed.data.edges.length < 4)
+    failures.push(`${label}: expected at least 4 edges, got ${parsed.data.edges.length}`);
+  if (parsed.data.outcomes.length !== 3)
+    failures.push(`${label}: expected exactly 3 outcomes, got ${parsed.data.outcomes.length}`);
+  if (new Set(topics).size !== topics.length) failures.push(`${label}: a topic appears more than once`);
+  if (parsed.data.id && parsed.data.id !== slug)
+    failures.push(`${label}: id is "${parsed.data.id}", expected "${slug}"`);
+  const topicSet = new Set(topics);
+  parsed.data.edges.forEach((edge, index) => {
+    if (!topicSet.has(edge.from) || !topicSet.has(edge.to)) {
+      failures.push(`${label}: edges.${index} must connect topics selected by this path`);
+    }
+  });
+  for (const checkpoint of parsed.data.milestones.map((milestone) => milestone.checkpoint)) {
+    const bank = await requiredYaml(
+      path.join(quizzesRoot, `${checkpoint}.yaml`),
+      `checkpoint "${checkpoint}"`,
+    );
+    if (bank.failures.length > 0) {
+      failures.push(...bank.failures);
+      continue;
+    }
+    const checked = quizSchema.safeParse(bank.data);
+    failures.push(...schemaFailures(`checkpoint "${checkpoint}"`, checked));
+    if (checked.success) {
+      const items = checked.data.items as Array<Record<string, unknown>>;
+      if (checked.data.topic !== checkpoint) {
+        failures.push(
+          `checkpoint "${checkpoint}": topic is "${checked.data.topic}", expected "${checkpoint}"`,
+        );
+      }
+      if (items.length !== 8)
+        failures.push(`checkpoint "${checkpoint}": expected 8 items, got ${items.length}`);
+      failures.push(
+        ...calibrationFindings(items, `checkpoint "${checkpoint}"`),
+        ...reviewLineFindings(items, `checkpoint "${checkpoint}"`),
+      );
+    }
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+interface SheetShape {
+  title: string;
+  rows: string[];
+}
+
+function sheetShapes(body: string): SheetShape[] {
+  const out: SheetShape[] = [];
+  const sheetPattern = /<Sheet\s+title=(['"])(.*?)\1\s*>([\s\S]*?)<\/Sheet>/g;
+  for (const match of body.matchAll(sheetPattern)) {
+    const rows = [...match[3].matchAll(/<Row\s+code=(['"])(.*?)\1\s*>[\s\S]*?<\/Row>/g)].map((row) => row[2]);
+    out.push({ title: match[2], rows });
+  }
+  return out;
+}
+
+async function checkWrittenCheatsheet(id: string, options: KindCheckOptions): Promise<CheckResult> {
+  const slug = scopedSlug(id);
+  if (!slug) return { ok: false, failures: [`not a cheatsheet id or {track}/{sheet-id}: ${id}`] };
+  const root = options.cheatsheetsRoot ?? repoPath('src/content/cheatsheets');
+  const documents = {} as Record<Lang, ParsedFrontmatter & { sheets: SheetShape[] }>;
+  const failures: string[] = [];
+  for (const lang of LANGS) {
+    let text: string;
+    try {
+      text = await readFile(path.join(root, `${slug}.${lang}.mdx`), 'utf8');
+    } catch (error) {
+      failures.push(
+        `cheatsheet "${slug}" (${lang}): ${(error as NodeJS.ErrnoException).code === 'ENOENT' ? 'file does not exist' : String(error)}`,
+      );
+      continue;
+    }
+    const parsed = parseFrontmatter(text);
+    documents[lang] = { ...parsed, sheets: sheetShapes(parsed.body) };
+    const schema = cheatsheetSchema.safeParse(parsed.data);
+    failures.push(...schemaFailures(`cheatsheet "${slug}" (${lang})`, schema));
+    if (schema.success) {
+      if (schema.data.terms.length < 6)
+        failures.push(
+          `cheatsheet "${slug}" (${lang}): expected at least 6 terms, got ${schema.data.terms.length}`,
+        );
+      if (schema.data.status === 'reviewed' && schema.data.tags.includes('calibration')) {
+        failures.push(
+          `cheatsheet "${slug}" (${lang}): reviewed file still contains the calibration placeholder`,
+        );
+      }
+    }
+    if (documents[lang].sheets.length < 9 || documents[lang].sheets.length > 12) {
+      failures.push(
+        `cheatsheet "${slug}" (${lang}): expected 9–12 Sheet blocks, got ${documents[lang].sheets.length}`,
+      );
+    }
+    documents[lang].sheets.forEach((sheet, index) => {
+      if (sheet.rows.length < 5 || sheet.rows.length > 7) {
+        failures.push(
+          `cheatsheet "${slug}" (${lang}): Sheet ${index + 1} has ${sheet.rows.length} rows, expected 5–7`,
+        );
+      }
+    });
+  }
+  if (documents.en && documents.zh) {
+    const enShape = documents.en.sheets.map((sheet) => sheet.rows);
+    const zhShape = documents.zh.sheets.map((sheet) => sheet.rows);
+    if (stable(enShape) !== stable(zhShape))
+      failures.push(`cheatsheet "${slug}": en and zh rows are not aligned by code`);
+    const sharedKeys = new Set([...Object.keys(documents.en.data), ...Object.keys(documents.zh.data)]);
+    for (const key of sharedKeys) {
+      if (TRANSLATED_KEYS.has(key)) continue;
+      if (stable(documents.en.data[key]) !== stable(documents.zh.data[key])) {
+        failures.push(`cheatsheet "${slug}": frontmatter field "${key}" differs between en and zh`);
+      }
+    }
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -377,19 +702,27 @@ interface Args {
   ids: string[];
   noLinks: boolean;
   relaxed: boolean;
+  kind?: ContentKind;
 }
 
-/** Parse `{track}/{slug} …`, `--no-links` and `--relaxed`. */
+/** Parse topic checks or `--kind quiz|kata|interview|path|cheatsheet <id>`. */
 export function parseArgs(argv: string[]): Args {
   const args: Args = { ids: [], noLinks: false, relaxed: false };
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
     if (arg === '--no-links') args.noLinks = true;
     else if (arg === '--relaxed') args.relaxed = true;
-    else if (arg.startsWith('-')) throw new Error(`unknown flag: ${arg}`);
+    else if (arg === '--kind') {
+      const kind = argv[index + 1];
+      if (!CONTENT_KINDS.includes(kind as ContentKind))
+        throw new Error(`unknown content kind: ${kind ?? ''}`);
+      args.kind = kind as ContentKind;
+      index += 1;
+    } else if (arg.startsWith('-')) throw new Error(`unknown flag: ${arg}`);
     else args.ids.push(arg);
   }
   if (args.ids.length === 0)
-    throw new Error('usage: content:check {track}/{slug} [...] [--no-links] [--relaxed]');
+    throw new Error('usage: content:check [--kind quiz|kata|interview|path|cheatsheet] <id> [...]');
   return args;
 }
 
@@ -400,7 +733,9 @@ async function main(): Promise<void> {
   for (const id of args.ids) {
     let result: CheckResult;
     try {
-      result = await checkTopic(id, { noLinks: args.noLinks, relaxed: args.relaxed });
+      result = args.kind
+        ? await checkContent(args.kind, id)
+        : await checkTopic(id, { noLinks: args.noLinks, relaxed: args.relaxed });
     } catch (error) {
       result = { ok: false, failures: [`0. ${(error as Error).message}`] };
     }

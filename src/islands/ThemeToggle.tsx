@@ -1,6 +1,14 @@
 import type { JSX } from 'preact';
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import { nextTheme, readThemePref, resolveTheme, writeThemePref, type ThemePref } from '@/lib/theme';
+import {
+  applyTheme,
+  applyThemePreference,
+  isThemePref,
+  nextTheme,
+  readThemePref,
+  THEME_EVENT,
+  type ThemePref,
+} from '@/lib/theme';
 
 export interface ThemeToggleProps {
   /** Localised labels, one per preference state. */
@@ -8,13 +16,6 @@ export interface ThemeToggleProps {
 }
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
-
-function apply(pref: ThemePref): void {
-  const systemDark = window.matchMedia(DARK_QUERY).matches;
-  const root = document.documentElement;
-  root.setAttribute('data-theme', resolveTheme(pref, systemDark));
-  root.setAttribute('data-theme-pref', pref);
-}
 
 const icons: Record<ThemePref, JSX.Element> = {
   system: (
@@ -38,24 +39,37 @@ export default function ThemeToggle({ labels }: ThemeToggleProps) {
   // The inline bootstrap script already painted the right palette; adopt whatever
   // it resolved so the button starts in the same state as the document.
   useEffect(() => {
-    setPref(readThemePref(localStorage));
+    setPref(readThemePref());
+  }, []);
+
+  // The desktop and mobile controls are separate islands. Keep their state in lockstep through
+  // the event either one emits after changing the shared document theme.
+  useEffect(() => {
+    const onTheme = (event: Event) => {
+      const next = (event as CustomEvent<unknown>).detail;
+      if (!isThemePref(next)) return;
+      applyTheme(next, window.matchMedia(DARK_QUERY).matches, document.documentElement);
+      setPref(next);
+    };
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => window.removeEventListener(THEME_EVENT, onTheme);
   }, []);
 
   // While following the system, track live OS palette changes.
   useEffect(() => {
     if (pref !== 'system') return;
     const mq = window.matchMedia(DARK_QUERY);
-    const onChange = () => apply('system');
+    const onChange = () => applyTheme('system', mq.matches, document.documentElement);
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, [pref]);
 
   const onClick = useCallback(() => {
-    const next = nextTheme(readThemePref(localStorage));
-    writeThemePref(next, localStorage);
-    apply(next);
+    const next = nextTheme(pref);
+    applyThemePreference(next, window.matchMedia(DARK_QUERY).matches, document.documentElement);
     setPref(next);
-  }, []);
+    window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: next }));
+  }, [pref]);
 
   return (
     <button

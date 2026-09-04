@@ -7,7 +7,7 @@
  * lock directory so two concurrent jobs cannot overwrite each other's progress — the
  * write itself is atomic, but a lost update would silently re-run finished work.
  *
- * `tsx scripts/content/mark.ts start|ok|fail {track}/{slug} {step} [error]`
+ * `tsx scripts/content/mark.ts start|ok|fail {track}/{slug}|write:{kind}:{id} {step} [error]`
  *
  * - `start` opens the topic's entry and stamps `startedAt` without claiming any step.
  * - `ok` records `step` as completed and clears the last error.
@@ -151,7 +151,11 @@ export function parseArgs(argv: string[]): Args {
   if (action !== 'start' && action !== 'ok' && action !== 'fail') {
     throw new Error('usage: mark start|ok|fail {track}/{slug} {step} [error]');
   }
-  if (!id || !id.includes('/')) throw new Error(`not a {track}/{slug} topic id: ${id ?? ''}`);
+  const topicId = /^[a-z0-9-]+\/[a-z0-9-]+$/;
+  const writeKey = /^write:(?:quiz|kata|interview|path|cheatsheet):[a-z0-9/-]+$/;
+  if (!id || (!topicId.test(id) && !writeKey.test(id))) {
+    throw new Error(`not a {track}/{slug} topic id or write journal key: ${id ?? ''}`);
+  }
   if (!step || !(STEPS as readonly string[]).includes(step)) {
     throw new Error(`unknown step: ${step ?? ''}`);
   }

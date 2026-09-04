@@ -19,21 +19,27 @@ import type { MarkdownHeading } from 'astro';
 import Base from '@/layouts/Base.astro';
 import ActionRow from '@/components/ActionRow.astro';
 import Breadcrumb from '@/components/Breadcrumb.astro';
+import Checkpoint from '@/components/Checkpoint.astro';
+import CheckpointMarker from '@/components/CheckpointMarker.astro';
 import Icon from '@/components/Icon.astro';
 import MetaPanel from '@/components/MetaPanel.astro';
 import PrevNext from '@/components/PrevNext.astro';
 import SectionTree from '@/components/SectionTree.astro';
 import Seg from '@/components/Seg.astro';
 import { mdxComponents } from '@/components/mdx';
+import CodeRunners from '@/islands/CodeRunners';
+import Bilingual from '@/islands/Bilingual';
 import DepthDial from '@/islands/DepthDial';
 import ReadTracker from '@/islands/ReadTracker';
+import Terms from '@/islands/Terms';
 import Toc from '@/islands/Toc';
-import { t } from '@/i18n';
-import { SITE } from '@/data/site';
+import { formatCount, t } from '@/i18n';
+import { P2_NAV, SITE } from '@/data/site';
 import { getSection, getTrack } from '@/data/tracks';
-import { topicMeta, type Topic } from '@/lib/content';
+import { getTopic, isPublic, topicMeta, type Topic } from '@/lib/content';
+import { structuralSignaturesMatch } from '@/lib/bilingual';
 import { breadcrumbLd, buildHead, techArticleLd } from '@/lib/seo';
-import { localizePath, topicUrl, trackUrl, type Locale } from '@/lib/urls';
+import { alternates, localizePath, topicUrl, trackUrl, type Locale } from '@/lib/urls';
 
 interface Props {
   locale: Locale;
@@ -44,6 +50,9 @@ const { locale, topic } = Astro.props;
 const { track: trackSlug, slug } = topicMeta(topic);
 const id = `${trackSlug}/${slug}`;
 const currentPath = topicUrl(trackSlug, slug, locale);
+const authoredAligned = topic.data.aligned;
+const otherLocale: Locale = locale === 'en' ? 'zh' : 'en';
+const alternateUrl = alternates(currentPath)[otherLocale];
 
 const track = getTrack(trackSlug);
 if (!track) throw new Error(`Topic ${topic.id} names a track that is not in the registry`);
@@ -51,6 +60,20 @@ const trackName = track.name[locale];
 const section = getSection(track, topic.data.section);
 
 const { Content, headings, remarkPluginFrontmatter } = await render(topic);
+const biSig = (remarkPluginFrontmatter as { biSig?: string }).biSig;
+
+/** An authored alignment promise is enabled only when the rendered structures still agree. */
+const alternateTopic = authoredAligned ? await getTopic(trackSlug, slug, otherLocale) : undefined;
+const alternateRendered = alternateTopic?.data.aligned ? await render(alternateTopic) : undefined;
+const alternateBiSig = (alternateRendered?.remarkPluginFrontmatter as { biSig?: string } | undefined)?.biSig;
+const aligned = Boolean(
+  authoredAligned && alternateTopic?.data.aligned && structuralSignaturesMatch(biSig, alternateBiSig),
+);
+if (locale === 'en' && authoredAligned && alternateTopic?.data.aligned && !aligned) {
+  console.warn(
+    `[bilingual] aligned topic has mismatched structural signatures: ${id} (en=${JSON.stringify(biSig)}, zh=${JSON.stringify(alternateBiSig)})`,
+  );
+}
 
 /** Written by `remark-depth`; the panel states the Standard figure, as the mockup does. */
 const readingTime = (remarkPluginFrontmatter as { readingTime?: Record<string, number> }).readingTime;
@@ -64,7 +87,38 @@ const minutes = readingTime?.standard ?? 1;
  * reconciles the list against `#article` once it hydrates.
  */
 const toc = (headings as MarkdownHeading[]).filter((heading) => heading.depth === 2 || heading.depth === 3);
-const hasCheckpoint = topic.body?.includes('<Checkpoint') ?? false;
+const hasCheckpoint = Boolean(topic.data.quiz) || (topic.body?.includes('<Checkpoint') ?? false);
+
+/** First public related topic, in the same order as the existing PrevNext cards. */
+const relatedTopics = await Promise.all(
+  topic.data.related.map(async (ref: string) => {
+    const [relatedTrack, relatedSlug] = ref.split('/');
+    if (!relatedTrack || !relatedSlug) return undefined;
+    const entry = await getTopic(relatedTrack, relatedSlug, locale);
+    return entry && isPublic(entry)
+      ? { title: entry.data.title, href: topicUrl(relatedTrack, relatedSlug, locale) }
+      : undefined;
+  }),
+);
+const checkpointNext = relatedTopics.find((entry): entry is { title: string; href: string } =>
+  Boolean(entry),
+);
+
+/* The authored component is an editorial marker. Rendering it here lets the page supply the
+   resolved navigation data while keeping the checkpoint exactly at the end of every article. */
+const topicMdxComponents = { ...mdxComponents, Checkpoint: CheckpointMarker };
+
+/**
+ * Whether this topic has a runnable fence, read from the source rather than the rendered HTML:
+ * the runner island is ~30 kB of JavaScript and a Pyodide loader, and a page of prose should not
+ * pay for it. ` ```python run title="…" ` is the shape `shiki-meta.ts` turns into `data-run`.
+ */
+const hasRunnable = /^ {0,3}(?:`{3,}|~{3,})[^\n]*\brun\b/m.test(topic.body ?? '');
+
+/* ---- ask ai ----------------------------------------------------------------------------- */
+
+/** What the "explain it simpler" preset may assume: the first topic this one is written after. */
+const prerequisite = topic.data.prerequisites?.[0]?.split('/').pop()?.replace(/-/g, ' ');
 
 /* ---- right rail ------------------------------------------------------------------------- */
 
@@ -80,8 +134,29 @@ const terms = termIds
     id: term.id,
     primary: locale === 'zh' ? term.data.zh : term.data.en,
     secondary: locale === 'zh' ? term.data.en : term.data.zh,
+    en: term.data.en,
+    zh: term.data.zh,
+    short: term.data.short[locale],
     href: localizePath(`/glossary/${term.id}/`, locale),
   }));
+
+/**
+ * The definitions the `Terms` island lends to the dotted terms in the article, keyed by the id
+ * `<Term>` writes into `data-term`. Embedded rather than fetched: it is the same handful of terms
+ * the rail already lists. `<` is escaped so no definition can close the script element early.
+ */
+const termsJson = JSON.stringify(
+  Object.fromEntries(terms.map((term) => [term.id, { en: term.en, zh: term.zh, short: term.short }])),
+).replace(/</g, '\\u003c');
+
+/** Labels emitted by markdown are localised by Base's script, which a fetched page never runs. */
+const alternateStrings = {
+  'callout.pitfall': t(otherLocale, 'callout.pitfall'),
+  'callout.note': t(otherLocale, 'callout.note'),
+  'callout.tip': t(otherLocale, 'callout.tip'),
+  'callout.warning': t(otherLocale, 'callout.warning'),
+  'callout.ai': t(otherLocale, 'callout.ai'),
+};
 
 /** The path this topic sits on, if any: which milestone it belongs to and how much is left. */
 const paths: CollectionEntry<'paths'>[] = await getCollection('paths');
@@ -92,6 +167,20 @@ const milestones: string[][] = path?.data.milestones.map((m: { topics: string[] 
 const pathTopics = milestones.flat();
 const milestoneIndex = milestones.findIndex((topics) => topics.includes(id));
 const left = pathTopics.length - (pathTopics.indexOf(id) + 1);
+
+/* ---- breadcrumb ------------------------------------------------------------------------- */
+
+/**
+ * One trail, rendered twice: as the pills above the title and as the `BreadcrumbList`. A section
+ * has no page of its own, so it points at its group on the track hub.
+ */
+const trail = [
+  { label: t(locale, 'nav.tracks'), path: localizePath('/tracks/', locale) },
+  { label: trackName, path: trackUrl(trackSlug, locale) },
+  ...(section
+    ? [{ label: section.name[locale], path: `${trackUrl(trackSlug, locale)}#${section.slug}` }]
+    : []),
+];
 
 /* ---- head ------------------------------------------------------------------------------- */
 
@@ -117,8 +206,7 @@ const head = buildHead({
       section: section?.name[locale],
     }),
     breadcrumbLd([
-      { name: t(locale, 'nav.tracks'), url: `${SITE.url}${localizePath('/tracks/', locale)}` },
-      { name: trackName, url: `${SITE.url}${trackUrl(trackSlug, locale)}` },
+      ...trail.map((crumb) => ({ name: crumb.label, url: `${SITE.url}${crumb.path}` })),
       { name: topic.data.title, url },
     ]),
   ],
@@ -130,8 +218,54 @@ const head = buildHead({
   head={head}
   width="topic"
   currentPath={currentPath}
-  pagefind={{ filter: { lang: locale }, meta: { type: 'topic', track: trackName } }}
+  pagefind={{
+    filter: { lang: locale },
+    meta: {
+      type: 'topic',
+      track: trackName,
+      glyph: track.glyph,
+      ...(section && { section: section.name[locale] }),
+    },
+  }}
 >
+  <!--
+    Progressive enhancement keeps the TOC open without JavaScript. With JavaScript, mark it as
+    collapsible before the article is parsed so the mobile grid never paints an expanded row and
+    then moves the article when the late module runs.
+  -->
+  <script is:inline>
+    (function () {
+      document.documentElement.setAttribute('data-topic-toc-enhanced', '');
+
+      var wire = function () {
+        var toggle = document.querySelector('[data-toc-toggle]');
+        var nav = document.querySelector('[data-toc-nav]');
+        if (!(toggle instanceof HTMLButtonElement) || !(nav instanceof HTMLElement)) return;
+
+        var narrow = matchMedia('(max-width: 1023px)');
+        var set = function (open) {
+          nav.toggleAttribute('data-toc-open', open);
+          toggle.setAttribute('aria-expanded', String(open));
+        };
+        var sync = function () {
+          set(!narrow.matches);
+        };
+
+        narrow.addEventListener('change', sync);
+        toggle.addEventListener('click', function () {
+          set(toggle.getAttribute('aria-expanded') !== 'true');
+        });
+        sync();
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', wire, { once: true });
+      } else {
+        wire();
+      }
+    })();
+  </script>
+
   <div class="wrap body">
     <SectionTree locale={locale} track={track} currentId={id} />
 
@@ -140,9 +274,8 @@ const head = buildHead({
       <Breadcrumb
         label={t(locale, 'nav.tracks')}
         items={[
-          { label: trackName, href: trackUrl(trackSlug, locale) },
-          ...(section ? [{ label: section.name[locale] }] : []),
-          { label: slug, current: true },
+          ...trail.map((crumb) => ({ label: crumb.label, href: crumb.path })),
+          { label: locale === 'zh' ? topic.data.title : slug, current: true },
         ]}
       />
       <h1>{topic.data.title}</h1>
@@ -168,25 +301,96 @@ const head = buildHead({
             deep: t(locale, 'depth.deep'),
           }}
         />
-        <!-- Bilingual reading is P2; the control is shown inert rather than promised elsewhere. -->
         <div class="bilingual">
           <span class="lbl">{t(locale, 'bilingual.label')}</span>
-          <Seg
-            label={t(locale, 'bilingual.label')}
-            aria-disabled="true"
-            title={t(locale, 'bilingual.soon')}
-            items={[
-              { label: t(locale, 'bilingual.off'), value: 'off', on: true },
-              { label: t(locale, 'bilingual.on'), value: 'en-zh', lang: 'zh-Hans' },
-            ]}
-          />
+          {
+            aligned ? (
+              <span
+                class="seg"
+                role="radiogroup"
+                aria-label={t(locale, 'bilingual.label')}
+                data-bilingual-control
+              >
+                <button type="button" role="radio" class="on" data-value="off" aria-checked="true" disabled>
+                  {t(locale, 'bilingual.off')}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  data-value="en-zh"
+                  aria-checked="false"
+                  tabindex="-1"
+                  disabled
+                >
+                  {t(locale, 'bilingual.enZh')}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  data-value="zh-en"
+                  aria-checked="false"
+                  tabindex="-1"
+                  disabled
+                >
+                  {t(locale, 'bilingual.zhEn')}
+                </button>
+              </span>
+            ) : (
+              <Seg
+                label={t(locale, 'bilingual.label')}
+                aria-disabled="true"
+                title={t(locale, 'bilingual.notAligned')}
+                data-bilingual-disabled
+                items={[
+                  { label: t(locale, 'bilingual.off'), value: 'off', on: true },
+                  { label: t(locale, 'bilingual.enZh'), value: 'en-zh' },
+                  { label: t(locale, 'bilingual.zhEn'), value: 'zh-en' },
+                ]}
+              />
+            )
+          }
         </div>
+      </div>
+      <div class="bi-status">
+        <span class:list={['tag', aligned && 'ok']}>
+          {t(locale, aligned ? 'bilingual.aligned' : 'bilingual.notAligned')}
+        </span>
+        {aligned && <span class="lbl">{t(locale, 'bilingual.codeShared')}</span>}
       </div>
     </header>
 
     <!-- ARTICLE -->
     <div class="col">
-      <article id="article" class="prose" data-depth-mode="standard">
+      <!--
+        The runners hydrate on visibility, and the island's own mount is a 1px sentinel placed
+        here, at the top of the column, so the observer sees it on load rather than after the
+        reader has scrolled past every example it is meant to wire up.
+      -->
+      {
+        hasRunnable && (
+          <CodeRunners
+            client:visible
+            labels={{
+              'code.run': t(locale, 'code.run'),
+              'code.running': t(locale, 'code.running'),
+              'code.reset': t(locale, 'code.reset'),
+              'code.loadingPython': t(locale, 'code.loadingPython'),
+              'code.exit': t(locale, 'code.exit'),
+              'code.error': t(locale, 'code.error'),
+              'code.timeout': t(locale, 'code.timeout'),
+            }}
+          />
+        )
+      }
+      <article
+        id="article"
+        class="prose"
+        data-depth-mode="standard"
+        data-bilingual="off"
+        data-bilingual-layout="paired"
+        data-bi-sig={biSig}
+        data-terms={termIds.join(',')}
+      >
         <script is:inline>
           /* The depth bootstrap, and the reason there is no flash of the wrong depth: it is the
              article's first child, so it runs before any of the article is parsed. Keep the
@@ -215,7 +419,18 @@ const head = buildHead({
             }
           })();
         </script>
-        <Content components={mdxComponents} />
+        <Content components={topicMdxComponents} />
+        {
+          hasCheckpoint && (
+            <Checkpoint
+              id={topic.data.quiz ?? id}
+              topicId={id}
+              nextTitle={checkpointNext?.title}
+              nextHref={checkpointNext?.href}
+              trackHref={trackUrl(trackSlug, locale)}
+            />
+          )
+        }
       </article>
 
       <PrevNext locale={locale} prerequisites={topic.data.prerequisites} related={topic.data.related} />
@@ -224,6 +439,11 @@ const head = buildHead({
         topicId={id}
         path={currentPath}
         filePath={`${trackSlug}/${slug}.${locale}.mdx`}
+        title={topic.data.title}
+        url={url}
+        language={track.name.en}
+        prerequisite={prerequisite}
+        terms={termIds}
       />
     </div>
 
@@ -234,7 +454,13 @@ const head = buildHead({
         <!-- Below 1024px the contents collapse into this row; the script wires it up. -->
         <button type="button" class="panel toc-toggle" data-toc-toggle aria-expanded="true">
           <span>{t(locale, 'toc.title')}</span>
-          <span class="toc-count lbl">{t(locale, 'track.sections', { count: toc.length })}</span>
+          <span class="toc-count lbl">
+            {
+              t(locale, 'track.sections', {
+                count: formatCount(locale, toc.length, 'unit.section', 'unit.sections'),
+              })
+            }
+          </span>
           <Icon name="chevron-down" size={14} />
         </button>
         <nav class="toc" aria-label={t(locale, 'toc.title')} data-toc-nav>
@@ -263,28 +489,61 @@ const head = buildHead({
 
       <div class="rail-rest">
         {
+          aligned && (
+            <div class="panel rail-panel bi-reading">
+              <span class="lbl">{t(locale, 'bilingual.reading')}</span>
+              <span
+                class="seg"
+                role="radiogroup"
+                aria-label={t(locale, 'bilingual.layout')}
+                data-bilingual-layout-control
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  class="on"
+                  data-value="paired"
+                  aria-checked="true"
+                  disabled
+                >
+                  {t(locale, 'bilingual.paired')}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  data-value="side"
+                  aria-checked="false"
+                  tabindex="-1"
+                  disabled
+                >
+                  {t(locale, 'bilingual.side')}
+                </button>
+              </span>
+              <p>{t(locale, 'bilingual.pairedExplain')}</p>
+              <p>{t(locale, 'bilingual.sideExplain')}</p>
+            </div>
+          )
+        }
+        {
           path && (
             <div class="panel rail-panel">
               <span class="lbl">{t(locale, 'topic.path')}</span>
-              <a class="path-title" href={localizePath(`/paths/${path.id}/`, locale)}>
-                {path.data.title[locale]}
-              </a>
-              <div
-                class="bar"
-                role="progressbar"
-                aria-label={t(locale, 'topic.path')}
-                aria-valuenow={0}
-                aria-valuemin={0}
-                aria-valuemax={pathTopics.length}
-                data-path-bar
-              >
+              {/* The path page is P2: until it is built the card names the path without linking. */}
+              {P2_NAV ? (
+                <a class="path-title" href={localizePath(`/paths/${path.id}/`, locale)}>
+                  {path.data.title[locale]}
+                </a>
+              ) : (
+                <span class="path-title">{path.data.title[locale]}</span>
+              )}
+              <div class="bar" aria-hidden="true" data-path-bar>
                 <div />
               </div>
               <span class="lbl">
                 {t(locale, 'topic.milestone', {
                   done: milestoneIndex + 1,
                   total: milestones.length,
-                  left,
+                  leftCount: formatCount(locale, left, 'unit.topic', 'unit.topics'),
                 })}
               </span>
             </div>
@@ -293,15 +552,21 @@ const head = buildHead({
 
         {
           terms.length > 0 && (
-            <div class="terms">
-              <span class="lbl">{t(locale, 'topic.terms')}</span>
-              {terms.map((term) => (
-                <a class="term-row" href={term.href}>
-                  <span class="term">{term.primary}</span>
-                  <span class="lbl">{term.secondary}</span>
-                </a>
-              ))}
-            </div>
+            <Fragment>
+              <div class="terms">
+                <span class="lbl">{t(locale, 'topic.terms')}</span>
+                {terms.map((term) => (
+                  <a class="term-row" href={term.href}>
+                    <span class="term">{term.primary}</span>
+                    <span class="lbl">{term.secondary}</span>
+                  </a>
+                ))}
+              </div>
+
+              {/* The hover and focus definitions for the same terms, where they appear in prose. */}
+              <script is:inline type="application/json" id="cw-terms" set:html={termsJson} />
+              <Terms client:idle />
+            </Fragment>
           )
         }
       </div>
@@ -309,30 +574,20 @@ const head = buildHead({
   </div>
 
   <!-- Local-only behaviour: both islands patch the markup above and render nothing themselves. -->
+  {
+    aligned && (
+      <Bilingual
+        client:idle
+        locale={locale}
+        alternateUrl={alternateUrl}
+        labels={{ notAligned: t(locale, 'bilingual.notAligned') }}
+        alternateStrings={alternateStrings}
+      />
+    )
+  }
   <Toc client:idle labels={{ deep: t(locale, 'toc.deep') }} />
   <ReadTracker client:idle topicId={id} />
 </Base>
-
-<script>
-  /* The contents collapse below 1024px, where the right rail sits between the header and the
-     article. Without JavaScript they stay open, which is the correct static page. */
-  const toggle = document.querySelector<HTMLButtonElement>('[data-toc-toggle]');
-  const nav = document.querySelector<HTMLElement>('[data-toc-nav]');
-
-  if (toggle && nav) {
-    const narrow = matchMedia('(max-width: 1023px)');
-    const set = (open: boolean) => {
-      nav.hidden = !open;
-      toggle.setAttribute('aria-expanded', String(open));
-    };
-
-    // Wide viewports show the contents unconditionally; only the narrow one collapses them.
-    const sync = () => set(!narrow.matches);
-    narrow.addEventListener('change', sync);
-    toggle.addEventListener('click', () => set(nav.hidden));
-    sync();
-  }
-</script>
 
 <style>
   /* ---- layout ---- */
@@ -401,11 +656,13 @@ const head = buildHead({
     color: var(--ink2);
   }
 
+  /* The dial and the bilingual segment share one line where there is room and stack where there
+     is not; on a phone the two together are wider than the viewport. */
   .controls {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 8px 16px;
     flex-wrap: wrap;
     border-bottom: 1px solid var(--line);
   }
@@ -415,6 +672,13 @@ const head = buildHead({
     align-items: center;
     gap: 10px;
     padding-bottom: 8px;
+  }
+
+  .bi-status {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   /* ---- article ---- */
@@ -472,16 +736,29 @@ const head = buildHead({
     padding: 14px 16px;
   }
 
+  .bi-reading :global(.seg) {
+    align-self: flex-start;
+  }
+
+  .bi-reading p {
+    margin: 0;
+    color: var(--ink3);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
   .path-title {
     font-size: 14px;
     font-weight: 600;
     color: var(--ink);
   }
 
-  .path-title:hover {
+  a.path-title:hover {
     color: var(--acc);
   }
 
+  /* Decoration until reading progress is patched in: an empty progressbar would announce a
+     figure the page does not have, so the bar is hidden from assistive technology instead. */
   .bar {
     height: 4px;
     border-radius: 2px;
@@ -525,6 +802,10 @@ const head = buildHead({
         'col'
         'rest';
       padding-top: 20px;
+      /* The three-column layout puts the gutter inside the tree and rail columns, so the grid
+         itself has none. With those columns gone the content would sit on the screen edge, so
+         the page's own gutter comes back — the same inset the nav and the footer use. */
+      padding-inline: var(--gutter);
     }
 
     /* The track tree is the site navigation on a phone, and the header carries that already. */
@@ -554,6 +835,10 @@ const head = buildHead({
       display: flex;
     }
 
+    :global(html[data-topic-toc-enhanced]) .toc:not([data-toc-open]) {
+      display: none;
+    }
+
     .toc :global(a) {
       padding-left: 14px;
     }
@@ -573,6 +858,15 @@ const head = buildHead({
 
     .sub {
       font-size: 16px;
+    }
+  }
+
+  /* On the narrowest phones the dial and the segment only fit side by side without the word
+     in front of the segment. The Seg keeps its own `aria-label`, so nothing is lost to a
+     screen reader. */
+  @media (max-width: 479px) {
+    .bilingual .lbl {
+      display: none;
     }
   }
 </style>

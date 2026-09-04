@@ -8,6 +8,7 @@ import { topicSchema } from '@/schemas/topic';
 import { termSchema } from '@/schemas/glossary';
 import { quizSchema } from '@/schemas/quiz';
 import { pathSchema } from '@/schemas/path';
+import { interviewSchema } from '@/schemas/interview';
 import { topicIdFromPath, parseTopicId } from '@/lib/content-ids';
 
 const root = fileURLToPath(new URL('../../src/content/', import.meta.url));
@@ -70,5 +71,11 @@ describe('data fixtures', () => {
       expect(topics).toContain(edge.from);
       expect(topics).toContain(edge.to);
     }
+  });
+
+  it.each(files('interview', '.yaml'))('interview/%s is a valid interview bank', (file) => {
+    const bank = interviewSchema.parse(yamlOf('interview', file));
+    expect(bank.track).toBe(file.replace(/\.yaml$/, ''));
+    expect(bank.items.every((item) => !item.tags.includes('calibration'))).toBe(true);
   });
 });

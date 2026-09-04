@@ -4,14 +4,7 @@ import { localized, topicRef } from '@/schemas/localized';
 
 const option = z.object({ text: localized, correct: z.boolean().default(false) });
 
-/**
- * What a reviewer found. The closed list is what lets a review item be graded and
- * summarised: "3–5 issues of distinct kinds" is only meaningful if the kinds are drawn
- * from one vocabulary rather than invented per topic.
- */
 export const issueKind = z.enum(['security', 'correctness', 'edge-case', 'readability', 'performance']);
-
-/** One finding. `lines` closes a span that starts at `line`, for issues wider than a line. */
 const issue = z.object({
   line: z.number().int().positive(),
   lines: z.number().int().positive().optional(),
@@ -21,13 +14,14 @@ const issue = z.object({
 
 const base = {
   id: z.string().min(1),
+  title: localized.optional(),
   prompt: localized,
   explanation: localized,
   difficulty,
   tags: z.array(z.string()).default([]),
-  /** How the learner can check the answer themselves, e.g. a command or a test snippet. */
+  /** Optional test lines for the playground's kata mode (assertions after the user code). */
   tests: z.string().optional(),
-  /** Rough time to work through the item, for the estimate shown above a bank. */
+  /** Minutes the item takes; the catalogue shows it. Default by type below. */
   minutes: z.number().int().positive().optional(),
 };
 
@@ -52,12 +46,9 @@ export const quizItemSchema = z.discriminatedUnion('type', [
     type: z.literal('review'),
     ...code,
     issues: z.array(issue).min(1),
-    /** The task the code was generated for; without it the reader cannot judge the code. */
-    task: localized.optional(),
-    /** What the generated code got right, so the exercise is a review and not a hunt. */
     right: localized.optional(),
-    /** Checks the learner should run on any generated code of this shape. */
     checklist: z.array(localized).default([]),
+    task: localized.optional(),
   }),
   z.object({ ...base, type: z.literal('fill'), answer: z.string().min(1) }),
 ]);

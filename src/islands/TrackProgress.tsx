@@ -1,5 +1,6 @@
 import { useEffect } from 'preact/hooks';
 import { EMPTY_PROGRESS, KEYS, readStore, type Progress, type TopicProgress } from '@/lib/prefs';
+import { pathProgress } from '@/lib/paths';
 
 /** One section of the hub, in the order the page renders it. */
 export interface ProgressSection {
@@ -19,8 +20,8 @@ export interface TrackProgressProps {
     milestone: string;
   };
   sections: ProgressSection[];
-  /** The recommended path's milestones, each as its list of topic ids. */
-  milestones?: string[][];
+  /** The recommended path's milestones, including the checkpoint gates that define progress. */
+  milestones?: { id: string; topics: string[]; checkpoint: string }[];
 }
 
 /** Local storage is visitor-editable, so nothing read back is trusted to have the right shape. */
@@ -123,24 +124,20 @@ export default function TrackProgress({ labels, sections, milestones = [] }: Tra
     }
 
     if (milestones.length > 0) {
-      const pathTopics = milestones.flat();
-      const pathDone = pathTopics.filter((id) => done.has(id)).length;
-      const ratio = pathTopics.length > 0 ? pathDone / pathTopics.length : 0;
+      const path = pathProgress({ milestones }, progress);
+      const ratio = path.total > 0 ? path.done / path.total : 0;
 
       const bar = document.querySelector<HTMLElement>('[data-path-bar] > div');
       if (bar) bar.style.width = `${Math.round(ratio * 100)}%`;
-      document.querySelector('[data-path-bar]')?.setAttribute('aria-valuenow', String(pathDone));
+      document.querySelector('[data-path-bar]')?.setAttribute('aria-valuenow', String(path.done));
 
       const doneLabel = document.querySelector('[data-path-done]');
-      if (doneLabel) doneLabel.textContent = fill(labels.done, { done: pathDone, total: pathTopics.length });
+      if (doneLabel) doneLabel.textContent = fill(labels.done, { done: path.done, total: path.total });
 
-      // The milestone the visitor is in: the first one not finished, or the last one.
-      const index = milestones.findIndex((topics) => topics.some((id) => !done.has(id)));
-      const current = index === -1 ? milestones.length : index + 1;
       const milestoneLabel = document.querySelector('[data-path-milestone]');
       if (milestoneLabel)
         milestoneLabel.textContent = fill(labels.milestone, {
-          done: current,
+          done: path.milestone,
           total: milestones.length,
         });
     }
