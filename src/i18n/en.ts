@@ -102,6 +102,7 @@ export default {
   'topic.status': 'status',
   'topic.reviewed': 'Reviewed',
   'topic.readTime': '{min} min at Standard depth',
+  'topic.transparency': 'Drafted with AI · verified by running the code · reviewed {date}',
 
   'depth.quick': 'Quick',
   'depth.standard': 'Standard',
@@ -111,9 +112,12 @@ export default {
   'bilingual.label': 'bilingual',
   'bilingual.off': 'off',
   'bilingual.on': 'EN + 中文',
+  'bilingual.soon': 'Bilingual reading is coming soon',
 
   'toc.title': 'on this page',
   'toc.deep': 'deep',
+  'toc.tldr': 'TL;DR',
+  'toc.checkpoint': 'Checkpoint',
 
   'topic.before': 'before this',
   'topic.next': 'next up',
@@ -124,6 +128,7 @@ export default {
   'topic.clear': 'Was this clear?',
   'topic.yes': 'yes',
   'topic.notQuite': 'not quite',
+  'topic.thanks': 'Thanks — noted in this browser.',
   'topic.terms': 'terms on this page',
   'topic.path': 'your path',
   'topic.milestone': 'milestone {done} of {total} · {left} topics left',

@@ -52,10 +52,15 @@ export interface PathProgress {
   startedAt: string;
 }
 
+/** The answer to "was this clear?" on a topic page, keyed the same way as `topics`. */
+export type Clarity = 'yes' | 'not-quite';
+
 export interface Progress {
   topics: Record<string, TopicProgress>;
   quizzes: Record<string, QuizProgress>;
   paths: Record<string, PathProgress>;
+  /** Optional: only pages the visitor actually answered on appear here. */
+  feedback?: Record<string, Clarity>;
 }
 
 /** One spaced-repetition card. `ref` points at a glossary term or a quiz item. */
