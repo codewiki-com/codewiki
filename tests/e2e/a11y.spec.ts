@@ -8,7 +8,20 @@ import { test, expect, type Page } from '@playwright/test';
  * separate and a fix in one is not a fix in the other.
  */
 
-const PAGES = ['/', '/python/', '/python/closures/'];
+const PAGES = [
+  '/',
+  '/python/',
+  '/python/closures/',
+  '/practice/',
+  '/practice/predict/python/closures/predict-loop-binding/',
+  '/paths/',
+  '/paths/python-from-zero/',
+  '/practice/interview/python/',
+  '/practice/flashcards/',
+  '/cheatsheets/',
+  '/cheatsheets/python/',
+  '/settings/',
+];
 const THEMES = ['light', 'dark'] as const;
 
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'];
