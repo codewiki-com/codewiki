@@ -343,15 +343,22 @@ polish_one() {
 # --------------------------------------------------------------------------
 
 committed=0
+commit_failures=0
 
-# The files one finished topic owns, if they are on disk. Nothing else may be staged in
-# its name — see `commit_pending`.
+# The files one finished topic owns, if they are on disk.
+#
+# A polish pass writes more than the article pair: `prompts/polish-topic.md` §9 asks for a
+# quiz bank next to it, and `content:extract` validates that bank. Anything shared between
+# topics — the interview banks, the glossary, the proposals — is added by `commit_pending`,
+# not here.
 topic_paths() {
-  local id="$1" track slug lang file
+  local id="$1" track slug file
   track="${id%%/*}"
   slug="${id#*/}"
-  for lang in en zh; do
-    file="src/content/topics/$track/$slug.$lang.mdx"
+  for file in \
+    "src/content/topics/$track/$slug.en.mdx" \
+    "src/content/topics/$track/$slug.zh.mdx" \
+    "src/content/quizzes/$track/$slug.yaml"; do
     if [[ -e $file ]]; then
       printf '%s\n' "$file"
     fi
@@ -361,14 +368,14 @@ topic_paths() {
 # Commit the topics finished since the last commit, once there are COMMIT_EVERY of them
 # or when the run is over (`commit_pending 1`).
 #
-# Only the batch's own files are staged. A batch commit runs while up to JOBS-1 Codex
+# Only the batch's own paths are staged. A batch commit runs while up to JOBS-1 Codex
 # sessions are still writing under `src/content`, so staging that directory would sweep a
 # half-written topic — and any unrelated edit in the working tree — into a commit that
 # claims to be about the finished ids.
 commit_pending() {
   local force="$1"
-  local -a done_ids=() batch=() add=()
-  local pending path id
+  local -a done_ids=() batch=() add=() tracks=() staged=() excludes=()
+  local pending path id track
   if [[ -f $OK_LIST ]]; then
     mapfile -t done_ids <"$OK_LIST"
   fi
@@ -379,13 +386,24 @@ commit_pending() {
   fi
   batch=("${done_ids[@]:committed:pending}")
   for id in "${batch[@]}"; do
+    track="${id%%/*}"
+    if [[ " ${tracks[*]-} " != *" $track "* ]]; then
+      tracks+=("$track")
+    fi
     while IFS= read -r path; do
       add+=("$path")
     done < <(topic_paths "$id")
   done
-  # The two shared paths the polish pass also writes: proposed glossary terms and the
-  # journal itself, which records exactly the batch being committed.
-  for path in content/glossary-proposals "$STATE_FILE"; do
+  # The interview bank of every track in the batch: one file per track, appended to.
+  for track in "${tracks[@]}"; do
+    path="src/content/interview/$track.yaml"
+    if [[ -e $path ]]; then
+      add+=("$path")
+    fi
+  done
+  # The rest of what a polish pass touches: merged glossary terms, the proposals Codex
+  # leaves for the extractor, and the journal that records exactly this batch.
+  for path in src/content/glossary content/glossary-proposals "$STATE_FILE"; do
     if [[ -e $path ]]; then
       add+=("$path")
     fi
@@ -395,18 +413,35 @@ commit_pending() {
     committed=${#done_ids[@]}
     return 0
   fi
-  if ! git add -- "${add[@]}"; then
-    log "warn could not stage ${add[*]}"
+  # Anything staged outside those paths belongs to someone else and stays where it is.
+  for path in "${add[@]}"; do
+    excludes+=(":(exclude)$path")
+  done
+  if [[ -n "$(git diff --cached --name-only -- "${excludes[@]}")" ]]; then
+    log "note the index holds staged changes from outside this run; they stay out of the batch"
+  fi
+  if ! git add -A -- "${add[@]}"; then
+    log "error could not stage ${add[*]}"
+    commit_failures=$((commit_failures + 1))
     return 0
   fi
-  # Both the diff and the commit are limited to those same paths, so anything else that
-  # happened to be staged in this working tree stays out of the batch commit.
-  if git diff --cached --quiet -- "${add[@]}"; then
+  # The commit pathspec is built from what is actually staged, never from the paths asked
+  # for: `git commit -- <path>` aborts on a path git knows nothing about, and an empty
+  # `content/glossary-proposals` directory — created by Codex and never written to — is
+  # exactly that. One such path would fail every commit for the rest of the run.
+  while IFS= read -r -d '' path; do
+    staged+=("$path")
+  done < <(git diff --cached --name-only --no-renames -z -- "${add[@]}")
+  if ((${#staged[@]} == 0)); then
     log "note nothing to commit after ${batch[*]}"
-  elif git commit -q -m "content: polish batch (${batch[*]})" -- "${add[@]}"; then
+    committed=${#done_ids[@]}
+    return 0
+  fi
+  if git commit -q -m "content: polish batch (${batch[*]})" -- "${staged[@]}"; then
     log "commit ${batch[*]}"
   else
-    log "warn commit failed for ${batch[*]}"
+    log "error commit failed for ${batch[*]}; their changes are still in the working tree"
+    commit_failures=$((commit_failures + 1))
     return 0
   fi
   committed=${#done_ids[@]}
@@ -489,7 +524,8 @@ on_signal() {
   # Only once everything that was signalled is actually gone may the pending batch be
   # committed: a session killed mid-write would otherwise have its half-written MDX
   # committed by the very commit meant to preserve the interrupted run.
-  for pid in "${workers[@]}"; do
+  # `${a[@]}` on an empty array is an unbound variable under `set -u` before bash 4.4.
+  for pid in ${workers[@]+"${workers[@]}"}; do
     wait "$pid" 2>/dev/null || true
   done
   if ((${#sessions[@]} > 0)); then
@@ -537,3 +573,9 @@ if [[ -f $OK_LIST ]]; then
   polished="$(wc -l <"$OK_LIST")"
 fi
 log "run done: $polished of ${#IDS[@]} topics polished"
+
+# Polished work that could not be committed is work at risk: say so and fail the run.
+if ((commit_failures > 0)); then
+  log "error a batch commit failed ($commit_failures attempts); commit the working tree by hand"
+  exit 1
+fi
