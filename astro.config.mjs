@@ -7,6 +7,7 @@ import tailwindcss from '@tailwindcss/vite';
 
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
 import { rehypeDepthHeadings } from './src/markdown/rehype-depth-headings.ts';
+import { rehypeMermaidDiagrams } from './src/markdown/mermaid.ts';
 import { remarkCallouts } from './src/markdown/remark-callouts.ts';
 import { remarkDepth } from './src/markdown/remark-depth.ts';
 import { rehypeSectionActions } from './src/markdown/rehype-section-actions.ts';
@@ -34,8 +35,16 @@ export default defineConfig({
       // `rehypeHeadingIds` is Astro's own; it normally runs after the configured plugins, so
       // `rehype-section-actions` would not see the ids it needs. Running it here first is the
       // documented way round that, and its later pass leaves the ids it already wrote alone.
-      rehypePlugins: [rehypeHeadingIds, rehypeCodebox, rehypeDepthHeadings, rehypeSectionActions],
+      rehypePlugins: [
+        rehypeHeadingIds,
+        rehypeMermaidDiagrams,
+        rehypeCodebox,
+        rehypeDepthHeadings,
+        rehypeSectionActions,
+      ],
     }),
+    // Mermaid must reach its rehype renderer as an ordinary `pre > code` block.
+    syntaxHighlight: { type: 'shiki', excludeLangs: ['mermaid'] },
     // `css-variables` maps every token to a `--astro-code-*` custom property, which global.css
     // points at the palette tokens, so code colours follow the theme without a second stylesheet.
     shikiConfig: { theme: 'css-variables', transformers: [shikiMetaTransformer] },

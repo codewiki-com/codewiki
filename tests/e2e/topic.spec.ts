@@ -1,4 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
+import { unified } from 'unified';
+import rehypeStringify from 'rehype-stringify';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 
 /** The dial writes `prefs.depth`, so a test that changes depth must not leak into the next one. */
 async function openTopic(page: import('@playwright/test').Page, path = '/python/closures/') {
@@ -20,6 +26,61 @@ test('the English topic page renders the article', async ({ page }) => {
   await expect(codebox.locator('button[data-run]')).toHaveText('Run');
 
   await expect(page.locator('#article')).toHaveAttribute('data-depth-mode', 'standard');
+});
+
+test('Mermaid diagrams are inline SVGs whose text follows both theme palettes', async ({ page }) => {
+  const source = readFileSync(new URL('../fixtures/mermaid.mdx', import.meta.url), 'utf8');
+  const markup = String(
+    await unified()
+      .use(remarkParse)
+      .use(remarkRehype)
+      .use(rehypeMermaidDiagrams)
+      .use(rehypeStringify)
+      .process(source),
+  );
+
+  // The existing topic is the test page shell: replacing only its article keeps the production
+  // token stylesheet and avoids publishing a fixture route in the static site.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/python/closures/');
+  await page.locator('#article').evaluate((article, html) => {
+    article.innerHTML = html;
+  }, markup);
+
+  await expect(page.locator('#article figure.diagram > svg[data-diagram]')).toHaveCount(3);
+  await expect(page.locator('#article figure.diagram pre')).toHaveCount(0);
+
+  const renderedFontSizes = await page.locator('#article .diagram svg').evaluateAll((svgs) =>
+    svgs.flatMap((svg) => {
+      const scale =
+        svg.getBoundingClientRect().width / (svg as unknown as SVGSVGElement).viewBox.baseVal.width;
+      return [...svg.querySelectorAll('text, .nodeLabel')].map(
+        (node) => Number.parseFloat(getComputedStyle(node).fontSize) * scale,
+      );
+    }),
+  );
+  expect(Math.min(...renderedFontSizes)).toBeGreaterThanOrEqual(12);
+
+  for (const theme of ['light', 'dark'] as const) {
+    await page.locator('html').evaluate((html, value) => {
+      html.dataset.theme = value;
+    }, theme);
+
+    const palette = await page
+      .locator('#article .diagram')
+      .first()
+      .evaluate((diagram) => {
+        const text = diagram.querySelector('text');
+        if (!text) throw new Error('The sequence diagram has no SVG text node');
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--ink)';
+        document.body.append(probe);
+        const expected = getComputedStyle(probe).color;
+        probe.remove();
+        return { expected, actual: getComputedStyle(text).fill };
+      });
+    expect(palette.actual).toBe(palette.expected);
+  }
 });
 
 test('the depth dial switches depth and remembers it', async ({ page }) => {

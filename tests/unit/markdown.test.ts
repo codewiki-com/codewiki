@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkMdx from 'remark-mdx';
@@ -9,6 +10,7 @@ import { remarkCallouts } from '@/markdown/remark-callouts';
 import { remarkDepth } from '@/markdown/remark-depth';
 import { rehypeCodebox } from '@/markdown/rehype-codebox';
 import { rehypeDepthHeadings } from '@/markdown/rehype-depth-headings';
+import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 import { rehypeSectionActions } from '@/markdown/rehype-section-actions';
 import { parseFenceMeta } from '@/markdown/shiki-meta';
 
@@ -259,6 +261,40 @@ describe('rehypeCodebox', () => {
     const tree: HastRoot = { type: 'root', children: [preFixture({ dataLanguage: 'sql' })] };
     rehypeCodebox()(tree);
     expect((tree.children[0] as Element).properties).toEqual({ className: ['codebox'], 'data-lang': 'sql' });
+  });
+
+  it('leaves a preformatted prose block without a code child alone', () => {
+    const pre: Element = {
+      type: 'element',
+      tagName: 'pre',
+      properties: { dataLanguage: 'python' },
+      children: [{ type: 'text', value: 'not a code fence' }],
+    };
+    const tree: HastRoot = { type: 'root', children: [pre] };
+    rehypeCodebox()(tree);
+    expect(tree.children[0]).toBe(pre);
+  });
+});
+
+describe('rehypeMermaidDiagrams', () => {
+  it('renders Mermaid fences as semantic inline SVG and leaves Python fences alone', async () => {
+    const source = readFileSync(new URL('../fixtures/mermaid.mdx', import.meta.url), 'utf8');
+    const out = String(
+      await unified()
+        .use(remarkParse)
+        .use(remarkRehype)
+        .use(rehypeMermaidDiagrams)
+        .use(rehypeStringify)
+        .process(source),
+    );
+
+    expect(out.match(/<figure class="diagram"/g)).toHaveLength(3);
+    expect(out.match(/<svg [^>]*data-diagram=""/g)).toHaveLength(3);
+    expect(out).toContain('role="img" aria-label="sequenceDiagram"');
+    expect(out).toContain('role="img" aria-label="flowchart LR"');
+    expect(out).toContain('role="img" aria-label="classDiagram"');
+    expect(out).not.toContain('language-mermaid');
+    expect(out).toContain('<pre><code class="language-python">print("ordinary code")');
   });
 });
 

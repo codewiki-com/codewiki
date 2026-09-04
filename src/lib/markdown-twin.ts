@@ -102,6 +102,8 @@ function convertFence(block: string): string {
   if (!match) return block;
 
   const [, ticks = '```', lang = '', meta = ''] = match;
+  // Mermaid is useful to machine readers in its source form and has no codebox metadata to remove.
+  if (lang === 'mermaid') return block;
   const { title } = parseFenceMeta(meta);
   const comment = title ? fileComment(lang, title) : undefined;
   return [`${ticks}${lang}`, ...(comment ? [comment] : []), ...lines.slice(1)].join('\n');

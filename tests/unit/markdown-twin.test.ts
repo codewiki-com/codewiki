@@ -82,6 +82,12 @@ describe('toPlainMarkdown', () => {
     expect(text).toContain('```text\n1 2 3\n```');
   });
 
+  it('keeps a Mermaid fence as authored source', () => {
+    const source = '```mermaid\nflowchart LR\n  Source --> SVG\n```\n';
+    const out = toPlainMarkdown(source, page);
+    expect(out).toContain(source.trim());
+  });
+
   it('leaves component-looking text inside a fence alone', () => {
     const out = toPlainMarkdown('```jsx\n<Term id="x">y</Term>\n```\n', page);
     expect(out).toContain('<Term id="x">y</Term>');

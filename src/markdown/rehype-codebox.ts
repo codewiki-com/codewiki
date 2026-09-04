@@ -64,6 +64,9 @@ export function rehypeCodebox() {
   return (tree: Root): void => {
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'pre' || !parent || index === undefined) return;
+      // Only code fences belong in a codebox. Earlier rehype plugins may replace their `<pre>`
+      // entirely (Mermaid does), and an authored `<pre>` should remain ordinary prose.
+      if (!node.children.some((child) => child.type === 'element' && child.tagName === 'code')) return;
 
       // Astro's own Shiki transformer writes the language as `dataLanguage`; a rehype plugin
       // upstream of us may have written the dashed form instead.
