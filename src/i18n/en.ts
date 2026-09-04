@@ -150,6 +150,10 @@ export default {
   'code.reset': 'Reset',
   'code.output': 'Output',
   'code.loadingPython': 'Loading Python…',
+  // Footer of a finished run. Nothing here has a real exit status, so success is always 0.
+  'code.exit': 'exit 0',
+  'code.error': 'error',
+  'code.timeout': 'timeout',
 
   'tracks.title': 'Tracks',
   'tracks.sub': 'Every track on codewiki: eleven languages, nine domains and two pillars.',
