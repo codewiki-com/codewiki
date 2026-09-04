@@ -222,7 +222,7 @@ describe('checkLinks', () => {
     });
     const statuses = await checkLinks(
       ['https://ok.example/', 'https://moved.example/', 'https://gone.example/', 'https://down.example/'],
-      { fetchImpl: fetcher.impl, cachePath: await cacheFile() },
+      { fetchImpl: fetcher.impl, retryDelayMs: 0, cachePath: await cacheFile() },
     );
     expect(statuses.get('https://ok.example/')).toMatchObject({ status: 200, ok: true, via: 'HEAD' });
     expect(statuses.get('https://moved.example/')).toMatchObject({ status: 301, ok: true });
@@ -240,22 +240,101 @@ describe('checkLinks', () => {
     const statuses = await checkLinks(['https://a.example/', 'https://b.example/', 'https://c.example/'], {
       fetchImpl: fetcher.impl,
       concurrency: 1,
+      retryDelayMs: 0,
       cachePath: await cacheFile(),
     });
     expect(statuses.get('https://a.example/')).toMatchObject({ status: 200, ok: true, via: 'GET' });
     expect(statuses.get('https://b.example/')).toMatchObject({ status: 200, ok: true, via: 'GET' });
     expect(statuses.get('https://c.example/')).toMatchObject({ status: 204, ok: true, via: 'GET' });
-    expect(fetcher.calls.map((call) => call.method)).toEqual(['HEAD', 'GET', 'HEAD', 'GET', 'HEAD', 'GET']);
+    expect(fetcher.calls.map((call) => call.method)).toEqual([
+      'HEAD',
+      'GET',
+      'HEAD',
+      'GET',
+      'HEAD',
+      'HEAD',
+      'GET',
+    ]);
   });
 
-  it('sends the configured user agent', async () => {
+  it('retries a network error once before falling back to GET', async () => {
+    const calls: string[] = [];
+    const impl = async (_url: string, init: RequestInit): Promise<Response> => {
+      calls.push(init.method ?? 'GET');
+      if (calls.length === 1) throw new Error('connection reset');
+      return new Response(null, { status: 200 });
+    };
+
+    const statuses = await checkLinks(['https://flaky.example/'], {
+      fetchImpl: impl,
+      retryDelayMs: 0,
+      cachePath: await cacheFile(),
+    });
+
+    expect(calls).toEqual(['HEAD', 'HEAD']);
+    expect(statuses.get('https://flaky.example/')).toMatchObject({ status: 200, ok: true, via: 'HEAD' });
+  });
+
+  it('keeps 404 dead and treats 403 as reachable but restricted', async () => {
+    const fetcher = fakeFetch({ 'https://gone.example/': 404, 'https://restricted.example/': 403 });
+    const statuses = await checkLinks(['https://gone.example/', 'https://restricted.example/'], {
+      fetchImpl: fetcher.impl,
+      cachePath: await cacheFile(),
+    });
+
+    expect(statuses.get('https://gone.example/')).toMatchObject({
+      status: 404,
+      ok: false,
+      restricted: false,
+    });
+    expect(statuses.get('https://restricted.example/')).toMatchObject({
+      status: 403,
+      ok: true,
+      restricted: true,
+    });
+    expect(linkIssues('See https://restricted.example/.', statuses)).toEqual([]);
+  });
+
+  it('retries 429 and 503 once, then classifies their final responses', async () => {
+    const fetcher = fakeFetch({ 'https://busy.example/': 429, 'https://down.example/': 503 });
+    const statuses = await checkLinks(['https://busy.example/', 'https://down.example/'], {
+      fetchImpl: fetcher.impl,
+      concurrency: 1,
+      retryDelayMs: 0,
+      cachePath: await cacheFile(),
+    });
+
+    expect(fetcher.calls.map((call) => call.method)).toEqual(['HEAD', 'HEAD', 'HEAD', 'HEAD']);
+    expect(statuses.get('https://busy.example/')).toMatchObject({
+      status: 429,
+      ok: true,
+      restricted: true,
+    });
+    expect(statuses.get('https://down.example/')).toMatchObject({
+      status: 503,
+      ok: false,
+      restricted: false,
+    });
+  });
+
+  it('sends browser-like default headers and permits a configured user agent', async () => {
     const fetcher = fakeFetch({ 'https://ok.example/': 200 });
     await checkLinks(['https://ok.example/'], {
       fetchImpl: fetcher.impl,
       cachePath: await cacheFile(),
       userAgent: 'test-agent/9',
     });
-    expect(Object.values(fetcher.calls[0].headers)).toContain('test-agent/9');
+    expect(fetcher.calls[0].headers).toMatchObject({
+      'User-Agent': 'test-agent/9',
+      Accept: expect.stringContaining('text/html'),
+    });
+
+    const defaults = fakeFetch({ 'https://default.example/': 200 });
+    await checkLinks(['https://default.example/'], {
+      fetchImpl: defaults.impl,
+      cachePath: await cacheFile(),
+    });
+    expect(defaults.calls[0].headers['User-Agent']).toMatch(/^Mozilla\/5\.0/);
   });
 
   it('serves fresh cache entries without fetching', async () => {
@@ -276,6 +355,32 @@ describe('checkLinks', () => {
     });
     expect(fetcher.calls).toEqual([]);
     expect(statuses.get('https://cached.example/')).toMatchObject({ status: 200, ok: true, via: 'cache' });
+  });
+
+  it('serves a fresh restricted verdict from cache as reachable', async () => {
+    const now = Date.parse('2026-09-03T00:00:00.000Z');
+    const cachePath = await seededCache({
+      'https://restricted.example/': {
+        status: 403,
+        ok: false,
+        checkedAt: new Date(now - 6 * DAY).toISOString(),
+        via: 'HEAD',
+      },
+    });
+    const fetcher = fakeFetch({});
+    const statuses = await checkLinks(['https://restricted.example/'], {
+      fetchImpl: fetcher.impl,
+      cachePath,
+      now: () => now,
+    });
+
+    expect(fetcher.calls).toEqual([]);
+    expect(statuses.get('https://restricted.example/')).toMatchObject({
+      status: 403,
+      ok: true,
+      restricted: true,
+      via: 'cache',
+    });
   });
 
   it('refetches entries older than seven days', async () => {
@@ -332,6 +437,7 @@ describe('checkLinks', () => {
     const fetcher = fakeFetch({ 'https://ok.example/': 200, 'https://bad.example/': 'throw' });
     const statuses = await checkLinks(['https://bad.example/', 'https://ok.example/'], {
       fetchImpl: fetcher.impl,
+      retryDelayMs: 0,
       cachePath: await cacheFile(),
     });
     expect(statuses.get('https://ok.example/')?.ok).toBe(true);
@@ -346,6 +452,7 @@ describe('checkLinks', () => {
     const statuses = await checkLinks(['https://slow.example/'], {
       fetchImpl: impl,
       timeoutMs: 20,
+      retryDelayMs: 0,
       cachePath: await cacheFile(),
     });
     expect(statuses.get('https://slow.example/')).toMatchObject({ status: 'error', ok: false });

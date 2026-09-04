@@ -23,23 +23,16 @@ const read = (dir: string, file: string) => readFileSync(`${root}${dir}/${file}`
 describe('topic fixtures', () => {
   const mdx = files('topics', '.mdx');
 
-  it('ships both languages of every sample topic', () => {
-    expect(mdx).toEqual([
-      'ai/langchain.en.mdx',
-      'ai/langchain.zh.mdx',
-      'architecture/cap-theorem.en.mdx',
-      'architecture/cap-theorem.zh.mdx',
-      'backend/jwt-authentication.en.mdx',
-      'backend/jwt-authentication.zh.mdx',
-      'cpp/move-semantics.en.mdx',
-      'cpp/move-semantics.zh.mdx',
-      'javascript/event-loop.en.mdx',
-      'javascript/event-loop.zh.mdx',
-      'python/asyncio.en.mdx',
-      'python/asyncio.zh.mdx',
-      'python/closures.en.mdx',
-      'python/closures.zh.mdx',
-    ]);
+  it('ships both languages of every topic', () => {
+    expect(mdx.length).toBeGreaterThan(0);
+    const shipped = new Set(mdx);
+    for (const file of mdx) {
+      const match = /^(.*)\.(en|zh)\.mdx$/.exec(file);
+      expect(match, file).not.toBeNull();
+      const [, id, lang] = match as RegExpExecArray;
+      const counterpart = lang === 'en' ? 'zh' : 'en';
+      expect(shipped, file).toContain(`${id}.${counterpart}.mdx`);
+    }
   });
 
   it.each(mdx)('%s has valid frontmatter', (file) => {

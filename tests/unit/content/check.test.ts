@@ -39,4 +39,61 @@ describe('checkTopic', () => {
     expect(result.ok).toBe(false);
     expect(failedChecks(result.failures)).toEqual([2, 5]);
   }, 120_000);
+
+  it('reports the full Zod path for a null tag anywhere in the track interview bank', async () => {
+    const interviewRoot = await mkdtemp(path.join(tmpdir(), 'codewiki-interview-'));
+    await writeFile(
+      path.join(interviewRoot, 'python.yaml'),
+      [
+        'track: python',
+        'items:',
+        '  - id: closures-capture',
+        '    question: { en: What is captured?, zh: 捕获了什么？ }',
+        '    answer: { en: The binding., zh: 是绑定。 }',
+        '    topics: [python/closures]',
+        '    level: intermediate',
+        '    tags: [closures, null]',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await checkTopic('python/closures', {
+      noLinks: true,
+      relaxed: true,
+      interviewRoot,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(failedChecks(result.failures)).toEqual([7]);
+    expect(result.failures.join('\n')).toMatch(/interview "python": items\.0\.tags\.1: .*null/i);
+  }, 120_000);
+
+  it('validates the complete per-topic glossary proposal shape', async () => {
+    const proposalsRoot = await mkdtemp(path.join(tmpdir(), 'codewiki-proposals-'));
+    await writeFile(
+      path.join(proposalsRoot, 'python-closures.yaml'),
+      [
+        'terms:',
+        '  - id: closure-cell',
+        '    en: Closure cell',
+        '    zh: 闭包单元',
+        '    aliases: [cell, null]',
+        '    short: { en: A stored binding., zh: 保存的绑定。 }',
+        '    topics: [python/closures]',
+        '',
+      ].join('\n'),
+    );
+
+    const result = await checkTopic('python/closures', {
+      noLinks: true,
+      relaxed: true,
+      proposalsRoot,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(failedChecks(result.failures)).toEqual([7]);
+    expect(result.failures.join('\n')).toMatch(
+      /glossary proposal "python-closures": terms\.0\.aliases\.1: .*null/i,
+    );
+  }, 120_000);
 });

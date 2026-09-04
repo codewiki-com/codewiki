@@ -17,7 +17,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import type { z } from 'astro/zod';
 import { getSection, getTrack } from '@/data/tracks';
+import { glossaryProposalSchema } from '@/schemas/glossary';
+import { interviewSchema } from '@/schemas/interview';
 import { quizSchema } from '@/schemas/quiz';
 import { topicSchema } from '@/schemas/topic';
 import { alignBlocks, blocks, formatMismatches } from './lib/alignment';
@@ -62,6 +65,10 @@ export interface CheckOptions {
   root?: string;
   /** Quiz bank root; defaults to `src/content/quizzes`. */
   quizzesRoot?: string;
+  /** Interview bank root; defaults to `src/content/interview`. */
+  interviewRoot?: string;
+  /** Glossary proposal root; defaults to `content/glossary-proposals`. */
+  proposalsRoot?: string;
   /** Link verdict cache; defaults to `reports/link-cache.json`. */
   cachePath?: string;
 }
@@ -100,7 +107,7 @@ export async function checkTopic(id: string, options: CheckOptions = {}): Promis
   record(4, await linkFindings(documents, options));
   record(5, alignmentFindings(documents));
   record(6, structureFindings(documents, options.relaxed === true));
-  record(7, await quizFindings(documents, options.quizzesRoot ?? repoPath('src/content/quizzes')));
+  record(7, await sidecarFindings(id, documents, options));
   record(8, statusFindings(documents));
   return { ok: failures.length === 0, failures };
 }
@@ -265,8 +272,57 @@ function lineCount(text: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Quiz sidecar
+// 7. Sidecars
 // ---------------------------------------------------------------------------
+
+/** Validate every quiz, interview and glossary-proposal sidecar written by the polish pass. */
+async function sidecarFindings(id: string, documents: Documents, options: CheckOptions): Promise<string[]> {
+  const [track, slug] = id.split('/');
+  const out = await quizFindings(documents, options.quizzesRoot ?? repoPath('src/content/quizzes'));
+  out.push(
+    ...(await optionalYamlSchemaFindings(
+      path.join(options.interviewRoot ?? repoPath('src/content/interview'), `${track}.yaml`),
+      `interview "${track}"`,
+      interviewSchema,
+    )),
+    ...(await optionalYamlSchemaFindings(
+      path.join(options.proposalsRoot ?? repoPath('content/glossary-proposals'), `${track}-${slug}.yaml`),
+      `glossary proposal "${track}-${slug}"`,
+      glossaryProposalSchema,
+    )),
+  );
+  return out;
+}
+
+interface SchemaLike {
+  safeParse(value: unknown): { success: true } | { success: false; error: z.ZodError };
+}
+
+/** Validate an optional YAML sidecar, preserving Zod's full field path in every finding. */
+async function optionalYamlSchemaFindings(
+  file: string,
+  label: string,
+  schema: SchemaLike,
+): Promise<string[]> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  let data: unknown;
+  try {
+    data = YAML.parse(text);
+  } catch (error) {
+    return [`${label}: ${(error as Error).message}`];
+  }
+  const parsed = schema.safeParse(data);
+  if (parsed.success) return [];
+  return parsed.error.issues.map(
+    (issue) => `${label}: ${issue.path.join('.') || '(root)'}: ${issue.message}`,
+  );
+}
 
 /** A topic that names a quiz has one, and it holds enough items to be worth showing. */
 async function quizFindings(documents: Documents, quizzesRoot: string): Promise<string[]> {

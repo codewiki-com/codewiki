@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import type { z } from 'astro/zod';
-import { termSchema, type Term } from '../../src/schemas/glossary';
+import { glossaryProposalTermSchema, type Term } from '../../src/schemas/glossary';
 import { interviewSchema } from '../../src/schemas/interview';
 import { quizSchema } from '../../src/schemas/quiz';
 import { parseFrontmatter } from './lib/frontmatter';
@@ -276,7 +276,7 @@ export async function mergeGlossaryProposals(
         continue;
       }
 
-      const parsed = termSchema.safeParse(proposed);
+      const parsed = glossaryProposalTermSchema.safeParse(proposed);
       if (!parsed.success) {
         result.conflicts.push({
           id,
@@ -285,11 +285,6 @@ export async function mergeGlossaryProposals(
         continue;
       }
       const term = parsed.data;
-      if (!term.id) {
-        result.conflicts.push({ id, reason: 'proposal has no id' });
-        continue;
-      }
-
       const proposalKeys = new Set([term.id, term.en, ...term.aliases].filter(Boolean).map(key));
       const sameId = lookup(term.id);
       const match = sameId ?? byKey(proposalKeys);
