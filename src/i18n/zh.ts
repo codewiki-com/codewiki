@@ -12,6 +12,7 @@ export default {
   'nav.cheatsheets': '速查表',
   'nav.compare': '对比',
   'nav.playground': '试验场',
+  'nav.glossary': '术语表',
   'nav.aiEra': 'AI 时代',
   'nav.search': '搜索',
   'nav.searchHint': '⌘K',

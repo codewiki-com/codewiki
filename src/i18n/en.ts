@@ -10,6 +10,7 @@ export default {
   'nav.cheatsheets': 'Cheatsheets',
   'nav.compare': 'Compare',
   'nav.playground': 'Playground',
+  'nav.glossary': 'Glossary',
   'nav.aiEra': 'AI era',
   'nav.search': 'Search',
   'nav.searchHint': '⌘K',

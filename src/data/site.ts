@@ -10,3 +10,10 @@ export const SITE = {
   /** Source repository; powers the "Edit on GitHub" links. Placeholder until the repo is public. */
   repo: 'https://github.com/codewiki-dev/codewiki',
 } as const;
+
+/**
+ * Whether the P2 learning-layer pages — Paths, Practice, Cheatsheets, Compare, Playground — are
+ * built. While it is false the navigation, the home hero and the track hubs leave them out
+ * instead of linking into the void; flip it when those pages exist.
+ */
+export const P2_NAV = false;

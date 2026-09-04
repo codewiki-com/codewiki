@@ -31,8 +31,11 @@ export interface PersonalStripProps {
   };
   /** Every public topic of this locale, keyed by `${track}/${slug}`. */
   titles: Record<string, TopicRef>;
-  /** Where the "Review" link goes. */
-  reviewUrl: string;
+  /**
+   * Where the "Review" link goes. Left out while the flashcard page is unbuilt (`P2_NAV`), and
+   * then the card states the due count without offering a link to nowhere.
+   */
+  reviewUrl?: string;
 }
 
 /**
@@ -90,9 +93,11 @@ export default function PersonalStrip({ labels, titles, reviewUrl }: PersonalStr
         <div class="cont">
           <span class="lbl">{labels.recall}</span>
           <span class="pstrip-text">{labels.due.replace('{count}', String(due))}</span>
-          <a class="pstrip-link" href={reviewUrl}>
-            {labels.review} →
-          </a>
+          {reviewUrl ? (
+            <a class="pstrip-link" href={reviewUrl}>
+              {labels.review} →
+            </a>
+          ) : null}
         </div>
       ) : null}
     </div>
