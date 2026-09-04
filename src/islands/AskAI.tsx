@@ -232,7 +232,14 @@ export default function AskAI({ labels, context }: AskAIProps) {
   }, [scope, context]);
 
   const copy = (prompt: string, preset: Preset) => {
-    navigator.clipboard
+    // An insecure origin has no clipboard at all, and a denied permission rejects the write.
+    // Both mean the same thing to the reader: it did not land, so say so rather than look busy.
+    const clipboard = navigator.clipboard as Clipboard | undefined;
+    if (!clipboard) {
+      setCopied({ preset, ok: false });
+      return;
+    }
+    clipboard
       .writeText(prompt)
       .then(() => setCopied({ preset, ok: true }))
       .catch(() => setCopied({ preset, ok: false }));

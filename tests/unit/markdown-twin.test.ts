@@ -46,6 +46,28 @@ describe('toPlainMarkdown', () => {
     expect(out).toContain('> **Tip:** Use a default argument.');
   });
 
+  it('keeps the label when a code fence splits a callout', () => {
+    const out = toPlainMarkdown(
+      '<Callout type="pitfall">\n\nDo not do this:\n\n```python\nx = 1\n```\n\nIt rebinds.\n\n</Callout>\n',
+      page,
+    );
+    expect(out).toContain('> **Pitfall:** Do not do this:');
+    // The fence stays a fence, inside the blockquote the callout became.
+    expect(out).toContain('> ```python\n> x = 1\n> ```');
+    expect(out).toContain('> It rebinds.');
+    expect(out).not.toMatch(/<\/?[A-Z]/);
+  });
+
+  it('keeps the cell label when a code fence splits the TL;DR', () => {
+    const out = toPlainMarkdown(
+      '<TLDR>\n\n<TLDRCell label="what">\n\nAn inner function:\n\n```python\nx = 1\n```\n\n</TLDRCell>\n\n</TLDR>\n',
+      page,
+    );
+    expect(out).toContain('> - **what**: An inner function:');
+    expect(out).toContain('> ```python');
+    expect(out).not.toMatch(/<\/?[A-Z]/);
+  });
+
   it('leaves the checkpoint as a link back to the page', () => {
     const out = toPlainMarkdown('<Checkpoint id="python/closures" />\n', page);
     expect(out).toContain('[Checkpoint: python/closures](https://codewiki.com/python/closures/#checkpoint)');

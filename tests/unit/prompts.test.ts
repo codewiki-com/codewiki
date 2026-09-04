@@ -101,4 +101,25 @@ describe('prompts', () => {
     expect(cut.endsWith(' […]')).toBe(true);
     expect(cut.length).toBe(6_004);
   });
+
+  it('budgets the encoded query, not the characters the reader typed', () => {
+    // A Chinese prompt encodes to nine URL characters per character: 4,000 of them would be a
+    // 36 KB query, which a server is entitled to answer with 414.
+    const chinese = '闭'.repeat(4_000);
+    const links = deepLinks(chinese);
+
+    for (const url of [links.claude, links.chatgpt]) {
+      const q = url.split('?q=')[1]!;
+      expect(q.length).toBeLessThanOrEqual(8_000);
+      expect(decodeURIComponent(q).endsWith(' […]')).toBe(true);
+    }
+  });
+
+  it('cuts at a paragraph break when there is one near the end', () => {
+    const cut = decodeURIComponent(
+      deepLinks(`${'a'.repeat(5_900)}\n\n${'b'.repeat(500)}`).claude.split('?q=')[1]!,
+    );
+    // The 6,000-character bound would land inside the second paragraph; the first one ends cleanly.
+    expect(cut).toBe(`${'a'.repeat(5_900)} […]`);
+  });
 });

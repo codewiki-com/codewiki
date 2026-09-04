@@ -37,6 +37,12 @@ const ALERT = /^> \[!([A-Za-z]+)\][ \t]*(?:\r?\n> ?)?/gm;
 const TERM = /<Term\s+id="[^"]*"\s*>([\s\S]*?)<\/Term>/g;
 const CHECKPOINT = /<Checkpoint\s+id="([^"]*)"\s*\/>/g;
 const DEPTH = /<Depth\s+level="([a-z]+)"\s*>|<\/Depth>/g;
+/** A callout or cell label left alone on its line, and the quoted line that should join it. */
+const LABEL_LINE = /^(> (?:\*\*[^\n*]+:\*\*|- \*\*[^\n*]+\*\*:))[ \t]*\n(?:>[ \t]*\n)*> (?!```)/gm;
+
+/** The tags of a quoting block, matched one at a time so a block cut in two still converts. */
+const SPANNING =
+  /<Callout\s+type="([A-Za-z]+)"\s*>|<TLDRCell\s+label="([^"]*)"\s*>|<\/Callout>|<\/TLDRCell>|<\/?TLDR>/g;
 /** The safety net: a component the grammar above does not know is unwrapped, never printed. */
 const COMPONENT = /<\/?[A-Z][A-Za-z0-9]*(?:\s[^>]*?)?\/?>/g;
 
@@ -135,15 +141,79 @@ function convertDepth(text: string, open: string[]): string {
   });
 }
 
+/**
+ * What one segment has to know about the ones before it. Both fields exist because a code fence
+ * splits the document into segments in the middle of a block: `depth` is the stack of open
+ * `<Depth>` levels, `quoting` says whether a `<Callout>` or a `<TLDRCell>` is still open, in which
+ * case the lines that follow — the fence included — belong inside its blockquote.
+ */
+interface TwinState {
+  depth: string[];
+  quoting: boolean;
+}
+
+/** Every line of a block quoted, so a fence inside a callout stays inside the callout. */
+function quoteLines(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line ? `> ${line}` : '>'))
+    .join('\n');
+}
+
+/**
+ * The blocks the segment-by-segment regexes above could not close, one tag at a time: the opening
+ * tag becomes the label and everything up to the closing tag is quoted. Without this a callout
+ * holding a code fence would reach the safety net and lose its label.
+ */
+function convertSpanning(text: string, state: TwinState, locale: Locale): string {
+  return (
+    text
+      .split('\n')
+      .map((line) => {
+        const quotedAtStart = state.quoting;
+        const converted = line.replace(SPANNING, (match, type?: string, label?: string) => {
+          if (type !== undefined) {
+            state.quoting = true;
+            return `**${calloutLabel(type, locale)}:** `;
+          }
+          if (label !== undefined) {
+            state.quoting = true;
+            return `- **${label}**: `;
+          }
+          // `</Callout>` and `</TLDRCell>` close the quote; the `<TLDR>` wrapper only disappears.
+          if (match !== '<TLDR>' && match !== '</TLDR>') state.quoting = false;
+          return '';
+        });
+
+        if (!quotedAtStart && !state.quoting) return converted;
+        const body = converted.trimEnd();
+        return body.startsWith('>') ? body : `> ${body}`.trimEnd();
+      })
+      .join('\n')
+      // The label was written on a line of its own; it belongs in front of the first sentence,
+      // exactly as in a callout that fits in one segment. A fence keeps its own line.
+      .replace(LABEL_LINE, '$1 ')
+      // The tags that closed the block left empty quote lines where they stood.
+      .replace(/(?:^>[ \t]*\n)+(?!>)/gm, '')
+  );
+}
+
 /** Everything that is not a code fence. */
-function convertProse(text: string, context: TwinContext, open: string[]): string {
+function convertProse(text: string, context: TwinContext, state: TwinState): string {
   const { locale, url } = context;
   return (
-    convertDepth(
-      convertCallouts(convertTldr(text.replace(IMPORT, '')), locale)
-        .replace(TERM, '$1')
-        .replace(CHECKPOINT, (_, id: string) => `[${t(locale, 'toc.checkpoint')}: ${id}](${url}#checkpoint)`),
-      open,
+    convertSpanning(
+      convertDepth(
+        convertCallouts(convertTldr(text.replace(IMPORT, '')), locale)
+          .replace(TERM, '$1')
+          .replace(
+            CHECKPOINT,
+            (_, id: string) => `[${t(locale, 'toc.checkpoint')}: ${id}](${url}#checkpoint)`,
+          ),
+        state.depth,
+      ),
+      state,
+      locale,
     )
       .replace(COMPONENT, '')
       // The removals above leave the blank lines their components stood on.
@@ -190,11 +260,13 @@ function segments(body: string): Segment[] {
 /** The MDX source of a topic as the plain Markdown its `.md` twin serves. */
 export function toPlainMarkdown(mdxSource: string, context: TwinContext): string {
   const body = mdxSource.replace(FRONTMATTER, '');
-  const open: string[] = [];
+  const state: TwinState = { depth: [], quoting: false };
   const converted = segments(body)
-    .map((segment) =>
-      segment.fence ? convertFence(segment.value) : convertProse(segment.value, context, open),
-    )
+    .map((segment) => {
+      if (!segment.fence) return convertProse(segment.value, context, state);
+      const fence = convertFence(segment.value);
+      return state.quoting ? quoteLines(fence) : fence;
+    })
     .join('\n')
     .trim();
 

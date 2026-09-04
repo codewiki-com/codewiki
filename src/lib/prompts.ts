@@ -54,8 +54,15 @@ const INSTRUCTIONS: Record<Preset, string> = {
     'I will explain this section back to you in my own words. Grade my explanation against the text above: name what I got wrong, what I left out, and what I only repeated without understanding.',
 };
 
-/** Deep links stay well inside every browser and server URL limit at this length. */
+/** The outer bound on a deep link, in the characters the reader would see. */
 const LINK_LIMIT = 6_000;
+
+/**
+ * The bound that actually matters: what the URL carries. A Latin character encodes to one query
+ * character but a Chinese one to nine (three UTF-8 bytes, percent-escaped), so a prompt inside the
+ * source bound can still be a 36 KB query — which a server is entitled to answer with 414.
+ */
+const QUERY_LIMIT = 8_000;
 
 /** What a truncated prompt ends with, so the reader can see that it was cut. */
 const CUT_MARKER = ' […]';
@@ -80,14 +87,56 @@ export function buildPrompt(context: PromptContext): string {
   ].join('\n');
 }
 
-/** The prompt as a query parameter, cut to a length a URL can carry. */
-function query(prompt: string): string {
-  const cut = prompt.length > LINK_LIMIT ? prompt.slice(0, LINK_LIMIT) + CUT_MARKER : prompt;
-  return encodeURIComponent(cut);
+/** How long this text is once it is in a query string. */
+const encodedLength = (text: string): number => encodeURIComponent(text).length;
+
+/**
+ * A prefix of `text`, never splitting a surrogate pair: `encodeURIComponent` throws a URIError on
+ * a lone half, so every cut has to land between whole characters.
+ */
+function sliceSafely(text: string, length: number): string {
+  const last = text.charCodeAt(length - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? length - 1 : length;
+  return text.slice(0, Math.max(end, 0));
+}
+
+/**
+ * Where to end a cut so it reads as a stopped thought rather than a severed word: the last
+ * paragraph break, or failing that the last sentence end, provided it is in the final fifth of
+ * what is left. Anything earlier would throw away more than the tidiness is worth.
+ */
+function boundary(text: string): number {
+  const floor = Math.floor(text.length * 0.8);
+
+  const paragraph = text.lastIndexOf('\n\n');
+  if (paragraph >= floor) return paragraph;
+
+  let sentence = -1;
+  for (const match of text.matchAll(/[.!?](?=\s|$)|[。！？]/g)) sentence = match.index + match[0].length;
+  return sentence >= floor ? sentence : text.length;
+}
+
+/** The prompt cut to what a URL can carry, under both bounds. */
+function forLink(prompt: string): string {
+  if (prompt.length <= LINK_LIMIT && encodedLength(prompt) <= QUERY_LIMIT) return prompt;
+
+  let cut = sliceSafely(prompt, Math.min(prompt.length, LINK_LIMIT));
+  if (encodedLength(cut + CUT_MARKER) > QUERY_LIMIT) {
+    // The encoded length of a prefix only grows, so the longest one that fits is a binary search.
+    let low = 0;
+    let high = cut.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (encodedLength(sliceSafely(prompt, middle) + CUT_MARKER) <= QUERY_LIMIT) low = middle;
+      else high = middle - 1;
+    }
+    cut = sliceSafely(prompt, low);
+  }
+  return cut.slice(0, boundary(cut)).trimEnd() + CUT_MARKER;
 }
 
 /** Links that open the assistant with the prompt already typed in. */
 export function deepLinks(prompt: string): { claude: string; chatgpt: string } {
-  const q = query(prompt);
+  const q = encodeURIComponent(forLink(prompt));
   return { claude: `https://claude.ai/new?q=${q}`, chatgpt: `https://chatgpt.com/?q=${q}` };
 }
