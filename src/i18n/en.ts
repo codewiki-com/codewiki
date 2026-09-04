@@ -236,4 +236,16 @@ export default {
   'ai.openClaude': 'Open in Claude',
   'ai.openChatGPT': 'Open in ChatGPT',
   'ai.copy': 'Copy prompt',
+
+  // Task 15 — the command palette and the /search/ page.
+  'search.sub': 'Every topic, term and path. The index ships with the site and runs in your browser.',
+  'search.recent': 'Recent',
+  'search.other': 'More',
+  'search.results': 'Search results',
+  'search.searching': 'Searching…',
+  'search.langFilter': 'Result language',
+  'search.closeLabel': 'Close search',
+  'search.hintClose': 'close',
+  'search.unavailable': 'Search is unavailable here: the index is built by pnpm build.',
+  'search.openPage': 'Open the search page',
 } as const;
