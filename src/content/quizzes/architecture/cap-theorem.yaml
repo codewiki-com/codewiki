@@ -1,0 +1,175 @@
+topic: architecture/cap-theorem
+items:
+  - id: predict-quorum-availability
+    type: predict
+    prompt:
+      en: What does this program print after three of five replicas become unreachable?
+      zh: 五个副本中有三个不可达后，这段程序会输出什么？
+    code: |
+      const replicas = 5;
+      const quorum = Math.floor(replicas / 2) + 1;
+      const reachable = 2;
+
+      console.log(reachable >= quorum ? 'commit' : 'reject');
+      console.log({ reachable, quorum });
+    lang: javascript
+    options:
+      - text: { en: "reject, then { reachable: 2, quorum: 3 }", zh: "reject，然后是 { reachable: 2, quorum: 3 }" }
+        correct: true
+      - text: { en: "commit, then { reachable: 2, quorum: 3 }", zh: "commit，然后是 { reachable: 2, quorum: 3 }" }
+        correct: false
+      - text: { en: "reject, then { reachable: 3, quorum: 2 }", zh: "reject，然后是 { reachable: 3, quorum: 2 }" }
+        correct: false
+      - text: { en: It throws because two replicas are still healthy., zh: 程序会抛出异常，因为仍有两个健康副本。 }
+        correct: false
+    explanation:
+      en: A majority of five is three, so two reachable replicas cannot commit on the consistent path even though both are healthy.
+      zh: 五个副本的多数派是三个，因此即使剩余两个副本都健康，一致路径也不能提交。
+    difficulty: beginner
+    tags: [cap, quorum, predict-output]
+
+  - id: partition-forces-choice
+    type: mcq
+    prompt:
+      en: Two replicas cannot communicate, and both receive a write to the same register. Which guarantee pair is impossible for both sides to preserve?
+      zh: 两个副本无法通信，并且都收到对同一寄存器的写入。两侧不可能同时保持哪一对保证？
+    options:
+      - text:
+          en: Linearizable writes and completion of every request at each non-failing replica
+          zh: 写入保持线性一致，并且每个非故障副本上的请求都完成
+        correct: true
+      - text:
+          en: Durable local storage and request authentication
+          zh: 持久化本地存储和请求认证
+        correct: false
+      - text:
+          en: Compression and encryption in transit
+          zh: 压缩和传输加密
+        correct: false
+    explanation:
+      en: If both sides complete conflicting writes without communicating, the history cannot stay linearizable; rejecting or waiting on one side gives up CAP availability there.
+      zh: 如果两侧不通信却都完成冲突写入，操作历史就无法保持线性一致；让一侧拒绝或等待，则会在该侧放弃 CAP 可用性。
+    difficulty: intermediate
+    tags: [cap, linearizability, availability]
+
+  - id: spot-fastest-replica-read
+    type: spotbug
+    prompt:
+      en: Find the flaw in this generated function, which promises a linearizable read.
+      zh: 这段生成的函数承诺提供线性一致读取，请找出其中的缺陷。
+    code: |
+      async function readLinearizable(key, replicas) {
+        return Promise.any(replicas.map((replica) => replica.read(key)));
+      }
+    lang: javascript
+    issues:
+      - line: 2
+        kind: correctness
+        note:
+          en: The first replica to answer may be stale or belong to an old term; response speed provides no commit or real-time-order evidence.
+          zh: 最先响应的副本可能已经陈旧或属于旧任期；响应速度不能证明提交状态或真实时间顺序。
+    explanation:
+      en: A linearizable read must participate in the store's consistency protocol, such as a current-leader or quorum-confirmed path. Racing arbitrary replicas proves only that one answered.
+      zh: 线性一致读取必须进入存储的一致性协议，例如当前主节点或经法定人数确认的路径。竞速任意副本只能证明其中一个给出了响应。
+    difficulty: intermediate
+    tags: [linearizability, stale-read, code-review]
+
+  - id: timeout-outcome
+    type: mcq
+    prompt:
+      en: A client times out while waiting for a replicated write. What can it conclude?
+      zh: 客户端等待复制写入时超时。它能得出什么结论？
+    options:
+      - text:
+          en: The outcome is unknown until the system can query it; the write may have committed.
+          zh: 在系统能够查询结果前，结果未知；写入可能已经提交。
+        correct: true
+      - text:
+          en: The write definitely failed and can be retried with a new operation ID.
+          zh: 写入一定失败，可以使用新的操作 ID 重试。
+        correct: false
+      - text:
+          en: Every replica rolled the write back before the timeout reached the client.
+          zh: 超时到达客户端前，每个副本都已经回滚写入。
+        correct: false
+    explanation:
+      en: The response or acknowledgment can be lost after commit. A retry needs the same idempotency key, plus a way to query the original operation.
+      zh: 写入提交后，响应或确认仍可能丢失。重试应复用同一个幂等键，并能查询原操作的结果。
+    difficulty: intermediate
+    tags: [timeout, idempotency, unknown-outcome]
+
+  - id: review-generated-reservation-failover
+    type: review
+    prompt:
+      en: Review this generated reservation failover path for consistency and safe retries.
+      zh: 审查这段生成的预订故障转移路径，检查其一致性与安全重试能力。
+    task:
+      en: Reserve inventory without taking stock below zero, preserve one-writer authority, and let a caller retry an unknown result safely.
+      zh: 预订库存时不得让库存低于零，必须保持单一写入权威，并允许调用者安全重试未知结果。
+    code: |
+      async function reserve(actor, itemId, quantity, replicas) {
+        if (!actor.canReserve) throw new Error('forbidden');
+        const requestId = crypto.randomUUID();
+        const reachable = replicas.filter((replica) => replica.isHealthy());
+        for (const replica of reachable) {
+          try {
+            const result = await Promise.race([
+              replica.reserve({ itemId, quantity }),
+              timeout(100).then(() => ({ ok: false })),
+            ]);
+            if (result.ok) return { ok: true, requestId };
+          } catch {
+            continue;
+          }
+        }
+        const cached = replicas[0].cache.get(itemId);
+        cached.stock -= quantity;
+        replicas[0].cache.set(itemId, cached);
+        return { ok: true, requestId, degraded: true };
+      }
+    lang: javascript
+    right:
+      en: The code checks authorization before mutation, bounds each probe with a timeout, and returns an operation identifier to the caller.
+      zh: 代码在修改前检查了授权，为每次探测设置了超时，并向调用者返回操作标识。
+    issues:
+      - line: 3
+        kind: edge-case
+        note:
+          en: The function creates a fresh ID on every invocation and never sends it to reserve, so a caller cannot deduplicate a retry after an unknown result.
+          zh: 函数每次调用都创建新 ID，而且没有把它传给 reserve，因此调用者无法在结果未知后对重试去重。
+      - line: 4
+        kind: correctness
+        note:
+          en: A local health result does not establish current leadership, quorum membership, or authority to preserve the inventory invariant.
+          zh: 本地健康结果不能证明当前主节点身份、法定人数成员关系，也不能授予保持库存不变量所需的写入权威。
+      - line: 5
+        lines: 10
+        kind: performance
+        note:
+          en: Probing replicas serially can accumulate one full timeout per replica, although a real quorum protocol coordinates the required peers concurrently.
+          zh: 串行探测副本可能为每个副本累加一次完整超时，而真实的法定人数协议会并发协调所需节点。
+      - line: 9
+        kind: readability
+        note:
+          en: Mapping a timeout to the same ok flag as an explicit rejection hides the crucial distinction between an unknown outcome and a definite failure.
+          zh: 把超时映射为与明确拒绝相同的 ok 标志，掩盖了结果未知与明确失败之间的关键区别。
+      - line: 16
+        lines: 3
+        kind: security
+        note:
+          en: The degraded path bypasses the authoritative reservation and its invariant checks, allowing untrusted quantity or concurrent requests to corrupt stock.
+          zh: 降级路径绕过权威预订及其不变量检查，未经信任的数量或并发请求可能破坏库存。
+    checklist:
+      - en: Trace one request ID through the caller, every replica, retry, and result query.
+        zh: 跟踪同一个请求 ID 如何经过调用者、每个副本、重试与结果查询。
+      - en: Prove which term and membership configuration grants one node write authority.
+        zh: 证明哪个任期和成员配置向一个节点授予写入权威。
+      - en: Test a lost acknowledgment after commit and verify that retry creates no second reservation.
+        zh: 测试提交后确认丢失，并验证重试不会创建第二次预订。
+      - en: Inject one-way loss and confirm that no cache-only path violates the stock invariant.
+        zh: 注入单向丢包，并确认没有仅写缓存的路径破坏库存不变量。
+    explanation:
+      en: Use the storage system's leader or quorum protocol, accept a caller-stable idempotency key, and expose committed, rejected, and unknown outcomes separately. A cache may serve a documented stale read, but it must not invent a successful reservation outside the invariant boundary.
+      zh: 应使用存储系统的主节点或法定人数协议，接受由调用者稳定提供的幂等键，并分别暴露已提交、已拒绝和结果未知。缓存可以提供有明确说明的陈旧读取，但不能在不变量边界之外伪造预订成功。
+    difficulty: advanced
+    tags: [cap, code-review, idempotency, split-brain]

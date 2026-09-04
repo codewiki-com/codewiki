@@ -1,0 +1,402 @@
+---
+title: 移动语义
+description: C++ 移动语义讲清右值引用、std::move、移动构造、有效但未指定状态，以及 noexcept 如何影响容器行为。
+track: cpp
+section: modern-cpp
+difficulty: intermediate
+tags: [move-semantics, rvalue-references, ownership, special-members]
+prerequisites: [cpp/references, cpp/classes, cpp/raii]
+related: [cpp/smart-pointers, cpp/templates, cpp/stl, cpp/operator-overloading]
+terms: [move-semantics, rvalue-reference, moved-from-state, copy-elision]
+verified: { version: 'C++23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/move-semantics
+sources:
+  - { title: 'C++23 working draft - Moved-from state of library types', url: 'https://timsong-cpp.github.io/cppwp/n4950/lib.types.movedfrom' }
+  - { title: 'C++ Core Guidelines - Default operations', url: 'https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#cdefop-default-operations' }
+  - { title: 'cppreference - std::move', url: 'https://en.cppreference.com/w/cpp/utility/move' }
+  - { title: 'cppreference - Move constructors', url: 'https://en.cppreference.com/w/cpp/language/move_constructor' }
+  - { title: 'cppreference - Copy elision', url: 'https://en.cppreference.com/w/cpp/language/copy_elision' }
+  - { title: 'cppreference - std::move_if_noexcept', url: 'https://en.cppreference.com/w/cpp/utility/move_if_noexcept' }
+origin: old/src/content/docs/cpp/move-semantics.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    移动语义（move semantics）允许对象把资源交给另一个对象，省去本来需要的资源复制；真正执行转移的是构造函数或赋值运算符，不是 `std::move`。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `std::move` 只是一次类型转换。移动后对象仍然存活，但它的值通常不应被假定为空，也不应按移动前的值继续使用。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    优先遵循零法则；确实要自定义资源所有权时，维持源对象不变量，并只在操作保证不抛异常时标记 `noexcept`。
+  </TLDRCell>
+</TLDR>
+
+## 移动语义是什么
+
+<Term id="move-semantics">移动语义（move semantics）</Term>让一个对象用另一个即将被放弃的对象来初始化或赋值。复制通常要为目标创建一份独立资源，移动则可以接管源对象已经拥有的资源。例如，动态数组可以转移缓冲区指针，而不必逐个复制元素。
+
+这项机制解决的是所有权转移，不是普通整数赋值。它常出现在按值返回对象、向容器插入临时值、转移 `std::unique_ptr`，以及让对象接管函数参数时。对只含少量标量的类型，移动可能与复制成本相同；语言从未承诺移动一定更快。
+
+C++ 通过重载选择表达意图。复制构造函数通常接收 `const T&`，移动构造函数通常接收 `T&&`。当源表达式可以绑定到后者时，重载解析才有机会选择移动操作；最终做多少工作，仍由被调用的构造函数或赋值运算符决定。
+
+资源所有者尤其适合移动语义。文件句柄、套接字和独占指针不能安全地复制所有权，却可以把唯一所有者从一个对象换成另一个对象。移动后的源对象还会析构，所以它必须保持可安全析构的状态。
+
+## 移动如何发生
+
+C++ 的表达式有值类别（value category）。左值（lvalue）通常表示有身份、可再次引用的对象；纯右值（prvalue）用于计算一个值或初始化结果对象；将亡值（xvalue）表示资源可以被复用的有身份对象。xvalue 和 prvalue 合称 rvalue。
+
+<Term id="rvalue-reference">右值引用（rvalue reference）</Term>写作 `T&&`。它能绑定到 rvalue，并让重载集区分可转移的来源与普通左值。这里判断的是表达式，不是变量声明中的类型：一个有名字的变量表达式总是左值，即使该变量的类型是 `T&&`。
+
+`std::move(value)` 不会读取缓冲区、清空容器或调用构造函数。它大致把表达式转换为对应类型的 xvalue。随后发生的初始化、赋值或函数调用再做重载解析；如果没有可用的移动重载，代码仍可能复制。
+
+移动构造函数从源对象取得资源并建立一个新对象。移动赋值运算符还要先处理目标对象当前拥有的资源，再接管源资源。两者都要考虑自移动、基类、每个成员以及源对象不变量，漏掉其中一项就可能造成泄漏、重复释放或逻辑错误。
+
+标准库类型在未另行说明时，会把移动后的源对象置于<Term id="moved-from-state">有效但未指定状态（valid but unspecified state）</Term>。有效表示对象不变量仍成立，并且可以析构或赋新值；未指定表示不能猜测它保留了什么值。自定义类型的移动后约定由该类型自己的接口和实现决定。
+
+下面这张表只描述常见表达式形态。函数返回类型、强制转换和 `decltype` 等规则会产生更多组合，但移动代码首先要分清这四种情况。
+
+| 表达式 | 值类别 | 对典型重载的影响 |
+|---|---|---|
+| 有名字的对象 `value` | lvalue | 优先绑定到 `T&` 或 `const T&` |
+| 字面量或同类型临时结果 | prvalue | 可以初始化结果对象或绑定到 `T&&` |
+| `std::move(value)` | xvalue | 可以绑定到 `T&&` |
+| 有名字的 `T&&` 参数 `value` | lvalue | 不会仅凭声明类型自动再次移动 |
+
+值类别不说明对象是否真的临近生命周期终点。`std::move` 可以把仍会存活很久的对象表达成 xvalue，因此正确性依赖程序员兑现不再依赖旧值的承诺。编译器主要检查类型是否可绑定，通常无法判断这项所有权意图是否合理。
+
+## 观察值类别和重载
+
+第一个例子只观察重载选择，两个 `inspect` 重载都不修改参数。因此，输出还能证明 `std::move` 本身没有移动字符串内容。
+
+<Depth level="quick">
+
+```cpp title="value_categories.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+
+void inspect(const std::string& value) {
+    std::cout << "lvalue overload: " << value << '\n';
+}
+
+void inspect(std::string&& value) {
+    std::cout << "rvalue overload: " << value << '\n';
+}
+
+int main() {
+    std::string order = "tea";
+
+    inspect(order);
+    inspect(std::move(order));
+    std::cout << "after std::move: " << order << '\n';
+
+    // 有名字的右值引用表达式仍然是左值。
+    std::string&& alias = std::move(order);
+    inspect(alias);
+    inspect(std::move(alias));
+}
+```
+
+```text
+lvalue overload: tea
+rvalue overload: tea
+after std::move: tea
+lvalue overload: tea
+rvalue overload: tea
+```
+
+</Depth>
+
+`inspect(order)` 看到左值，因此选择 `const std::string&`。`inspect(std::move(order))` 看到 xvalue，因此选择 `std::string&&`。右值引用变量 `alias` 一旦有了名字，表达式 `alias` 也是左值；要再次把它交给右值重载，需要显式转换。
+
+不要从这个例子推导出移动后字符串总会保留内容。这里的右值重载没有从参数构造或赋值另一个字符串，所以没有执行资源转移。只要把函数体改成真正接管 `value`，源对象的值就要按相应类型的移动后约定解释。
+
+这种区分在移动构造函数内部很常见。参数 `other` 的声明类型虽然是 `Buffer&&`，表达式 `other` 仍是左值。要移动它的成员，需要对成员使用 `std::move(other.member)`，或者使用能表达同一转移的成员操作。
+
+## 实现所有权转移
+
+下面的 `ByteBuffer` 拥有一块动态数组。复制被删除，移动操作接管 `std::unique_ptr`，同时用 `std::exchange` 把源对象的长度重置为 `0`。重置长度不是语言要求，而是这个类为了维持 `size() == 0` 与空指针一致而选择的不变量。
+
+```cpp title="byte_buffer.cpp"
+#include <cstddef>
+#include <iostream>
+#include <memory>
+#include <utility>
+
+class ByteBuffer {
+public:
+    explicit ByteBuffer(std::size_t size)
+        : data_(size ? std::make_unique<unsigned char[]>(size) : nullptr),
+          size_(size) {}
+
+    ByteBuffer(const ByteBuffer&) = delete;
+    ByteBuffer& operator=(const ByteBuffer&) = delete;
+
+    ByteBuffer(ByteBuffer&& other) noexcept
+        : data_(std::move(other.data_)),
+          size_(std::exchange(other.size_, 0)) {
+        std::cout << "move-constructed\n";
+    }
+
+    ByteBuffer& operator=(ByteBuffer&& other) noexcept {
+        if (this != &other) {
+            data_ = std::move(other.data_);
+            size_ = std::exchange(other.size_, 0);
+        }
+        std::cout << "move-assigned\n";
+        return *this;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+private:
+    std::unique_ptr<unsigned char[]> data_;
+    std::size_t size_ = 0;
+};
+
+int main() {
+    ByteBuffer incoming(4);
+    ByteBuffer stored(std::move(incoming));
+    std::cout << "sizes: " << incoming.size() << ", " << stored.size() << '\n';
+
+    ByteBuffer replacement(2);
+    stored = std::move(replacement);
+    std::cout << "sizes: " << replacement.size() << ", " << stored.size() << '\n';
+}
+```
+
+```text
+move-constructed
+sizes: 0, 4
+move-assigned
+sizes: 0, 2
+```
+
+移动构造直接初始化一个还没有资源的目标。移动赋值面对的目标已经拥有四字节缓冲区；给 `data_` 做移动赋值时，`std::unique_ptr` 会先释放旧数组，再接管两字节数组。自移动检查则避免同一个对象先释放自己的资源再试图接管它。
+
+这个实现特意展示了资源对和源对象不变量，但生产代码通常不需要亲自写它。若类只由 `std::vector`、`std::string`、智能指针等 RAII 成员组成，并且它们的默认移动后状态满足类不变量，编译器生成的成员操作往往更准确。
+
+`noexcept` 是接口承诺，不是性能装饰。这里的两项成员操作都不抛异常，所以移动操作可以诚实地标记为 `noexcept`。如果函数体调用了可能抛异常的代码，硬加这个标记会让异常逃出时调用 `std::terminate`。
+
+## 转移独占所有权
+
+`std::unique_ptr` 把所有权约束编码进类型：复制操作被删除，移动操作把所管理的指针交给目标，并让源指针变空。按值接收 `std::unique_ptr<T>` 的函数明确表示它会成为所有者；调用者必须写出 `std::move` 才能交出一个有名字的指针。
+
+```cpp title="publish_report.cpp"
+#include <iostream>
+#include <memory>
+#include <string>
+#include <utility>
+
+struct Report {
+    explicit Report(std::string report_name)
+        : name(std::move(report_name)) {}
+
+    ~Report() {
+        std::cout << "destroyed: " << name << '\n';
+    }
+
+    std::string name;
+};
+
+void publish(std::unique_ptr<Report> report) {
+    std::cout << "publishing: " << report->name << '\n';
+}
+
+int main() {
+    auto draft = std::make_unique<Report>("weekly");
+    std::cout << "before: " << (draft ? "present" : "empty") << '\n';
+
+    publish(std::move(draft));
+
+    std::cout << "after: " << (draft ? "present" : "empty") << '\n';
+}
+```
+
+```text
+before: present
+publishing: weekly
+destroyed: weekly
+after: empty
+```
+
+`publish` 的参数在函数结束时析构，所以报告也在打印 `after` 之前销毁。这里可以依赖 `draft` 变空，因为 `std::unique_ptr` 自己的接口给出了这个后置状态；这比把所有标准库类型的移动后状态都假定为空更具体。
+
+如果函数只使用报告而不取得生命周期所有权，应接收 `Report&`、`const Report&` 或合适的观察指针。把 `std::unique_ptr` 按值传入只为读取内容，会迫使调用者放弃所有权，并让接口表达错误意图。
+
+临时指针可以直接传入，例如 `publish(std::make_unique<Report>("daily"))`，因为临时表达式已经可以绑定到移动路径。不要给每个临时值再套一层 `std::move`；它既不增加所有权信息，也可能掩盖对值类别规则的误解。
+
+## `noexcept` 如何影响转移策略
+
+需要在保留原值与转移原值之间选择的泛型代码，可以使用 `std::move_if_noexcept`。当 `T` 的移动构造保证不抛异常，或者 `T` 根本不能复制时，它返回可供移动的右值引用；否则它返回供复制使用的 `const T&`。
+
+```cpp title="move_if_noexcept.cpp"
+#include <iostream>
+#include <utility>
+
+template<bool Nothrow>
+struct Record {
+    static inline int copies = 0;
+    static inline int moves = 0;
+
+    int id;
+
+    explicit Record(int value) : id(value) {}
+
+    Record(const Record& other) : id(other.id) {
+        ++copies;
+    }
+
+    Record(Record&& other) noexcept(Nothrow) : id(other.id) {
+        ++moves;
+    }
+};
+
+template<class T>
+void relocate(const char* label) {
+    T::copies = 0;
+    T::moves = 0;
+    T source(7);
+    T destination(std::move_if_noexcept(source));
+    std::cout << label << ": copies=" << T::copies
+              << ", moves=" << T::moves
+              << ", id=" << destination.id << '\n';
+}
+
+int main() {
+    relocate<Record<false>>("throwing move");
+    relocate<Record<true>>("noexcept move");
+}
+```
+
+```text
+throwing move: copies=1, moves=0, id=7
+noexcept move: copies=0, moves=1, id=7
+```
+
+如果可能抛异常的移动在中途修改了源对象，调用方可能无法恢复原值。复制则能先建立独立的新对象，失败时仍保留来源。`std::vector` 等标准库组件会利用类型特征决定重定位策略，但具体保证还受元素是否可复制、分配器和所调用操作约束。
+
+不要把这段输出当成移动速度的基准。它只记录选择了哪个构造函数，没有测量时间。一次移动可能交换一个指针，也可能逐个处理元素；一次复制也可能因为小对象表示而很便宜。需要性能结论时，应对实际类型、数据规模、标准库实现和构建配置做基准测试。
+
+## 常见陷阱
+
+### 把已移动对象当成空对象
+
+> [!PITFALL]
+> 生成或手写的代码常在移动后断言 `source.empty()`，或者继续按旧索引读取源对象。有效但未指定不等于保证为空。
+
+标准库对象通常仍可以析构、重新赋值，也可以调用不依赖特定当前值且满足前置条件的操作。修复方法是把移动视为该值最后一次有意义的读取，并在确实要复用变量时先赋新值。若 API 承诺了更具体的移动后状态，应引用该类型自己的文档，不要从一次运行结果猜测。
+
+### 对 `const` 对象调用 `std::move`
+
+> [!PITFALL]
+> `std::move(const_value)` 保留 `const`，得到的通常是 `const T&&`。常见的移动构造函数 `T(T&&)` 不能绑定它，于是复制重载可能被选择。
+
+修复方法是不要给准备转移所有权的局部对象加 `const`，并检查接收端究竟提供了哪些重载。也不要为了让代码看起来在移动而去掉本来必要的常量性；有时复制就是正确结果。
+
+### 在返回局部对象时强制移动
+
+> [!PITFALL]
+> `return std::move(result);` 把名称表达式改成 xvalue，可能阻止命名返回值优化（NRVO）。这通常比直接返回更差。
+
+修复方法是写 `return result;`。当 NRVO 可用时，编译器可以直接构造返回对象；不能消除时，返回语句对符合条件的自动存储期局部对象有隐式移动规则。显式 `std::move` 只应出现在确实需要改变值类别、且没有破坏消除机会的地方。
+
+### 遗漏或误写 `noexcept`
+
+> [!PITFALL]
+> 自定义移动操作没有 `noexcept` 时，容器和 `std::move_if_noexcept` 可能选择复制；不真实的 `noexcept` 则会把一次普通异常变成程序终止。
+
+修复方法是让异常规格来自真实成员操作。默认化的移动操作通常能推导正确的条件；手写时，可以用 `std::is_nothrow_move_constructible_v<T>` 等类型特征做静态检查，并为会抛异常的路径保留诚实的接口。
+
+### 手写不完整的特殊成员函数
+
+> [!PITFALL]
+> 模型很容易生成一个裸指针移动构造，却忘记删除复制、处理移动赋值的旧资源、移动基类，或者重置与指针配套的长度。
+
+修复方法是优先把资源放进 RAII 成员并采用零法则。确实需要自定义时，把析构、复制构造、复制赋值、移动构造和移动赋值作为一组审查，并分别测试构造、赋值、自赋值、异常路径和析构。
+
+### 在模板包装器里无条件移动
+
+> [!PITFALL]
+> `T&&` 只有在发生模板参数推导等特定上下文中才是转发引用。对这样的命名参数一律使用 `std::move`，会把调用者传入的左值也当成可消费对象。
+
+修复方法是先判断参数代表所有权接收还是透明转发。所有权接收可以明确使用按值参数或具体类型的右值引用；透明包装器使用 `std::forward<T>(value)` 保留调用者的值类别。完美转发的完整推导规则属于模板主题。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常在所有返回语句和容器插入处机械地添加 `std::move`，因此会阻止 NRVO，或把后面仍会读取的变量提前置于移动后状态。它们也会假设移动后的 `std::string` 和 `std::vector` 必为空。手写资源类时，常见的更严重错误是目标旧资源未释放、源对象的指针与长度不同步、派生类只移动成员却复制基类，以及给可能分配内存的移动操作误加 `noexcept`。
+
+**让 AI 检查**
+
+- 列出每个 `std::move` 的源对象、接收重载和移动后的下一次使用，指出任何 use-after-move 或无效的 `const` 移动。
+- 展开类的五个特殊成员函数及基类、成员操作，验证所有权只转移一次，源对象和目标对象的不变量都成立。
+- 查找返回局部变量时的显式移动，并用类型特征确认每个 `noexcept` 声明与实际成员操作一致。
+
+**审查清单**
+
+- 在每个转移点之后跟踪源对象，只允许析构、重新赋值或满足其当前状态前置条件的操作。
+- 编译移动专用、可复制但移动可能抛异常，以及自移动赋值的测试路径。
+- 检查资源、长度、所有权标志和基类是否作为同一个不变量整体处理。
+
+**提示词词汇**
+
+使用准确术语：`move semantics`（移动语义）、`rvalue reference`（右值引用）、`xvalue`（将亡值）、`moved-from state`（移动后状态）、`valid but unspecified`（有效但未指定）、`move constructor`（移动构造函数）、`move assignment operator`（移动赋值运算符）、`copy elision`（拷贝消除）、`NRVO`（命名返回值优化）、`noexcept move`（不抛异常的移动）和 `forwarding reference`（转发引用）。要求模型给出重载解析结果和所有权时间线，比笼统地要求优化复制更容易暴露错误。
+
+<Depth level="deep">
+
+## 特殊成员函数与零法则
+
+编译器隐式声明移动构造函数需要满足一组条件。其中一个常被忽略的条件是类没有用户声明的析构函数；同样，用户声明的复制构造或复制赋值也会影响隐式移动声明。结果可能是代码看似能接受 rvalue，实际却由 `const T&` 复制构造完成。
+
+常见声明对隐式操作的影响可以先按下表排查，最终结果还要结合每个基类和成员是否支持相应操作。
+
+| 类中的声明 | 需要检查的结果 |
+|---|---|
+| 没有用户声明的特殊成员 | 复制和移动可能由编译器隐式声明 |
+| 用户声明析构函数 | 不会隐式声明移动构造和移动赋值 |
+| 用户声明复制构造或复制赋值 | 不会隐式声明移动操作 |
+| 用户声明移动构造或移动赋值 | 隐式复制操作会被定义为删除 |
+| 显式 `= default` 或 `= delete` | 意图可见，但可用性仍取决于成员和基类 |
+
+如果类需要虚析构函数等自定义声明，又确实希望保留移动能力，应明确审查并按需要写出 `= default` 或 `= delete`。默认化并不等于保证可用：某个基类或成员不能执行相应操作时，默认化的特殊成员函数仍可能被定义为删除。用类型特征和实际调用点编译测试，比只看声明可靠。
+
+默认移动按基类和非静态数据成员逐个执行移动初始化或移动赋值。对 `std::unique_ptr` 这样的成员，它会转移所有权；对整数这样的成员，所谓移动仍只是复制数值。因此，一个默认移动后的对象可能出现空指针与未变长度的组合，是否有效取决于类不变量。
+
+这就是零法则的实际价值。类若把资源及其元数据封装在一个已经正确实现所有权的成员中，通常无需再同步多组状态。`std::vector<std::byte>` 比裸指针加长度更容易得到正确的复制、移动和析构行为；代码也少了重复实现特殊成员函数的机会。
+
+五法则不是要求每个类都手写五个函数。它提醒你，自定义其中一项时，其他默认操作可能不再存在，或者语义不再匹配。先争取零法则；无法做到时，再明确决定每一项是默认、删除还是自定义。
+
+移动赋值与移动构造还有一个不同点：赋值的目标已经是完整对象。实现必须妥善结束目标的旧所有权，并在自移动时保持可析构、可赋值的有效状态。交换式实现或 RAII 成员赋值常能减少分支，但仍要检查业务不变量，而不只是指针是否为空。
+
+## 拷贝消除、隐式移动与代价
+
+<Term id="copy-elision">拷贝消除（copy elision）</Term>让实现省略本来可能出现的复制或移动。在 C++17 以后，用同类型 prvalue 初始化结果对象的若干场景采用直接构造语义，并不先创建一个临时对象再移动。观察不到移动构造日志，不代表移动语义失效；可能根本没有需要移动的中间对象。
+
+返回同类型的命名局部对象时，NRVO 允许把局部对象直接构造在调用方的结果位置。若没有采用 NRVO，符合条件的局部对象还能由返回语句的隐式移动规则处理。写 `return std::move(local);` 会改变表达式形态，使 NRVO 条件不再满足，所以默认写法应当是按名称返回。
+
+`noexcept` 影响的是故障恢复策略。若移动保证不抛异常，先移动若干元素再遇到问题不会由移动本身打断；若移动可能抛出且复制可用，先复制到新存储通常更容易维持强异常保证。若类型不可复制，容器可能只能尝试可能抛异常的移动，此时具体异常保证要查看相应操作的规范。
+
+移动的复杂度取决于表示形式和上下文。普通 `std::vector` 常能转移内部存储，但受分配器传播和相等性等规则影响的操作可能需要逐元素移动。`std::array` 的移动则会对每个元素执行移动。仅凭代码中出现 `std::move`，无法推出常数时间或某个加速倍数。
+
+API 设计应先表达所有权，再考虑省掉哪次复制。只观察对象时使用引用；无条件取得现有对象所有权时可以接收右值引用；既要接受左值又要在内部保存独立值时，按值接收再移动到成员有时更简单。每种选择都有调用方成本，不能用一条移动规则替代接口分析。
+
+最后，`std::move` 也不负责保证被调函数真的消费参数。一个 `T&&` 参数可以只读取对象，也可以把它移动到成员，还可以错误地保存一个悬空引用。审查移动代码时要沿着调用链找到真正改变所有权的位置，而不是停在类型转换处。
+
+</Depth>
+
+<Checkpoint id="cpp/move-semantics" />
+
+## 延伸阅读
+
+- [C++23 工作草案：标准库类型的移动后状态](https://timsong-cpp.github.io/cppwp/n4950/lib.types.movedfrom)
+- [C++ Core Guidelines：默认操作与零法则](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#cdefop-default-operations)
+- [cppreference：`std::move`](https://en.cppreference.com/w/cpp/utility/move)
+- [cppreference：移动构造函数](https://en.cppreference.com/w/cpp/language/move_constructor)
+- [cppreference：拷贝消除](https://en.cppreference.com/w/cpp/language/copy_elision)
+- [cppreference：`std::move_if_noexcept`](https://en.cppreference.com/w/cpp/utility/move_if_noexcept)
