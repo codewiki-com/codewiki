@@ -1,0 +1,424 @@
+---
+title: 'Agent context management'
+description: 'Select and refresh repository context so an agent reasons from relevant code, constraints, and current evidence.'
+track: ai-era
+section: working-with-agents
+difficulty: beginner
+tags: [agent-context, retrieval, freshness, evidence]
+prerequisites: [ai-era/ai-coding-agents]
+related: [ai-era/agent-instructions-and-mcp, ai-era/agent-task-planning, ai-era/code-provenance-and-verification, ai-era/unfamiliar-code-reading]
+terms: [context-window, conversation-state, api-contract, architecture-boundary, decision-log]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: ai-era/agent-context-management
+sources:
+  - { title: 'OpenAI Codex Docs - AGENTS.md', url: 'https://learn.chatgpt.com/docs/agent-configuration/agents-md' }
+  - { title: 'GitHub Docs - Adding repository custom instructions for GitHub Copilot', url: 'https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions' }
+  - { title: 'Claude Code Docs - How Claude remembers your project', url: 'https://code.claude.com/docs/en/memory' }
+  - { title: 'Git documentation - git-status', url: 'https://git-scm.com/docs/git-status' }
+  - { title: 'Git documentation - git-diff', url: 'https://git-scm.com/docs/git-diff' }
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Agent context management is the repeated selection, labeling, and refreshing of the repository evidence an agent uses for its next decision.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A large context can still be wrong: retrieval may omit a caller, a summary may be stale, and generated files or logs may crowd out the governing constraint.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Start from the task and project rules, expand through concrete code relationships, record provenance, and reread mutable sources before editing or claiming success.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Agent context is the bounded working set available to a coding agent for one decision. It can contain the task, repository instructions, source files, tests, configuration, search matches, command results, and earlier conversation. Context management decides what enters that set, what stays outside it, which statements are observations or inferences, and when an earlier item must be refreshed.
+
+The working set isn't the repository itself. It is a temporary view placed inside a model's <Term id="context-window">context window</Term>, which has finite capacity and no built-in guarantee of completeness or freshness. A file that exists on disk may be absent from the request, while an included excerpt may already describe an older revision.
+
+This distinction explains a common failure: an agent gives a confident, locally coherent answer about the wrong code. It may edit a similarly named adapter instead of the active implementation, preserve an obsolete test assumption, or miss a project rule stored above the current directory. More tokens don't correct a bad selection boundary.
+
+Useful context gives the agent enough evidence to choose the next action, not every fact it might eventually need. For a failing checkout test, an initial set might contain the task contract, applicable instructions, the failure output, the test, and the symbol under test. A database migration, public API change, or cross-package refactor needs a wider set because its <Term id="architecture-boundary">architecture boundaries</Term> and consumers are part of correctness.
+
+You manage context throughout the task rather than assembling it once. Search produces candidates; file reads establish current contents; execution adds observations; edits invalidate earlier snapshots; new errors point to another dependency. The set should expand and contract as the evidence changes.
+
+### Context, memory, and repository truth
+
+Conversation history is <Term id="conversation-state">conversation state</Term>, not durable repository truth. It records requests, choices, and earlier observations, but the model may summarize it, the host may truncate it, and the repository may change independently. Use history to locate evidence, then confirm mutable facts at their source.
+
+Project instruction files are a special part of context. They can define commands, style, directory-specific constraints, and required review steps. Their scope and precedence depend on the agent host, and they never grant filesystem, network, or deployment permission beyond the host's policy.
+
+Source code shows current implementation behavior; tests show asserted behavior; schemas and specifications show intended contracts; issue text explains requested change. None is universally superior. When they disagree, record the conflict and resolve it from the task owner or the repository's documented authority rather than silently choosing the most convenient file.
+
+A summary is a navigation aid. It can say that `src/tax.js` owns jurisdiction rules and point to the exact path, symbol, and revision. It shouldn't replace the file when the next step depends on a precise condition, default, type, or error message.
+
+### What belongs in the first working set
+
+Begin with evidence that constrains both scope and behavior:
+
+1. The exact task, acceptance criteria, allowed paths, and explicit non-goals.
+2. The applicable repository and directory instructions.
+3. The baseline revision, working directory, branch or worktree, and existing dirty files.
+4. The failing command and its unedited output, or another concrete starting observation.
+5. The smallest source, tests, configuration, and contracts directly connected to that observation.
+
+Credentials, dependency directories, build artifacts, minified bundles, large binary fixtures, and unrelated logs normally stay out. Excluding them protects capacity and can reduce accidental secret exposure. If one becomes relevant, bring in the narrow fact needed rather than a wholesale directory dump.
+
+The initial set is a hypothesis about relevance. It should be easy to explain and cheap to revise. Treat "these are the files" as a provisional manifest, not as a promise that no indirect consumer exists.
+
+## How it works
+
+Context management follows a loop: anchor, select, inspect, act, observe, and refresh. Each pass should leave enough provenance to distinguish a current repository fact from a model conclusion. The next pass reuses stable constraints and reacquires facts made stale by intervening actions.
+
+### Anchor the task and authority
+
+Write the task contract before searching broadly. Name the desired behavior, reproducer, permitted change scope, required checks, and non-goals. This anchor prevents a compelling search match or a command embedded in an issue from quietly redefining the assignment.
+
+Resolve applicable instructions from the repository root toward the target directory according to the host's documented rules. Record the paths you used. If two instructions conflict or their scope is unclear, stop that branch of work and surface the conflict instead of blending them into a new rule.
+
+Capture the environment that gives paths and outputs meaning. At minimum, identify the repository root, current revision, worktree status, package directory, and declared runtime. A test result without its directory and revision is weak evidence because the same command can exercise a different package or different source.
+
+### Select from concrete signals
+
+Start with high-precision signals: a failing test path, stack frame, diagnostic location, named symbol, changed path, or explicit <Term id="api-contract">API contract</Term>. Search for definitions and references, then inspect imports, call sites, configuration lookups, and nearby tests. File names alone are often ambiguous.
+
+Selection should combine different roles. Instructions state constraints; implementation provides mechanics; tests provide examples and assertions; configuration selects runtime behavior; command output reports an observed state. Ten excerpts from one role don't compensate for a missing governing contract.
+
+Record why each item entered context. "Matched `calculateTotal` in the stack trace" is more useful than "seemed relevant." A reason lets a reviewer challenge the path, replace a weak match, and discard an item when the hypothesis fails.
+
+### Expand along relationships
+
+Repository relationships are stronger than topical similarity. Follow an imported module, a caller, a type definition, a route registration, a schema consumer, or a test fixture that the target actually uses. Search in both directions: what the target depends on and what depends on the target.
+
+Expand one question at a time. If a tax assertion fails, read enough to determine whether the problem lies in arithmetic, jurisdiction configuration, rounding, or the test expectation. Loading every checkout file before forming that question adds noise without guaranteeing coverage.
+
+Stop expanding when the current decision has adequate support. Before a local edit, that means the implementation contract, relevant callers, edge cases, and verification path are understood. Before a public interface change, the stop condition is wider because all consumers and compatibility requirements matter.
+
+### Separate facts from inferences
+
+Label repository reads and command results as observations with a source and acquisition point. Label architectural conclusions, suspected causes, and proposed fixes as inferences. Label user requirements and repository rules as constraints.
+
+This separation matters when evidence conflicts. "The formatter passed" is an observation; "the patch is correct" is an inference the formatter cannot support. "No caller exists" is only supportable when the search scope and method are recorded and dynamic lookup has been considered.
+
+A small evidence ledger can track these distinctions:
+
+| Entry | Kind | Provenance | Refresh trigger |
+| --- | --- | --- | --- |
+| Allowed files | Constraint | Task contract | User changes scope |
+| Function body | Observation | Path, lines, digest | File or branch changes |
+| Likely root cause | Inference | Supporting entries | New contradictory evidence |
+| Test result | Observation | Command, directory, exit code | Relevant code or environment changes |
+
+### Refresh before irreversible reasoning
+
+Refresh an item when something that could affect it changes. An edit makes earlier excerpts and symbol summaries suspect. A branch switch invalidates path-to-content assumptions. A dependency install can invalidate build output, and a new user constraint can invalidate the plan even when the code is unchanged.
+
+Before patching, reread the target and any precise instruction or contract the patch relies on. Before applying a patch computed from an earlier snapshot, compare the current text or a digest and reject the patch on mismatch. A digest detects difference; it doesn't establish that content is safe or correct.
+
+After patching, inspect the actual diff rather than relying on the intended edit. Then rerun every check whose prior result depended on changed code, configuration, dependencies, or environment. Old green output is historical evidence, not current acceptance evidence.
+
+### Compact without erasing decisions
+
+Long sessions eventually need compression. Preserve exact acceptance criteria, active permissions, applicable instructions, changed files, unresolved assumptions, and references to raw tool output. These details govern later actions and are expensive to reconstruct incorrectly.
+
+Compress exploratory dead ends more aggressively. A short note such as "legacy adapter excluded because route registry selects `src/checkout.js`" preserves the decision and its reason. Repeated search listings and superseded explanations can leave the active set once their useful conclusion has a traceable source.
+
+A <Term id="decision-log">decision log</Term> is helpful when the agent crosses several packages or hands work to another session. It should record the decision, evidence, alternatives rejected, and refresh condition. It should not turn uncertain guesses into settled facts through polished wording.
+
+## Examples
+
+These JavaScript examples model the host-side bookkeeping around an agent; they don't call a model or prescribe one retrieval algorithm. Each file was executed locally with Node 24, and the following `text` fence is its actual output.
+
+### Building a small context manifest
+
+The first example assigns candidates a role and an explicit priority, excludes a generated bundle, and admits four items. In a real repository, search and dependency tools produce the candidates; the visible manifest makes the selection reviewable.
+
+<Depth level="quick">
+
+```javascript run title="context_manifest.js"
+const candidates = [
+  { path: "AGENTS.md", role: "rules", priority: 0 },
+  { path: "tests/checkout.test.js", role: "failure", priority: 1 },
+  { path: "src/checkout.js", role: "symbol owner", priority: 2 },
+  { path: "src/money.js", role: "direct dependency", priority: 3 },
+  { path: "README.md", role: "background", priority: 7 },
+  { path: "dist/app.js", role: "generated", priority: 99 },
+];
+
+const budget = 4;
+const selected = candidates
+  .filter((file) => file.role !== "generated")
+  .sort((left, right) => left.priority - right.priority)
+  .slice(0, budget);
+
+for (const [index, file] of selected.entries()) {
+  console.log(`${index + 1}. ${file.path} — ${file.role}`);
+}
+console.log(`excluded: ${candidates.length - selected.length}`);
+```
+
+```text
+1. AGENTS.md — rules
+2. tests/checkout.test.js — failure
+3. src/checkout.js — symbol owner
+4. src/money.js — direct dependency
+excluded: 2
+```
+
+<TryToBreak items={['a budget of zero', 'two candidates with the same priority', 'a generated file named in the failure']} />
+
+</Depth>
+
+The output explains why each admitted path is present. `README.md` is not declared useless; it loses to evidence that constrains the immediate decision. `dist/app.js` stays excluded because its source should be found and edited instead.
+
+Numeric priority is an example policy, not a relevance oracle. A production selector should also validate path scope, instruction precedence, file size, sensitivity, and whether the candidate still exists. The manifest remains valuable even when a human chooses every entry.
+
+### Expanding from a concrete clue
+
+The next example follows dependency edges from the failing test. The initial one-edge view reaches the implementation. A later clue about tax behavior justifies a deeper traversal that includes the collaborators and jurisdiction configuration.
+
+```javascript run title="context_expansion.js"
+const imports = new Map([
+  ["tests/checkout.test.js", ["src/checkout.js"]],
+  ["src/checkout.js", ["src/money.js", "src/tax.js"]],
+  ["src/tax.js", ["config/jurisdictions.json"]],
+]);
+
+function expand(start, maxDepth) {
+  const queue = [{ path: start, depth: 0 }];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current.path) || current.depth > maxDepth) continue;
+    seen.add(current.path);
+    for (const dependency of imports.get(current.path) ?? []) {
+      queue.push({ path: dependency, depth: current.depth + 1 });
+    }
+  }
+
+  return [...seen];
+}
+
+console.log("initial:", expand("tests/checkout.test.js", 1));
+console.log("after tax clue:", expand("tests/checkout.test.js", 3));
+```
+
+```text
+initial: [ 'tests/checkout.test.js', 'src/checkout.js' ]
+after tax clue: [
+  'tests/checkout.test.js',
+  'src/checkout.js',
+  'src/money.js',
+  'src/tax.js',
+  'config/jurisdictions.json'
+]
+```
+
+The traversal has a visited set, so cycles don't make it loop forever. Depth is only a teaching control. Real expansion should follow the relationship that answers the current question and should also search reverse references, registrations, generated mappings, and runtime configuration where the language requires them.
+
+The important change is the reason for expansion: a tax clue appears. Without such a clue, the larger list is merely more text. With it, the new files can confirm or reject a specific hypothesis.
+
+### Rejecting a stale snapshot
+
+The final example records a short SHA-256 digest when `src/retry.js` enters context. Another actor changes the repository map before the edit. The guard detects that the snapshot is stale and reacquires the current text.
+
+```javascript run title="freshness_guard.js"
+import { createHash } from "node:crypto";
+
+const repository = new Map([
+  ["src/retry.js", "export const retryLimit = 3;\n"],
+]);
+
+function digest(text) {
+  return createHash("sha256").update(text).digest("hex").slice(0, 10);
+}
+
+function readSnapshot(path) {
+  const text = repository.get(path);
+  return { path, text, digest: digest(text) };
+}
+
+let context = readSnapshot("src/retry.js");
+console.log(`selected ${context.path} @ ${context.digest}`);
+
+repository.set("src/retry.js", "export const retryLimit = 5;\n");
+
+const currentDigest = digest(repository.get(context.path));
+if (currentDigest !== context.digest) {
+  console.log(`stale ${context.digest} -> ${currentDigest}`);
+  context = readSnapshot(context.path);
+}
+
+console.log(`ready ${context.path} @ ${context.digest}`);
+console.log(context.text.trim());
+```
+
+```text
+selected src/retry.js @ bb31e24fcc
+stale bb31e24fcc -> 4394708645
+ready src/retry.js @ 4394708645
+export const retryLimit = 5;
+```
+
+The guard prevents an edit based on `retryLimit = 3` from overwriting the newer value. Production patch tools often get the same property by requiring exact old text or a baseline revision. If the precondition fails, reread and recompute; don't force the old patch onto new content.
+
+The ten-character digest is adequate for readable demonstration output, not adversarial integrity or identity. Use the repository's revision identifiers or a full suitable digest where collision resistance matters. In every case, freshness is separate from correctness: the current file may still contain a bug.
+
+## Pitfalls
+
+### Loading the repository wholesale
+
+> [!PITFALL]
+> Sending every reachable file consumes the context budget with dependency trees, generated output, vendored code, and repeated documentation. It also increases the chance that credentials or irrelevant imperative text enter the model request.
+
+**Fix:** define default exclusions, begin from task signals, and admit each item with a role and reason. Inspect ignored or generated material only when a concrete clue requires it, and select the originating source whenever possible.
+
+### Trusting retrieval as current truth
+
+> [!PITFALL]
+> An embedding index, IDE cache, copied excerpt, or earlier tool result may point to the right file but contain an older revision. Applying an edit from that snapshot can erase another change or repair code that no longer runs.
+
+**Fix:** use retrieval to find candidates, then reread authoritative files before editing. Attach a revision, digest, or exact-text precondition to computed patches and refresh the reasoning when it fails.
+
+### Reading only the obvious target
+
+> [!PITFALL]
+> A local function can look wrong while its callers depend on the current behavior, a schema constrains its output, or configuration selects another implementation. Editing the first matching file produces a coherent patch with an unexamined blast radius.
+
+**Fix:** search definitions and references in both directions. Read the relevant contract, callers, tests, and runtime selection point, then state which relationships were checked and which dynamic ones remain uncertain.
+
+### Turning summaries into evidence
+
+> [!PITFALL]
+> A fluent session summary can drop a negation, merge two revisions, or present a suspected cause as established. Repeating that summary in later turns makes the unsupported claim feel increasingly authoritative.
+
+**Fix:** keep constraints, observations, and inferences distinct. Preserve paths, symbols, revisions, commands, exit codes, and raw-output references, and reacquire any precise fact that controls the next edit or completion claim.
+
+### Reusing evidence after invalidation
+
+> [!PITFALL]
+> Tests that passed before the patch, type information from before dependency installation, or status from another worktree do not describe the current artifact. Long sessions make this temporal mismatch easy to miss.
+
+**Fix:** associate observations with their environment and refresh triggers. After a relevant edit or environment change, inspect the current diff and rerun the affected checks from the recorded directory before calling the task complete.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+A model with incomplete context may change a generated client instead of its schema, implement an existing helper again because retrieval missed it, or update one call site while leaving an indirect consumer broken. With stale context it may overwrite a teammate's edit, cite a test result from before the patch, or preserve a requirement that the user already replaced. Large log dumps add another failure mode: an instruction-like line in untrusted output can distract the model while the actual error and repository rules fall outside the active window.
+
+**Ask your AI to check**
+
+- Produce a context manifest with each path's role, selection reason, scope, and freshness marker.
+- Name the definition, direct and indirect callers, applicable instructions, contract, runtime selection point, and tests for the symbol being changed.
+- Separate observed facts from inferences, then list which observations became stale after the latest edit and rerun.
+
+**Review checklist**
+
+- Confirm the agent read the current target and governing instructions, not only a retrieved excerpt or summary.
+- Trace every changed interface to its consumers and map every correctness claim to current command output or a human decision.
+- Inspect the final diff for unexpected paths, generated artifacts, weakened tests, secret-bearing context, and unresolved assumptions.
+
+**Prompt vocabulary**
+
+Use the exact terms `context window`, `working set`, `source of truth`, `authoritative source`, `context provenance`, `freshness marker`, `invalidation trigger`, `retrieval query`, `definition and references`, `call site`, `dependency edge`, `blast radius`, `raw observation`, and `context manifest`. Ask for a "path, role, reason, revision, refresh trigger" table; "read the relevant files" doesn't define relevance or freshness.
+
+<Depth level="deep">
+
+## Context provenance and invalidation
+
+Context becomes dependable when each important item answers two questions: where did this come from, and what would make it stale? Provenance lets you inspect the source behind a claim. Invalidation prevents an observation from silently surviving the change that made it obsolete.
+
+### A provenance record
+
+A useful record doesn't need to reproduce the whole file. It needs enough information to reacquire and judge the item:
+
+- Identity: repository, worktree, path, symbol or line locator.
+- Acquisition: tool, query or command, working directory, and time or sequence number.
+- Version: commit, worktree state, content digest, dependency state, or runtime version.
+- Classification: constraint, observation, inference, decision, or unresolved assumption.
+- Lifetime: the event that requires refresh or removal.
+
+Line numbers alone are fragile because edits above a symbol move them. Pair them with a path and symbol, exact excerpt, or digest. A commit hash alone is also insufficient for a dirty worktree because uncommitted content can differ from that commit.
+
+Provenance doesn't make a source authoritative. A copied issue comment can have perfect path and timestamp metadata while still being untrusted or mistaken. Authority comes from the task and repository governance; provenance tells you exactly what you are evaluating.
+
+### Invalidation propagates
+
+One change can stale several derived entries. Editing `src/tax.js` invalidates its earlier excerpt, the summary of its rounding branch, and test results that executed the old body. It may also weaken a root-cause inference based on that branch.
+
+Different events have different invalidation reach:
+
+| Event | Entries to reconsider |
+| --- | --- |
+| Target file edit | Excerpts, symbol summaries, patches, dependent test results |
+| Instruction edit | Scope, commands, style decisions, completion criteria |
+| Lockfile or environment change | Build, type, lint, and test observations |
+| Branch or worktree switch | Paths, digests, dirty-state assumptions, prior diffs |
+| New task constraint | Plan, selected files, rejected alternatives, approvals |
+
+An invalidated entry isn't necessarily false. It is no longer adequate evidence until checked against the new state. That distinction avoids both blind reuse and needless deletion of useful history.
+
+### Dependency-aware freshness
+
+Refreshing every file after every edit is safe but wasteful. Track which observations depend on which inputs. A documentation-only change need not invalidate a parser unit test, while changing a shared schema should invalidate every generated client and compatibility check derived from it.
+
+This dependency graph includes more than imports. Build flags, environment variables, route registries, plugin discovery, code generation inputs, database schemas, and string-based lookup can select behavior without a static call edge. When such mechanisms exist, record them as explicit uncertainty or add a repository-owned query that resolves them.
+
+Test freshness depends on the artifact tested. Record the command, directory, relevant environment, exit code, and revision or dirty-tree state. If output is truncated, keep that fact; a missing tail can hide the failure summary even when the visible lines look healthy.
+
+### Safe compaction layers
+
+Treat long-session context as four layers. Pinned constraints contain the task, permissions, and applicable instructions. The active working set contains code and tests for the next decision. The evidence ledger contains traceable observations and decisions. Disposable exploration contains superseded listings and hypotheses.
+
+Compaction should preserve the first three layers in different forms. Keep critical constraints verbatim. Keep active source fresh rather than heavily summarized. Compress ledger entries only if their provenance and status survive, and remove disposable exploration once it no longer explains an active decision.
+
+A handoff should state the baseline and current dirty state, files changed, checks run with exit codes, checks now stale, unresolved assumptions, and the exact next decision. "Continue fixing checkout" is not enough to reconstruct either scope or evidence.
+
+### A refresh protocol
+
+Before a material edit:
+
+1. Confirm repository root, worktree, current status, and applicable instruction paths.
+2. Reopen the target, exact contract, and the callers or tests on which the edit depends.
+3. Compare the current contents with the snapshot used to compute the patch.
+
+After the edit:
+
+1. Inspect the baseline-to-current diff, including deletions and unexpected files.
+2. Update or reject earlier inferences in light of the actual changed text.
+3. Rerun checks whose inputs changed and record command, directory, exit code, and truncation.
+
+Before completion, map each acceptance criterion to fresh evidence. Some criteria, such as product wording or migration risk, require a human decision rather than a command. Label that gap plainly instead of upgrading a nearby automated check into proof.
+
+### Budgeting for coverage
+
+Context capacity is a constraint, not the objective. A smaller, well-connected working set can cover the relevant behavior better than a larger bag of semantically similar snippets. Measure selection quality by whether the next decision has its constraints, implementation, consumers, and verifier represented.
+
+When capacity is tight, keep the exact task and governing rules, then preserve the narrow source slices and raw failure evidence that control the next action. Summarize stable background with provenance. Drop duplicates, generated copies, successful dead ends, and output unrelated to the active failure.
+
+If you can't fit an essential contract and its affected implementation at once, split the work into explicit phases. Reacquire the shared contract at each boundary and verify the intermediate artifact. Silent truncation is not a phase boundary because nobody knows which assumption disappeared.
+
+### Context as a review artifact
+
+A context manifest helps review even when the final patch is small. It shows what the agent believed was authoritative, what it intentionally excluded, and where an omitted caller or stale observation could have shaped the result.
+
+The manifest need not expose private prompts or every exploratory read. It should expose the engineering facts needed to reproduce the decision: relevant paths and roles, baseline, applicable rules, commands, freshness status, and known gaps. Sensitive values should be redacted at acquisition rather than copied and hidden later.
+
+Good context management doesn't guarantee a correct patch. It creates a traceable path from task to evidence to change, so tests and reviewers can find where the reasoning went wrong. That is the useful standard: not whether the model saw everything, but whether its decisive context was relevant, current, and inspectable.
+
+</Depth>
+
+<Checkpoint id="ai-era/agent-context-management" />
+
+## Further reading
+
+- [OpenAI Codex Docs: `AGENTS.md`](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+- [GitHub Docs: adding repository custom instructions for GitHub Copilot](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/add-custom-instructions/add-repository-instructions)
+- [Claude Code Docs: how Claude remembers your project](https://code.claude.com/docs/en/memory)
+- [Git documentation: `git status`](https://git-scm.com/docs/git-status)
+- [Git documentation: `git diff`](https://git-scm.com/docs/git-diff)
