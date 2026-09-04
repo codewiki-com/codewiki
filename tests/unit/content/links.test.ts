@@ -117,6 +117,20 @@ describe('extractLinks', () => {
     ]);
   });
 
+  it('skips yaml frontmatter but keeps absolute line numbers', () => {
+    const md = [
+      '---',
+      'title: Topic',
+      'canonical: https://meta.example/topic',
+      '---',
+      '',
+      'Body https://body.example/x here.',
+    ].join('\n');
+    expect(extractLinks(md)).toEqual([
+      { url: 'https://body.example/x', line: 6, text: 'https://body.example/x' },
+    ]);
+  });
+
   it('ignores relative links, anchors and link titles', () => {
     const md = 'See [a](/topics/x), [b](#anchor) and [c](https://t.example/z "Title").';
     expect(extractLinks(md).map((link) => link.url)).toEqual(['https://t.example/z']);
@@ -155,6 +169,29 @@ describe('bookTitles', () => {
       { line: 9, title: 'Refactoring' },
       { line: 10, title: 'Clean Code by Robert C. Martin' },
     ]);
+  });
+
+  it('matches only anchored further-reading headings', () => {
+    const section = ['', '- 《书名》'];
+    expect(bookTitles(['## 延伸阅读', ...section].join('\n'))).toEqual([{ line: 3, title: '书名' }]);
+    expect(bookTitles(['## 2. Further Reading', ...section].join('\n'))).toEqual([
+      { line: 3, title: '书名' },
+    ]);
+    for (const heading of ['## Rvalue References', '## Circular References', '## 快速参考表']) {
+      expect(bookTitles([heading, ...section].join('\n'))).toEqual([]);
+    }
+  });
+
+  it('leaves entries that carry a link or a url to the link checker', () => {
+    const md = [
+      '## Further reading',
+      '',
+      '- [Total TypeScript](https://tt.example/) - courses by Matt Pocock',
+      '- _Refactoring_ https://refactoring.example/',
+      '- ![cover](https://img.example/c.png) *Clean Code*',
+      '- 《深入理解计算机系统》',
+    ].join('\n');
+    expect(bookTitles(md)).toEqual([{ line: 6, title: '深入理解计算机系统' }]);
   });
 
   it('recognises the Chinese and reference headings', () => {

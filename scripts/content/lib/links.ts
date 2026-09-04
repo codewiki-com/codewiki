@@ -100,8 +100,21 @@ interface ProseLine {
   text: string;
 }
 
+/** Closing delimiter of a YAML frontmatter block. */
+const FRONTMATTER_END = /^(?:---|\.\.\.)\s*$/;
+
+/** Index of the first body line, skipping a leading `---` frontmatter block. */
+function bodyStart(lines: string[]): number {
+  if (lines[0]?.trim() !== '---') return 0;
+  const end = lines.findIndex((line, i) => i > 0 && FRONTMATTER_END.test(line));
+  return end === -1 ? 0 : end + 1;
+}
+
 /**
  * Every line that is not inside a fenced code block, with inline code spans blanked.
+ *
+ * YAML frontmatter is skipped: its values are metadata, not prose, and a stray `---`
+ * would otherwise open a phantom section. Line numbers stay absolute either way.
  *
  * `markdown.ts` strips fences by dropping lines, which loses the line numbers every
  * finding here has to report, so the scan is repeated locally against the same fence
@@ -111,7 +124,7 @@ function proseLines(md: string): ProseLine[] {
   const out: ProseLine[] = [];
   const lines = md.split('\n');
   let fence: { marker: string; length: number } | null = null;
-  for (let i = 0; i < lines.length; i += 1) {
+  for (let i = bodyStart(lines); i < lines.length; i += 1) {
     const line = lines[i];
     const match = OPEN_FENCE.exec(line);
     if (fence) {
@@ -206,8 +219,14 @@ function count(text: string, char: string): number {
 // Book titles
 // ---------------------------------------------------------------------------
 
-/** Headings that open a further-reading section, in both languages. */
-const READING_HEADING = /further reading|\breferences\b|延伸阅读|参考/i;
+/**
+ * Headings that open a further-reading section, in both languages. Anchored on purpose:
+ * a substring match turns every `Rvalue References` or `快速参考表` section — 241 of the
+ * 1436 candidates in the staging corpus — into a wall of false book titles.
+ */
+const READING_HEADING = /^(further reading|延伸阅读|references|参考(资料|文献|链接)?)$/i;
+/** Leading list numbering on a heading (`## 2. Further reading`). */
+const HEADING_NUMBER = /^\d+\s*[.)、]\s*/;
 const CJK_TITLE = /《([^》\n]+)》/;
 /** `_title_`, rejected when either underscore sits inside a word (`snake_case`). */
 const UNDERSCORE_TITLE = /(?<![\w\\])_([^_\n]+)_(?!\w)/;
@@ -221,9 +240,11 @@ const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
  *
  * The corpus cites books as `《书名》`, `_Title_` or `*Title*`, and sometimes as plain
  * text followed by an author (`Clean Code by Robert C. Martin`). None of those can be
- * verified automatically, so every match is reported for a human to confirm. Only the
- * section itself is scanned: it runs from its heading to the next heading at the same
- * or a higher level.
+ * verified automatically, so every match is reported for a human to confirm. Entries that
+ * carry a link or a URL are left alone — {@link checkLinks} already vouches for those.
+ *
+ * Only the section itself is scanned: it runs from its heading to the next heading at the
+ * same or a higher level.
  */
 export function bookTitles(md: string): BookTitle[] {
   const out: BookTitle[] = [];
@@ -232,7 +253,7 @@ export function bookTitles(md: string): BookTitle[] {
     const heading = ATX_HEADING.exec(text);
     if (heading) {
       const level = heading[1].length;
-      if (READING_HEADING.test(heading[2] ?? '')) depth = level;
+      if (READING_HEADING.test(headingText(heading[2]))) depth = level;
       else if (depth > 0 && level <= depth) depth = 0;
       continue;
     }
@@ -243,8 +264,20 @@ export function bookTitles(md: string): BookTitle[] {
   return out;
 }
 
+/** Normalise a heading for matching: drop list numbering and surrounding space. */
+function headingText(raw: string | undefined): string {
+  return (raw ?? '').trim().replace(HEADING_NUMBER, '').trim();
+}
+
+/**
+ * A Markdown link target or a bare URL on the line. Such an entry is already verified by
+ * {@link checkLinks}, so it is not a title anybody has to look up by hand.
+ */
+const LINKED_LINE = /\]\(|https?:\/\//i;
+
 /** The cited title on one line, or `null` when the line names no book. */
 function bookTitle(text: string): string | null {
+  if (LINKED_LINE.test(text)) return null;
   const marked = CJK_TITLE.exec(text) ?? UNDERSCORE_TITLE.exec(text);
   if (marked) return marked[1].trim() || null;
   const star = STAR_TITLE.exec(text);
