@@ -8,6 +8,7 @@ import {
   identityFor,
   outputPathsFor,
   renderWriteBrief,
+  topicWriteStatus,
   WRITE_KINDS,
   writeVarsFor,
   type WriteBriefOptions,
@@ -29,11 +30,45 @@ beforeEach(async () => {
   const stagingRoot = path.join(root, 'staging');
   const topicsRoot = path.join(root, 'topics');
   const glossaryRoot = path.join(root, 'glossary');
+  const newTopicsPath = await put(
+    'new-topics.yaml',
+    YAML.stringify({
+      tracks: {
+        'ai-era': [
+          {
+            id: 'ai-era/agent-context-management',
+            section: 'working-with-agents',
+            title: { en: 'Agent context management', zh: '智能体上下文管理' },
+            description: {
+              en: 'Select and refresh repository context so an agent reasons from relevant evidence.',
+              zh: '选择并及时更新仓库上下文，让智能体根据相关证据进行推理。',
+            },
+            difficulty: 'beginner',
+            prerequisites: ['ai-era/ai-coding-agents'],
+            why: 'Agents can act confidently on stale context.',
+          },
+          {
+            id: 'ai-era/agent-task-planning',
+            section: 'working-with-agents',
+            title: { en: 'Agent task planning', zh: '智能体任务规划' },
+            description: {
+              en: 'Turn a coding goal into bounded steps and checkpoints that an agent can execute.',
+              zh: '把编码目标拆成有边界的步骤和检查点，便于智能体执行。',
+            },
+            difficulty: 'intermediate',
+            prerequisites: ['ai-era/agent-context-management'],
+            why: 'Agents drift when a task has no stopping rule.',
+          },
+        ],
+      },
+    }),
+  );
   options = {
     stagingRoot,
     topicsRoot,
     glossaryRoot,
     templatesRoot: repo,
+    newTopicsPath,
     today: '2026-09-04',
     inventoryRef: null,
   };
@@ -66,6 +101,10 @@ describe('write brief variables', () => {
   });
 
   it('normalizes topic, track and scoped path ids without guessing unknown scopes', () => {
+    expect(identityFor('topic', 'ai-era/agent-context-management')).toMatchObject({
+      track: 'ai-era',
+      slug: 'agent-context-management',
+    });
     expect(identityFor('quiz', 'python/closures')).toMatchObject({ track: 'python', slug: 'closures' });
     expect(identityFor('interview', 'python')).toMatchObject({ track: 'python', slug: 'python' });
     expect(identityFor('path', 'python/python-from-zero')).toMatchObject({
@@ -74,12 +113,46 @@ describe('write brief variables', () => {
     });
     expect(identityFor('cheatsheet', 'python')).toMatchObject({ track: 'python', slug: 'python' });
     expect(() => identityFor('quiz', 'closures')).toThrow('needs a {track}/{slug} id');
+    expect(() => identityFor('topic', 'agent-context-management')).toThrow('needs a {track}/{slug} id');
     expect(() => identityFor('path', 'mystery-route')).toThrow('needs a {track}/{slug} scope');
+  });
+
+  it('fills a new topic brief from the approved plan and includes planned siblings', async () => {
+    const vars = await writeVarsFor('topic', 'ai-era/agent-context-management', options);
+    expect(vars).toMatchObject({
+      TOPIC_ID: 'ai-era/agent-context-management',
+      TRACK: 'ai-era',
+      SLUG: 'agent-context-management',
+      SECTION: 'working-with-agents',
+      TITLE_EN: 'Agent context management',
+      TITLE_ZH: '智能体上下文管理',
+      DESCRIPTION_EN: 'Select and refresh repository context so an agent reasons from relevant evidence.',
+      DESCRIPTION_ZH: '选择并及时更新仓库上下文，让智能体根据相关证据进行推理。',
+      DIFFICULTY: 'beginner',
+      PREREQUISITES: '[ai-era/ai-coding-agents]',
+      WHY: 'Agents can act confidently on stale context.',
+      TODAY: '2026-09-04',
+      SLUG_FLAT: 'ai-era__agent-context-management',
+    });
+    expect(vars.SIBLINGS).toContain('ai-era/agent-task-planning — Agent task planning');
+    expect(vars.SIBLINGS).not.toContain('ai-era/agent-context-management —');
+    expect(vars.GLOSSARY_IDS).toContain('- closure');
+  });
+
+  it('rejects topic ids outside the approved plan and detects reviewed articles', async () => {
+    await expect(writeVarsFor('topic', 'ai-era/not-approved', options)).rejects.toThrow('is not approved');
+    await expect(topicWriteStatus('ai-era/agent-context-management', options)).resolves.toBe('pending');
+    await put(
+      'topics/ai-era/agent-context-management.en.mdx',
+      '---\ntitle: Agent context management\nstatus: reviewed\n---\n',
+    );
+    await expect(topicWriteStatus('ai-era/agent-context-management', options)).resolves.toBe('reviewed');
   });
 });
 
 describe('write prompt rendering', () => {
   const ids = {
+    topic: 'ai-era/agent-context-management',
     quiz: 'python/closures',
     kata: 'python/closures',
     interview: 'python',
@@ -116,6 +189,23 @@ describe('write prompt rendering', () => {
 });
 
 describe('produced paths', () => {
+  it('includes the complete topic pair and extraction sidecars', async () => {
+    await expect(
+      outputPathsFor('topic', 'ai-era/agent-context-management', {
+        topicsRoot: 'topics',
+        quizzesRoot: 'quizzes',
+        interviewRoot: 'interview',
+        proposalsRoot: 'proposals',
+      }),
+    ).resolves.toEqual([
+      'topics/ai-era/agent-context-management.en.mdx',
+      'topics/ai-era/agent-context-management.zh.mdx',
+      'quizzes/ai-era/agent-context-management.yaml',
+      'interview/ai-era.yaml',
+      'proposals/ai-era-agent-context-management.yaml',
+    ]);
+  });
+
   it('includes every checkpoint bank discovered in a written path', async () => {
     const pathsRoot = path.join(root, 'paths');
     const quizzesRoot = path.join(root, 'quizzes');
