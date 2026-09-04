@@ -1,0 +1,407 @@
+---
+title: Go map
+description: Go map 用键定位值；理解可比较键、零值、共享语义、无序遍历和并发边界，才能避开常见的数据错误。
+track: go
+section: types-interfaces
+difficulty: intermediate
+tags: [maps, hash-table, comparable, comma-ok]
+prerequisites: [go/fundamentals]
+related: [go/slices, go/structs, go/interfaces, go/sync]
+terms: [hash-table, zero-value, comparable-type, comma-ok-idiom]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/maps
+sources:
+  - { title: 'The Go Programming Language Specification - Map types', url: 'https://go.dev/ref/spec#Map_types' }
+  - { title: 'The Go Programming Language Specification - For statements', url: 'https://go.dev/ref/spec#For_statements' }
+  - { title: 'Go built-in functions - clear', url: 'https://pkg.go.dev/builtin#clear' }
+  - { title: 'Go maps package', url: 'https://pkg.go.dev/maps' }
+  - { title: 'Go FAQ - atomic maps', url: 'https://go.dev/doc/faq#atomic_maps' }
+  - { title: 'Go sync package - WaitGroup.Go', url: 'https://pkg.go.dev/sync#WaitGroup.Go' }
+origin: old/src/content/docs/go/maps.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `map[K]V` 是按唯一键索引值的内置类型。键必须可比较，读取、写入和删除都使用同一种键相等规则。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    缺失键会返回值类型的零值，遍历顺序也没有保证。map 的副本仍共享数据，而且普通 map 不能与写操作并发访问。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    用 comma-ok 区分「缺失」与「零值」，需要稳定输出时先排序键，并通过互斥锁或单一 goroutine 管理写入。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Go 的 map 是一种内置关联容器。类型 `map[K]V` 把键类型 `K` 映射到值类型 `V`，同一个键最多对应一个条目。语言规范把它定义为无序集合，因此 map 表达的是查找关系，不表达位置或顺序。
+
+map 适合索引、计数、去重和按标识符聚合。例如，`map[string]int` 可以记录库存数量，`map[UserID]Profile` 可以按用户标识查资料。需要按整数位置访问连续元素时，应选择 slice；需要稳定顺序时，则要另存顺序或在输出前排序键。
+
+实现通常会使用<Term id="hash-table">哈希表（hash table）</Term>一类结构，但具体布局不是 Go 语言契约。应用代码只应依赖规范保证的键比较、读写、删除与遍历语义。依赖运行时私有桶结构的代码和解释，会随 Go 实现变化而失效。
+
+map 的键必须是<Term id="comparable-type">可比较类型（comparable type）</Term>。布尔、数字、字符串、指针和 channel 可以作为键；数组和结构体只有在其组成部分都可比较时才可以。slice、map 和函数不能作为键。
+
+值类型不受这项限制。值可以是 slice、另一个 map、函数、接口或大型结构体，但这些选择会影响复制与所有权。`map[string][]byte` 中的条目虽然按字符串查找，其中的字节 slice 仍可能与别处共享底层数组。
+
+## 工作原理
+
+### 类型、键与条目
+
+声明 `map[string]int` 后，所有键都是 `string`，所有值都是 `int`。这比用 `map[string]any` 保存异构数据更早暴露类型错误，也省去读取后的类型断言。只有确实需要动态值时才使用接口值。
+
+键的 `==` 规则也决定 map 是否把两个键视为同一个键。结构体键会逐字段比较，数组键会逐元素比较，指针键比较地址。使用领域类型还能阻止形状相同但含义不同的标识符混用，例如 `map[UserID]Profile` 不接受 `ProductID`。
+
+接口类型在静态上可比较，却可能装入不可比较的动态值。把 `[]int` 装进 `any` 后再作为 `map[any]V` 的键，会在运行时 panic。公共 API 若接受任意接口键，就把原本的编译期约束推迟到了运行时。
+
+### 初始化与 nil map
+
+map 类型变量没有显式初始化时，其<Term id="zero-value">零值（zero value）</Term>是 `nil`。nil map 的长度为零；读取会得到值类型的零值，`range` 不执行循环体，`delete` 和 `clear` 也可以安全调用。只有新增或更新条目会 panic。
+
+map 字面量与 `make` 都会创建可写的非 nil map：
+
+| 写法 | 初始状态 | 是否可写 |
+| --- | --- | --- |
+| `var counts map[string]int` | nil、长度为 `0` | 否 |
+| `counts := map[string]int{}` | 非 nil、长度为 `0` | 是 |
+| `counts := make(map[string]int)` | 非 nil、长度为 `0` | 是 |
+| `counts := make(map[string]int, 100)` | 非 nil，带容量提示 | 是 |
+
+`make` 的第二个参数只是初始容量提示。它不限制最终条目数，也不能通过 `cap` 读取。是否提供提示应由已知规模和实际测量决定，而不是把它当成正确性要求。
+
+### 读取、存在性与更新
+
+表达式 `value := m[key]` 总会产生一个值。键存在时得到存储值；键不存在或 `m` 为 nil 时，得到 `V` 的零值。因此，单值读取不能回答「这个键是否存在」。
+
+双值形式 `value, ok := m[key]` 会额外返回布尔值。`ok` 为 `true` 表示条目存在，即使 `value` 恰好是 `0`、`false`、`""` 或 `nil`。这种写法通常称为<Term id="comma-ok-idiom">comma-ok 惯用法（comma-ok idiom）</Term>。
+
+赋值 `m[key] = value` 会新增条目或替换现有值。`m[key]++` 也合法：缺失的整数值先按零值读取，再写回递增结果。`delete(m, key)` 在键缺失时不做任何事，`clear(m)` 则删除全部条目。
+
+### 共享语义
+
+map 变量本身按值赋值和传参，但非 nil map 值引用实现管理的数据。执行 `alias := original` 不会复制所有条目；通过 `alias` 写入的变化也能从 `original` 观察到。函数参数同样如此，所以接收 `map[K]V` 的函数可以改动调用方看到的条目。
+
+标准库的 `maps.Clone` 会创建新的顶层 map，但它是浅拷贝。键和值通过普通赋值复制；若值是 slice、map 或指针，克隆前后仍可能共享更深层的数据。真正的独立副本需要按领域结构继续复制。
+
+map 元素通常不可寻址。可以整体替换 `profiles[id]`，却不能直接写 `profiles[id].Name = "Lin"`。先取出结构体、修改副本并写回，或者有意使用指针值；后者又会引入共享可变对象，需要明确所有权。
+
+### 遍历与顺序
+
+`for key, value := range m` 会访问 map 的条目，但规范不规定顺序，同一个 map 的两次遍历也不保证一致。测试、JSON 之外的文本输出、签名输入或迁移文件若要求稳定顺序，应先收集并排序键。
+
+遍历期间删除尚未访问的条目是有定义的：该条目不会再产生迭代值。遍历期间新增的条目可能被访问，也可能被跳过，而且每个新条目的选择可以不同。因此，可以在过滤循环中删除；不要在同一循环里新增条目并依赖是否看见它们。
+
+### 并发边界
+
+只要没有 goroutine 修改 map，多个 goroutine 可以并发读取它，包括查找和 `range`。一旦存在写入，所有可能重叠的 map 访问都需要同步。数据竞争本身就是缺陷，不能把运行时有时报告的 fatal error 当作同步机制。
+
+一般容器可用 `sync.Mutex` 或 `sync.RWMutex` 把 map 与锁放在同一个结构体中。另一种设计是让一个 goroutine 独占 map，其他 goroutine 通过 channel 发送操作。`sync.Map` 针对特定并发模式优化，不是给任意 `map[K]V` 自动加线程安全的替代语法。
+
+## 示例
+
+下面四个程序依次展示存在性检查、稳定遍历、复制边界和同步写入。每段代码都可单独保存，并用 `go run 文件名` 执行；所示输出来自 Go 1.27.0。
+
+### 区分缺失键与零值
+
+库存中确实保存了 `"orange": 0`。直接读取 `orange` 和缺失的 `grape` 都得到 `0`，只有 comma-ok 的第二个结果能区分两者。
+
+<Depth level="quick">
+
+```go run title="inventory.go"
+package main
+
+import "fmt"
+
+func main() {
+	inventory := map[string]int{
+		"apple":  12,
+		"orange": 0,
+	}
+
+	fmt.Println("orange direct:", inventory["orange"])
+	fmt.Println("grape direct:", inventory["grape"])
+
+	count, ok := inventory["orange"]
+	fmt.Printf("orange: count=%d present=%t\n", count, ok)
+	_, ok = inventory["grape"]
+	fmt.Println("grape present:", ok)
+
+	delete(inventory, "apple")
+	fmt.Println("entries after delete:", len(inventory))
+	clear(inventory)
+	fmt.Println("entries after clear:", len(inventory))
+}
+```
+
+```text
+orange direct: 0
+grape direct: 0
+orange: count=0 present=true
+grape present: false
+entries after delete: 1
+entries after clear: 0
+```
+
+</Depth>
+
+不要用 `inventory[item] != 0` 代替存在性检查，那会把零库存误判为缺失。只有当领域契约明确规定零值等于缺失时，单值读取才足够。
+
+### 生成稳定顺序的报告
+
+`range` 的顺序不能进入可观察契约。这里用 `maps.Keys` 取得键序列，再用 `slices.Sorted` 排序；最终输出不依赖本次遍历从哪里开始。
+
+```go run title="sorted_report.go"
+package main
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+)
+
+func main() {
+	prices := map[string]int{
+		"notebook": 7,
+		"marker":   3,
+		"eraser":   2,
+	}
+
+	for _, item := range slices.Sorted(maps.Keys(prices)) {
+		fmt.Printf("%s=%d\n", item, prices[item])
+	}
+}
+```
+
+```text
+eraser=2
+marker=3
+notebook=7
+```
+
+键排序只定义键顺序。如果需求是按值排序或处理并列值，需要把条目转换为结构体 slice，并明确完整的比较规则。不要让 map 的偶然遍历顺序充当并列规则。
+
+### 看清浅拷贝边界
+
+普通赋值让 `alias` 与 `original` 指向同一张 map。`maps.Clone` 分离顶层条目，但其中的 slice 值仍共享底层数组，所以修改元素仍会穿过克隆边界。
+
+```go run title="clone_map.go"
+package main
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+)
+
+func main() {
+	original := map[string][]string{
+		"admin": {"read", "write"},
+	}
+	alias := original
+	alias["guest"] = []string{"read"}
+
+	clone := maps.Clone(original)
+	clone["admin"][0] = "audit"
+	clone["admin"] = slices.Clone(clone["admin"])
+	clone["admin"][1] = "approve"
+
+	fmt.Println("alias added guest:", len(original))
+	fmt.Println("original admin:", original["admin"])
+	fmt.Println("clone admin:", clone["admin"])
+}
+```
+
+```text
+alias added guest: 2
+original admin: [audit write]
+clone admin: [audit approve]
+```
+
+第一次元素修改发生在克隆内层 slice 之前，所以原 map 中也变成了 `"audit"`。随后用 `slices.Clone` 分离该值，第二次修改只影响克隆。深拷贝必须针对实际嵌套形状设计，没有通用的 `map` 赋值语法会递归复制。
+
+### 用锁保护读写
+
+`Counter` 把锁和 map 封装在同一个值中。所有访问都经过方法，因此审查者不必在调用方猜测某次读写是否受保护。
+
+```go run title="safe_counter.go"
+package main
+
+import (
+	"fmt"
+	"sync"
+)
+
+type Counter struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func NewCounter() *Counter {
+	return &Counter{counts: make(map[string]int)}
+}
+
+func (c *Counter) Add(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[key]++
+}
+
+func (c *Counter) Get(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[key]
+}
+
+func main() {
+	counter := NewCounter()
+	var workers sync.WaitGroup
+	for range 4 {
+		workers.Go(func() {
+			for range 250 {
+				counter.Add("accepted")
+			}
+		})
+	}
+	workers.Wait()
+	fmt.Println("accepted:", counter.Get("accepted"))
+}
+```
+
+```text
+accepted: 1000
+```
+
+`WaitGroup.Go` 在 Go 1.25 加入标准库，负责启动函数并配对计数。它没有让 map 自动安全；正确性仍来自 `Counter` 方法持有同一把锁。对真实包还应运行 `go test -race ./...`，让竞态检测器覆盖并发路径。
+
+## 陷阱
+
+### 向 nil map 写入
+
+> [!PITFALL]
+> 结构体的 map 字段若从未初始化，读取看似正常，第一次赋值却会 panic。只覆盖读路径的测试很容易漏掉它。
+
+**修复方法：** 在构造函数、解码边界或首次写入前用 `make` 初始化。若类型应该零值可用，可以在写方法内延迟初始化；若 nil 有「尚未加载」的领域含义，则保留并写清契约。
+
+### 把零值当成缺失
+
+> [!PITFALL]
+> `if counts[key] == 0` 无法判断键不存在，还是键存在且值就是零。布尔值、字符串、指针和接口值也有同样的歧义。
+
+**修复方法：** 只要存在性影响控制流，就使用 `value, ok := counts[key]`。测试应同时包含缺失键和显式保存零值的键；只测试正数会掩盖问题。
+
+### 依赖 range 顺序
+
+> [!PITFALL]
+> map 遍历顺序未指定。某次本地运行得到稳定输出，不会把该顺序变成语言保证。
+
+**修复方法：** 在序列化、快照测试、哈希输入或面向用户的文本之前排序键。若顺序本身属于数据，就使用 slice 记录顺序，或选择明确保证顺序的数据结构。
+
+### 错误理解遍历期间的修改
+
+> [!PITFALL]
+> 「遍历时绝不能删除」不是 Go 的规则。删除尚未访问的条目会让它不再出现；真正不确定的是循环中新增的条目是否会出现。
+
+**修复方法：** 可以直接在 `range` 中删除不需要的条目。新增条目若要参与处理，应分成第二阶段，不要依赖当前遍历是否观察到它。
+
+### 直接修改结构体值的字段
+
+> [!PITFALL]
+> `profiles[id].Name = "Lin"` 不能编译，因为 map 索引表达式不是可寻址的结构体变量。模型常把它与 slice 索引混为一谈。
+
+**修复方法：** 读出结构体，修改后整体写回。只有需要共享身份时才改成 `map[ID]*Profile`，并同时处理 nil 指针、别名和并发修改。
+
+### 用赋值复制 map
+
+> [!PITFALL]
+> `backup := source` 只复制 map 值，两个变量仍共享条目。即使用 `maps.Clone`，嵌套的 slice、map 和指针值也不会递归复制。
+
+**修复方法：** 先定义需要哪一层独立性。顶层条目用 `maps.Clone`；更深层对象按领域结构逐层复制，并用变异测试证明修改副本不会改变来源。
+
+### 无同步地并发写入
+
+> [!PITFALL]
+> 一个 goroutine 写 map 时，另一个 goroutine 的读、写、删除或遍历若可能重叠，就形成数据竞争。程序没有立即崩溃也不代表安全。
+
+**修复方法：** 用同一把锁覆盖所有访问，或让单一 goroutine 拥有 map。运行竞态检测器，并检查返回 map 的方法是否把内部可变状态泄漏到锁外。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+生成代码经常省略 comma-ok，把合法的 `0` 或 `nil` 值当作缺失；也会直接返回内部 map，或声称 `copy := original` 得到了快照。另一些常见错误是依赖 `range` 生成稳定 JSON、直接修改 map 中的结构体字段，以及让多个 goroutine 写同一张普通 map。模型还可能沿用旧版运行时文章中的桶布局，把实现细节说成 Go 1.27 的语言保证。
+
+**让 AI 检查**
+
+- 列出每次 map 读取，说明调用方是否需要区分缺失键与值类型零值。
+- 跟踪每个 map 及其嵌套值的所有者和别名，指出返回值是否泄漏内部可变状态。
+- 枚举可能与写入重叠的读取、遍历、删除和写入，并标出保护它们的锁或单一所有者。
+
+**审查清单**
+
+- 用 nil map、缺失键、显式零值键和不可比较的动态接口键测试边界。
+- 对快照或克隆执行变异测试，并在要求稳定输出的路径上重复运行顺序测试。
+- 对并发路径运行 `go test -race ./...`，确认锁覆盖 map 和嵌套可变值的完整访问周期。
+
+**提示词词汇**
+
+使用准确术语：`map key comparability`（map 键可比较性）、`comma-ok idiom`（comma-ok 惯用法）、`zero value on missing key`（缺失键返回零值）、`unspecified iteration order`（未指定遍历顺序）、`map element addressability`（map 元素可寻址性）、`shallow clone`（浅克隆）、`concurrent map access`（并发 map 访问）。要求模型逐个说明所有权、存在性与同步边界，比笼统地说「检查这个 map 是否安全」更容易暴露真实缺陷。
+
+<Depth level="deep">
+
+## 可比较性与共享语义
+
+### 可比较不等于适合作键
+
+语言允许的键不一定适合领域模型。浮点数可比较，因此可以作为键，但 `NaN` 不等于自身；用它查找刚插入的条目也无法得到普通键那样的行为。包含浮点字段的结构体键会继承这种相等语义。
+
+指针也可比较，但比较的是地址，不是所指对象的内容。两个内容相同、分别分配的对象会形成两个键。若领域身份来自内容，应构造稳定的值键，例如规范化字符串或只含可比较字段的结构体。
+
+接口键把动态类型和值共同纳入相等判断。动态类型不同的 `int(1)` 与 `int64(1)` 是两个键；动态值若不可比较，插入或查找会 panic。`map[any]V` 的灵活性因此常常削弱接口契约。
+
+### map 值的复制边界
+
+规范把非 nil map 值描述为对实现特定数据结构的引用。赋值、参数传递和返回仍然复制 map 值，但这些副本指向同一份条目数据。重新给其中一个变量赋另一个 map，只改变该变量；通过任一别名更新条目，则能从其他别名看到。
+
+键和值在写入条目时按各自的赋值语义保存。结构体或数组键会复制值，之后修改原变量不会改写已存键。指针、slice、map 和接口内部引用的数据仍可能共享，因此需要逐层分析。
+
+返回只读 map 也只是文档约定，类型系统不会阻止调用方写入。需要真正快照时，函数应返回合适深度的副本；数据很小且结构固定时，返回按值复制的结构体或排序后的条目 slice 往往更容易表达边界。
+
+### 容量与实现不是 API
+
+`make(map[K]V, n)` 接收容量提示，但规范没有暴露 map 容量，也没有承诺桶数量、负载因子、增长阈值或每个桶的条目数。这些都不能成为应用算法的正确性前提。
+
+Go 的运行时实现会演进。根据旧源码复制私有 `hmap` 或桶结构，既可能在新版本中失真，也会让代码依赖 `unsafe` 和垃圾回收器细节。需要解释语言行为时，从规范与公开包 API 出发；需要解释性能时，则针对目标 Go 版本与真实工作负载测量。
+
+预分配提示可能影响某些工作负载的分配行为，但「总是传最终长度」不是普遍规则。过大的提示也有成本。只有基准测试或内存剖析显示 map 构造是瓶颈时，才值得围绕提示值优化。
+
+### 遍历修改的精确规则
+
+删除操作有明确结果：尚未到达的条目被删除后，本轮不会产生它；已经访问的条目当然不会被撤销。这个规则让原地过滤成为合法模式，不需要先把待删键复制到 slice。
+
+新增操作不同。循环期间加入的条目可能出现，也可能不出现，选择可以按条目和按轮次变化。若算法要处理新增工作，应使用显式队列或分阶段循环，而不是把 map 遍历当作工作队列。
+
+`clear(m)` 会删除所有条目；对 nil map 调用也安全。它不会给其他 map 别名换一张新 map，因此持有同一 map 值的调用方都会看到长度变成零。相反，执行 `m = make(map[K]V)` 只让当前变量指向新 map，旧别名仍能看到旧条目。
+
+### 同步必须覆盖别名
+
+把互斥锁放在 map 旁边只是第一步。若方法返回内部 map、其中的 slice 值或指针值，调用方可能在锁外修改共享数据。此时容器的方法看起来都加了锁，整体仍然有竞争。
+
+安全的读取 API 可以返回标量、按值副本或适当深度的克隆。若必须返回共享对象，就要把调用方纳入同一同步协议，并在文档中说明锁与生命周期。通常，缩小共享边界比增加更多锁更容易验证。
+
+`sync.RWMutex` 只有在测量表明确实有收益时才优于 `sync.Mutex`。无论选择哪一个，锁都应保护一个清楚的不变量，而不是只包住某行 map 语法。包含「先读，不存在再创建」的复合操作必须在一次临界区内完成。
+
+</Depth>
+
+<Checkpoint id="go/maps" />
+
+## 延伸阅读
+
+- [Go 语言规范：map 类型](https://go.dev/ref/spec#Map_types)
+- [Go 语言规范：`for` 语句与 map 遍历](https://go.dev/ref/spec#For_statements)
+- [内置 `clear` 函数](https://pkg.go.dev/builtin#clear)
+- [标准库 `maps` 包](https://pkg.go.dev/maps)
+- [Go FAQ：并发 map 访问](https://go.dev/doc/faq#atomic_maps)
+- [`sync.WaitGroup.Go` 文档](https://pkg.go.dev/sync#WaitGroup.Go)

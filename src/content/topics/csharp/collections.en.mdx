@@ -1,0 +1,401 @@
+---
+title: C# collections
+description: Choose C# collections by access pattern, equality, order, and concurrency, then avoid bugs involving mutable keys, read-only views, and compound operations.
+track: csharp
+section: types-linq
+difficulty: intermediate
+tags: [collections, list, dictionary, hashset, queue, immutability, concurrency]
+prerequisites: [csharp/fundamentals, csharp/data-types, csharp/generics]
+related: [csharp/linq, csharp/span-memory, csharp/parallel, csharp/records]
+terms: [hash-table, structural-equality, read-only-collection, equality-comparer, amortized-complexity]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/collections
+sources:
+  - { title: 'Collections - C# reference', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/collections' }
+  - { title: 'Collections and Data Structures - .NET', url: 'https://learn.microsoft.com/en-us/dotnet/standard/collections/' }
+  - { title: 'Dictionary<TKey,TValue> Class', url: 'https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2?view=net-10.0' }
+  - { title: 'HashSet<T> Class', url: 'https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.hashset-1?view=net-10.0' }
+  - { title: 'Thread-Safe Collections - .NET', url: 'https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/' }
+  - { title: 'System.Collections.Immutable Namespace', url: 'https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable?view=net-10.0' }
+origin: old/src/content/docs/csharp/collections.en.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    C# collections use different structures to store groups of values. Choose `List<T>`, `Dictionary<TKey, TValue>`, `HashSet<T>`, a queue, or another type from the way the program accesses that data.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Hash collections require stable, consistent equality, and `IReadOnlyList<T>` doesn't guarantee that the underlying data can't change. Thread-safe calls don't make a whole workflow atomic either.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Define lookup, duplicate handling, order, ownership, and concurrency boundaries first. Then choose the narrowest interface and a concrete collection that meets those constraints.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A collection stores values of a common type in one object that can be enumerated. It does more than hold elements: it defines how you locate them, whether duplicates are allowed, whether order is maintained, and what mutation means. Choosing a collection means choosing those behaviors, not just another container spelling.
+
+The usual default is `List<T>`. It fits indexed access, sequential iteration, and appending at the end. Use `Dictionary<TKey, TValue>` when you locate a value by a domain key. Use `HashSet<T>` when you care only whether a value occurs or need operations such as union and intersection.
+
+Access order can itself be part of the contract. `Queue<T>` processes work first in, first out; `Stack<T>` keeps undo records last in, first out; and `PriorityQueue<TElement, TPriority>` removes the element whose priority is smallest according to its comparer. Use `SortedDictionary<TKey, TValue>` or `SortedSet<T>` when keys or values must remain sorted.
+
+Generic collections constrain element types at compile time. Unlike the older `ArrayList` and `Hashtable`, they don't force callers to cast values through `object`, and storing value types usually doesn't box every element. New code normally chooses from `System.Collections.Generic`, `System.Collections.Concurrent`, or `System.Collections.Immutable`.
+
+Collections appear at model boundaries, in caches, batch jobs, schedulers, and API return values. The concrete type is only part of the decision there. Equality, mutability, ownership, and concurrency together determine whether the code is correct.
+
+## How it works
+
+### Interfaces describe the capability a caller needs
+
+`IEnumerable<T>` promises only that elements can be obtained in sequence. It doesn't promise indexed access, repeatable enumeration, resident in-memory data, or even the same results on two passes. A function accepting this interface shouldn't quietly assume that its argument is a list.
+
+`ICollection<T>` adds `Count` and common mutation operations. `IList<T>` adds indexed access, `ISet<T>` expresses unique elements and set operations, and `IDictionary<TKey, TValue>` expresses a key-value mapping. Read-only interfaces remove mutation members from the caller's view, but they don't automatically freeze the backing object.
+
+Use the narrowest parameter interface that supports the algorithm. Accept `IEnumerable<T>` when you only enumerate, and require `IReadOnlyList<T>` only when you need a stable count and indexing. A return type must also express ownership: a live read-only view, an independent snapshot, and an immutable value are different contracts.
+
+### Concrete types determine access cost
+
+| Need | Usual choice | Important constraint |
+| --- | --- | --- |
+| Indexed access and append at the end | `List<T>` | Middle insertion and removal shift later elements |
+| Retrieve a value by unique key | `Dictionary<TKey, TValue>` | Keys need stable hashing and equality |
+| Deduplication, membership, set operations | `HashSet<T>` | No business order to depend on |
+| First-in-first-out or last-in-first-out | `Queue<T>` / `Stack<T>` | Remove elements only from the prescribed end |
+| Always sorted by a comparer | `SortedDictionary<TKey, TValue>` / `SortedSet<T>` | Lookup and update are usually O(log n) |
+| Frequent insertion near a known node | `LinkedList<T>` | Finding the node is still O(n) |
+| Shared mutation by several threads | `System.Collections.Concurrent` types | Compound business operations may still need coordination |
+| No changes after publication | `System.Collections.Immutable` or `System.Collections.Frozen` types | Construction cost and update models differ |
+
+`List<T>` uses contiguous storage to provide O(1) indexing. When spare capacity remains, `Add` writes one new position. When capacity is exhausted, the list must allocate larger storage and copy elements. Individual appends therefore vary in cost, but a sequence has <Term id="amortized-complexity">amortized O(1) cost</Term>.
+
+`Dictionary<TKey, TValue>` and `HashSet<T>` are based on a <Term id="hash-table">hash table</Term>. They first use a hash code to narrow the candidates and then confirm a match with equality. Lookup is usually close to O(1), but that depends on comparer quality, load, and input. It isn't a worst-case guarantee for every call.
+
+Sorted collections maintain order through a comparer, with typical O(log n) lookup and update. They solve “the stored data stays sorted,” while LINQ `OrderBy` solves “produce a sorted sequence for this result.” If you sort only before output, don't change the primary storage structure just to gain ordering.
+
+### Three kinds of order aren't interchangeable
+
+“Preserve insertion order,” “remain sorted by value,” and “remove only the next highest-priority element” are different requirements. Calling all of them “ordered” produces plausible implementations that expose the wrong operations.
+
+| Ordering requirement | Suitable structure | Capability it doesn't promise |
+| --- | --- | --- |
+| Preserve business order by position | `List<T>` | Automatic sorting by element value |
+| Always enumerate by a comparer | `SortedSet<T>` / `SortedDictionary<TKey, TValue>` | Preservation of insertion order |
+| Repeatedly remove the smallest priority | `PriorityQueue<TElement, TPriority>` | Enumeration in dequeue order |
+
+`PriorityQueue` guarantees only that `Dequeue` or `TryDequeue` removes the element whose priority is smallest according to the comparer. Equal-priority elements aren't guaranteed to be first in, first out. Include a monotonically increasing sequence number in a compound priority when stability is part of the contract.
+
+When the same data needs several access paths, keep one authoritative store and build indexes around it. For example, a list can preserve display order while a dictionary locates objects by ID. Update logic must maintain both structures, or derived indexes must be rebuilt from authoritative data at a boundary.
+
+### Equality is part of the collection contract
+
+Dictionaries and hash sets use `IEqualityComparer<T>`. If you don't supply one, they use `EqualityComparer<T>.Default`, which follows the type's equality implementation. When domain rules differ—for example, when SKUs are case-insensitive—pass an explicit <Term id="equality-comparer">equality comparer</Term> to the collection constructor.
+
+The comparer must implement one coherent relation: two equal values must produce the same hash code. Data involved in hashing and equality must also remain stable while an element is in the collection. Otherwise, the object can remain in one bucket while its changed key can no longer locate it.
+
+Records commonly generate <Term id="structural-equality">structural equality</Term> from their contents. That doesn't prove every field belongs in a domain identity. A collection key should still be a small, stable identifier, or the collection should receive a comparer that considers only that identifier.
+
+## Examples
+
+All four examples use one inventory domain, but each collection serves a different access pattern. When output needs stable order, the code sorts explicitly instead of relying on hash enumeration details.
+
+### Keep order in a list and build a dictionary index
+
+Products enter a `List<Product>` because entry order matters. A dictionary provides a second access path by SKU and fixes the case rule at construction.
+
+<Depth level="quick">
+
+```csharp title="CatalogIndex.cs"
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+List<Product> products =
+[
+    new("BK-1", "Book"),
+    new("PN-2", "Pen"),
+    new("NB-3", "Notebook")
+];
+
+var bySku = new Dictionary<string, Product>(
+    StringComparer.OrdinalIgnoreCase);
+
+foreach (Product product in products)
+{
+    bySku.Add(product.Sku, product);
+}
+
+bool accepted = bySku.TryAdd("bk-1", new("bk-1", "Duplicate"));
+Console.WriteLine($"SKUs: {string.Join(", ", products.Select(p => p.Sku))}");
+Console.WriteLine($"duplicate accepted: {accepted}");
+
+if (bySku.TryGetValue("nb-3", out Product? found))
+{
+    Console.WriteLine($"lookup: {found.Name}");
+}
+
+public sealed record Product(string Sku, string Name);
+```
+
+```text
+SKUs: BK-1, PN-2, NB-3
+duplicate accepted: False
+lookup: Notebook
+```
+
+</Depth>
+
+`TryAdd` treats “the key already exists” as an ordinary result, while `Add` throws `ArgumentException` for a duplicate key. `TryGetValue` performs one lookup and makes the missing branch visible in control flow. The `bySku[key]` indexer is better when the caller has already established an invariant that the key exists.
+
+`StringComparer.OrdinalIgnoreCase` supplies both hashing and equality, so `"BK-1"` and `"bk-1"` are the same key. Ordinal rules are appropriate for protocol identifiers because they don't depend on the current culture.
+
+### Express uniqueness and set operations with a hash set
+
+Warehouse permissions have no business order, and each permission should occur once. Both sets share a comparer, and the intersection keeps the comparer from the copied left-hand set.
+
+```csharp title="PermissionSet.cs"
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+var granted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "catalog.read",
+    "stock.write",
+    "audit.read"
+};
+
+bool firstAdd = granted.Add("CATALOG.READ");
+var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "catalog.read",
+    "orders.write"
+};
+
+var available = new HashSet<string>(granted, granted.Comparer);
+available.IntersectWith(required);
+
+Console.WriteLine($"new permission added: {firstAdd}");
+Console.WriteLine($"available: {string.Join(", ", available.Order())}");
+Console.WriteLine($"all required: {required.IsSubsetOf(granted)}");
+```
+
+```text
+new permission added: False
+available: catalog.read
+all required: False
+```
+
+The Boolean result from `Add` combines the membership test and insertion, so no preceding `Contains` call is needed. `IntersectWith` mutates its receiver, which is why the example copies `granted` first. If the original belongs to the caller, permission for in-place mutation must be part of the method contract.
+
+The call to `Order()` exists only to produce deterministic text. The algorithm doesn't depend on `HashSet<T>` enumeration order. If order is a domain requirement, store it separately or choose an ordered structure.
+
+### Schedule with a queue and undo with a stack
+
+Pending restock requests need first-in-first-out processing, while the most recently processed record must be the first one undone. A queue and stack state those rules directly, without index conventions at each call site.
+
+```csharp title="RestockWorkflow.cs"
+using System;
+using System.Collections.Generic;
+
+var pending = new Queue<RestockRequest>();
+var completed = new Stack<RestockRequest>();
+
+pending.Enqueue(new("BK-1", 5));
+pending.Enqueue(new("PN-2", 12));
+pending.Enqueue(new("NB-3", 4));
+
+while (completed.Count < 2 && pending.TryDequeue(out RestockRequest? request))
+{
+    completed.Push(request);
+    Console.WriteLine($"restocked {request.Sku}: {request.Quantity}");
+}
+
+if (completed.TryPop(out RestockRequest? undone))
+{
+    Console.WriteLine($"undo {undone.Sku}");
+}
+
+Console.WriteLine($"next: {pending.Peek().Sku}");
+
+public sealed record RestockRequest(string Sku, int Quantity);
+```
+
+```text
+restocked BK-1: 5
+restocked PN-2: 12
+undo PN-2
+next: NB-3
+```
+
+`TryDequeue` and `TryPop` make an empty collection an ordinary branch. The final line uses `Peek` because the preceding flow guarantees that one element remains. If that invariant isn't clear, use `TryPeek` there too.
+
+The two collections preserve work order; they don't provide transactional compensation. A real undo operation must also record enough information to reverse external state and handle failure of the undo itself.
+
+### Distinguish a read-only view from an immutable snapshot
+
+`AsReadOnly()` wraps an existing list. A caller can't mutate the list through that wrapper, but it sees later changes made by the owner. `ToImmutableArray()` creates an immutable snapshot at the time of the call.
+
+```csharp title="PublishedCatalog.cs"
+using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+
+var names = new List<string> { "Book" };
+IReadOnlyList<string> liveView = names.AsReadOnly();
+ImmutableArray<string> snapshot = names.ToImmutableArray();
+
+names.Add("Pen");
+
+Console.WriteLine($"view: {string.Join(", ", liveView)}");
+Console.WriteLine($"snapshot: {string.Join(", ", snapshot)}");
+
+ImmutableArray<string> revised = snapshot.Add("Notebook");
+Console.WriteLine($"original snapshot count: {snapshot.Length}");
+Console.WriteLine($"revised count: {revised.Length}");
+```
+
+```text
+view: Book, Pen
+snapshot: Book
+original snapshot count: 1
+revised count: 2
+```
+
+`liveView` is a <Term id="read-only-collection">read-only collection</Term>, not a snapshot. `snapshot.Add` doesn't modify the original value either; it returns a new immutable array. If the caller ignores the return value, that logical update is lost.
+
+Neither choice promises deep immutability. If an element is mutable, a view and snapshot can still point to that same element. Element types also need a suitable immutable contract when published state must remain stable.
+
+## Pitfalls
+
+### Looking up a dictionary twice
+
+> [!PITFALL]
+> Generated code often calls `ContainsKey(key)` and then reads `dictionary[key]`. That performs two lookups, and if another thread or callback can mutate state between the steps, the first check doesn't guarantee the second read.
+
+**Fix:** use `TryGetValue` for reads, `TryAdd` for insertion, and the single operation whose semantics match an update. This doesn't make an ordinary `Dictionary` thread-safe. Reconsider the synchronization boundary when writes can be concurrent.
+
+### Mutating a hashed key
+
+> [!PITFALL]
+> If a field used by `Equals` or `GetHashCode` changes after an object enters a `Dictionary` or `HashSet`, later `Contains`, lookup, or removal can fail to locate the object that is still present.
+
+**Fix:** use immutable scalars, value objects, or records as keys, and include only stable identity in equality. If you must index a mutable object by one field, build a dictionary keyed by an immutable identifier. An identity change requires explicit removal and reinsertion.
+
+### Mutating an ordinary collection during enumeration
+
+> [!PITFALL]
+> Structural changes to the same `List<T>`, `Dictionary<TKey, TValue>`, or `HashSet<T>` inside `foreach` usually invalidate the enumerator and cause `InvalidOperationException`. Swallowing the exception doesn't define which elements were already processed.
+
+**Fix:** use `RemoveAll` for list filtering, or collect keys to remove before applying changes. When iteration really consumes elements, choose `Queue<T>`, `Stack<T>`, or a concurrent structure with explicit consuming semantics instead of depending on ordinary enumerator details.
+
+### Mistaking a read-only interface for an immutable value
+
+> [!PITFALL]
+> Returning `IReadOnlyList<T>` restricts only the static interface. A caller may hold another reference to the source list, and the provider may keep mutating it, so the result is neither necessarily a snapshot nor safe for stable cross-thread reading.
+
+**Fix:** state whether an API returns a live view, independent copy, or immutable value. Copy to an array or immutable collection for a stable snapshot. For a live view, document who can mutate it, when changes become visible, and how access is synchronized.
+
+### Depending on unspecified enumeration order
+
+> [!PITFALL]
+> Current `Dictionary` and `HashSet` implementations may produce an apparently stable order, but their core contract isn't business sorting. Rebuilding the collection, changing runtime, or changing comparer can alter tests and serialized output.
+
+**Fix:** use an explicit `OrderBy` when order belongs to the output contract, and a sorted collection or separate order structure when it belongs to storage. Tests of set content should assert set semantics instead of accidentally comparing hash-enumeration text.
+
+### Mistaking thread-safe calls for an atomic workflow
+
+> [!PITFALL]
+> `ConcurrentDictionary.GetOrAdd` is thread-safe, but its value factory can execute concurrently more than once; only one result enters the dictionary. A `TryGetValue` followed by another call doesn't automatically become one atomic business operation either.
+
+**Fix:** make value factories repeatable and free of irreversible side effects. When a rule means “charge exactly once” or spans several keys, use a lock, transaction, or dedicated coordinator that matches the business boundary, then verify it with contention tests.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models see “O(1) middle insertion” and replace `List<T>` with `LinkedList<T>`, then call the O(n) `Find` before every insertion. They also generate `ContainsKey` plus indexer double lookups, use mutable records directly as hash keys, or return an `IReadOnlyList<T>` backed by a private `List<T>` and claim the result is immutable. In concurrent code, models are especially prone to assuming a `GetOrAdd` factory runs once, which can send messages, create resources, or write audit records repeatedly.
+
+**Ask your AI to check**
+
+- List the highest-frequency lookup, insertion, removal, and ordering path for each collection, and give the complete complexity including node search.
+- Identify the equality comparer for every dictionary and set, plus every field that can still change after a key enters the collection.
+- Classify each returned collection as a live view, shallow snapshot, or immutable value, and identify every cross-thread compound operation and repeatable factory.
+
+**Review checklist**
+
+- Test every hash boundary with duplicate keys, case variants, missing keys, and mutation of key fields.
+- Read a returned value again after the provider mutates its backing data, and verify that visibility matches the API contract.
+- Put concurrent compound operations under contention, count factory executions, and confirm that side effects and invariants still hold.
+
+**Prompt vocabulary**
+
+Use the exact terms `access pattern`, `amortized complexity`, `equality comparer`, `hash code stability`, `enumeration order`, `read-only view`, `immutable snapshot`, `structural modification`, and `atomic compound operation`. Don't ask only for “the fastest collection.” Supply operation frequencies, order requirements, data ownership, and concurrency boundaries.
+
+<Depth level="deep">
+
+## Deep dive: capacity and amortized cost
+
+`List<T>` keeps `Count` separate from `Capacity`. `Count` is the number of visible elements. `Capacity` is the number that fits without another allocation. Adding beyond the current capacity makes the list obtain larger contiguous storage and copy existing elements.
+
+The growth factor is a runtime implementation detail and can't support application correctness. The stable claim is that an append without growth is normally O(1), while a growing append is O(n), so a sequence of appends is analyzed by <Term id="amortized-complexity">amortized complexity</Term>. When you know the approximate element count, pass a capacity to the constructor or call `EnsureCapacity` to reduce copying.
+
+Capacity isn't an element and doesn't change `Count`. Reserving far too much retains memory, while frequent `TrimExcess` calls can force the next growth phase to allocate again. Consider shrinking only when the collection has reached a long-lived stable state and measurement identifies its retained memory as a problem.
+
+The same analysis style applies to other growing structures. Big O describes growth as input size changes; it doesn't provide latency numbers for one machine. Comparing two O(1) operations or deciding whether preallocation matters still requires measurement on the target runtime with representative data.
+
+### The complete hash lookup contract
+
+A hash table doesn't decide equality from the hash code alone. It uses the code to locate candidate positions and then asks the comparer to confirm a match. Different keys may have the same hash code. Such collisions are normal and don't let a comparer omit the equality check.
+
+Equality should at least be reflexive, symmetric, and transitive. The crucial hashing rule is that if `Equals(x, y)` is `true`, both values must return the same hash code. The reverse isn't required: values with the same hash code can still be unequal.
+
+A comparer belongs to a collection instance. Two `HashSet<string>` objects containing the same text can use ordinal, case-insensitive, or culture-sensitive rules. Confirm that both operands express the same identity before set operations. Correctness can't depend on callers guessing the default rule.
+
+Don't put random or time-dependent data in `GetHashCode`, and don't use a mutable collection itself as a stable key. When a key comprises several fields, a `record`, `record struct`, or immutable tuple can generate consistent value equality, but you must still review whether those fields really form the domain identity.
+
+### Views, snapshots, and persistent updates
+
+A read-only wrapper removes mutation members from the exposed interface but usually keeps a reference to the source collection. It fits cases where the provider retains ownership and the caller should see current state. It isn't concurrency control. Enumeration can still fail or observe a business-inconsistent state while the provider mutates the source.
+
+Copying into an array or new list creates a container snapshot. Later additions and removals from the source don't change the new container, but element references remain shared, so the snapshot is shallow. A caller can still observe or cause changes through mutable element properties.
+
+Update methods on immutable collections return a new collection, while the old version remains valid. Many immutable types share unchanged internal structure between versions; “new collection” doesn't imply a complete element-by-element copy. For bulk construction, use the corresponding `Builder`, then publish the immutable result.
+
+Frozen collections target a different lifecycle: build first, then primarily look up and enumerate. `FrozenDictionary` and `FrozenSet` arrange data for reads during creation. Whether they beat ordinary or immutable collections depends on build count, data size, and access patterns, so measure it. They don't deeply freeze mutable elements either.
+
+### Enumeration is an in-progress read
+
+`foreach` advances an enumerator step by step; it doesn't automatically copy the whole collection. A structural change to an ordinary mutable collection can invalidate the version recorded by its enumerator and cause a later `MoveNext` to throw. The loop may already have processed several elements when that happens.
+
+“Catch the exception and continue” therefore isn't a safe mutation strategy. Create an explicit snapshot, gather changes in one phase and apply them in another, or choose an API with consuming semantics. Removing from a list by walking indexes backward avoids shifting unvisited elements, but the technique fits only an algorithm intentionally indexing that same list.
+
+Concurrent collections permit safe member calls by multiple threads, but enumeration semantics differ by type. Don't imagine a `foreach` as a database transaction snapshot. If the business needs a set of keys and values from one logical instant, establish a separate snapshot or synchronization boundary.
+
+A deferred LINQ query delays reading until enumeration too. Mutating the source after query creation can make the result reflect new state, or mutation during enumeration can fail. Materialize immediately into an appropriate collection when the query time must be frozen, and express that choice in the method name or return type.
+
+### Atomic boundaries in concurrent collections
+
+A thread-safe collection guarantees that documented members keep its own structure valid under concurrent calls. It doesn't make a business condition assembled from several member calls atomic. For example, “balance exists, read it, subtract, write back” can still lose updates even when every step uses a thread-safe dictionary.
+
+`ConcurrentDictionary<TKey, TValue>` offers `TryAdd`, `TryUpdate`, `AddOrUpdate`, and `GetOrAdd` for common conditional updates to one key. Methods accepting user delegates invoke those delegates outside internal locks, so factories or update functions may run more than once. Interpret the value eventually stored and the value returned by a call according to the exact API contract.
+
+A value factory fits pure computation or construction that is safe to retry. If construction is expensive but has no side effects, a `Lazy<T>` value may help, provided you choose `LazyThreadSafetyMode` and failure-caching behavior deliberately. If the operation charges money, sends mail, or commits an external transaction, factory invocation isn't proof of single execution.
+
+Cross-key invariants, read-modify-write sequences, and external side effects usually require coordination beyond the collection. A lock can protect an in-process critical section, a database transaction can protect persistent state, and a messaging system may require an idempotency key. A collection solves only its stated problem; it doesn't replace business transaction design.
+
+</Depth>
+
+<Checkpoint id="csharp/collections" />
+
+## Further reading
+
+- [C# collections reference](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/builtin-types/collections)
+- [.NET collections and data structures](https://learn.microsoft.com/en-us/dotnet/standard/collections/)
+- [`Dictionary<TKey, TValue>` API](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2?view=net-10.0)
+- [`HashSet<T>` API](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.hashset-1?view=net-10.0)
+- [.NET thread-safe collections](https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/)
+- [`System.Collections.Immutable` namespace](https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable?view=net-10.0)
