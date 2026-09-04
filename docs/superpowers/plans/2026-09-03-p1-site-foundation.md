@@ -1060,6 +1060,23 @@ describe('toPlainMarkdown', () => {
 
 ---
 
+### Task 20: Build-time Mermaid diagrams (added 2026-09-04 after the content calibration)
+
+**Why:** `prompts/editorial-standard.md` §2 allows one Mermaid diagram per topic and the first polished topic uses one, but the site renders ` ```mermaid ` fences as code. Diagrams must become inline SVG at build time, styled by the design tokens so both themes work, with no client-side JavaScript.
+
+**Files:**
+- Modify: `astro.config.mjs` (exclude `mermaid` from Shiki: `markdown.syntaxHighlight = { type: 'shiki', excludeLangs: ['mermaid'] }` if the processor config still routes through Astro's highlighter — read `docs/dev/astro7-notes.md` and the current `markdown.processor` setup first; the fence must reach rehype as `<pre><code class="language-mermaid">`), `package.json` (`rehype-mermaid` dev dependency; it renders with the already-installed Playwright Chromium), `src/markdown/rehype-codebox.ts` (skip `<pre>` elements that rehype-mermaid already replaced, i.e. only handle `pre > code`), `src/lib/markdown-twin.ts` (a mermaid fence stays a fenced block in the twin), `src/styles/global.css` (append `.diagram` rules)
+- Create: `src/markdown/mermaid.ts` (the plugin factory: `rehypeMermaid({ strategy: 'inline-svg', mermaidConfig: { theme: 'base', fontFamily: 'IBM Plex Sans, Noto Sans SC, sans-serif', themeVariables: { fontSize: '14px' } }, css: [pathToFileURL('node_modules/@fontsource/ibm-plex-sans/400.css')] })` wrapped so that each produced `<svg>` is placed in `<figure class="diagram" role="img" aria-label="{first line of the source}">` and given `data-diagram`), `src/styles/mermaid.css` (token overrides for the inline SVG: `.diagram svg { max-width: 100%; height: auto; } .diagram .node rect, .diagram .node polygon, .diagram .actor { fill: var(--sur); stroke: var(--line); } .diagram .label, .diagram text, .diagram .messageText, .diagram .actor-line { fill: var(--ink); color: var(--ink); stroke: none; } .diagram .edgePath path, .diagram .messageLine0, .diagram .messageLine1, .diagram .actor-line { stroke: var(--ink3); } .diagram .marker { fill: var(--ink3); stroke: var(--ink3); } .diagram .note, .diagram .labelBox { fill: var(--acc-soft); stroke: var(--acc); } .diagram .activation0 { fill: var(--acc-soft); stroke: var(--acc); }` — verify each selector against the SVG Mermaid 11 emits for `sequenceDiagram`, `flowchart` and `classDiagram`, and add what is missing)
+- Test: `tests/unit/markdown.test.ts` (a `mermaid` fence becomes `figure.diagram > svg`; a `python` fence is untouched), `tests/e2e/topic.spec.ts` (the jwt topic, once merged, or a fixture topic under `tests/fixtures/` rendered by a test page, shows a `.diagram svg` with no `<pre>` left, in both themes the SVG text colour equals `--ink`)
+
+- [ ] **Step 1:** add the dependency, the plugin factory and the config change; build the two sample topics plus a fixture MDX containing one `sequenceDiagram`, one `flowchart LR` and one `classDiagram`; confirm inline SVG output and that Shiki no longer touches the fence.
+- [ ] **Step 2:** token stylesheet; check both themes at 1440 and 390 px (the SVG scales, text stays legible ≥ 12 px).
+- [ ] **Step 3:** twin keeps the fence; `llms-full.txt` unchanged in shape.
+- [ ] **Step 4:** build time impact ≤ +20 s for the current site (report the number); Lighthouse topic budget unchanged (no JS added).
+- [ ] **Step 5: Commit** `git add -A && git commit -m "feat(markdown): build-time Mermaid diagrams as token-styled inline SVG"`
+
+---
+
 ## Self-review notes (Fable, 2026-09-03)
 
 - Spec coverage: §3 (routes, i18n) → Tasks 4, 8–10, 12, 14, 17; §4 schemas → Task 6; §5.1–5.3 → Tasks 9, 10, 12; §6 depth/runnable/palette/Ask-AI/twin/theme/settings → Tasks 12, 13, 15, 16, 17, 2; §6.1 P1 rows (In-the-AI-era block in sample content, transparency badge, Ask-AI presets, twin, llms.txt, JSON API) → Tasks 6, 12, 16, 17; §7 → Tasks 2, 3, 8; §8 → Tasks 1, 11, 13, 15, 18; §9 → Tasks 7, 17, 18, 19; §11 → every task's tests + Task 19. Bilingual mode, quizzes, paths pages, flashcards, playground, cheatsheets, compare are P2 by the spec's phasing and are deliberately absent here (the `Checkpoint` and "Add to flashcards" affordances render as placeholders).
