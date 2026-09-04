@@ -257,6 +257,8 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   }, [open, other, readRecents]);
 
   const close = useCallback(() => {
+    // Hide immediately on the closing event; Preact removes the dialog on the following render.
+    dialog.current?.setAttribute('hidden', '');
     setOpen(false);
     opener.current?.focus();
   }, []);

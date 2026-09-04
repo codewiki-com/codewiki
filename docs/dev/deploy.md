@@ -69,18 +69,18 @@ other static host, serves for a directory request.
 
 `lighthouserc.json` drives `pnpm exec lhci autorun`, which builds nothing itself: it serves the
 existing `dist` and audits four URLs — the English home page, a track hub, and the topic page in
-both languages. The gates are the four category scores at 0.95 and a 60 KB budget on scripts.
+both languages. Lighthouse uses its default mobile emulation. The gates are the four category
+scores at 0.95 and a 60 KB budget on scripts.
 
 Three notes on that file, since JSON cannot carry comments:
 
-- **`settings.preset: "desktop"`.** Under Lighthouse's mobile emulation the two topic pages score
-  0.91 on performance because of a single layout-shift event 9 ms after first paint, reported
-  against the article column with an empty previous rectangle. Chrome itself does not count it —
-  the trace event carries `had_recent_input: true` and `cumulative_score: 0`, because it lands
-  within 500 ms of the viewport change Lighthouse's own emulation triggers, and Lighthouse
-  deliberately ignores that flag inside that window. A real browser at the same viewport, with
-  the same CPU and network throttling, records no shift at all. Desktop emulation avoids the
-  artefact; the mobile metrics behind it are FCP 1.5 s, LCP 1.8 s, TBT 0 ms, Speed Index 1.5 s.
+- **Mobile CLS is gated, not hidden by a desktop preset.** The original 0.183 CLS was real: the
+  topic component's processed TOC module ran after `DOMContentLoaded` and collapsed the expanded
+  mobile contents row after first paint, moving the article column. The same behavior now marks
+  the TOC as enhanced in an inline bootstrap before the article is parsed; mobile CSS therefore
+  starts with the row collapsed, while a browser with JavaScript disabled still sees the expanded
+  contents. A local mobile run measured CLS 0 on all four URLs and performance 1.00, 0.99, 0.99,
+  and 0.99 respectively, so the 0.95 performance gate remains unchanged.
 - **`color-contrast` and `label-content-name-mismatch` are `warn`.** Both are real, both are open.
   Several palette tokens miss the 4.5:1 AA floor for small text (`--ink3` worst at 3.31:1, and
   `.toc a.deep` multiplies it by opacity 0.7 to reach 2.32:1), and the home page's palette preview
@@ -94,6 +94,8 @@ Three notes on that file, since JSON cannot carry comments:
 
 `pnpm lint && pnpm check && pnpm test && pnpm build && pnpm test:e2e && pnpm exec lhci autorun` is
 what CI runs, in that order. `pnpm test:e2e` and the Lighthouse run both read `dist`, so the build
-has to come first. The Playwright config reuses a preview server that is already listening on
-port 4321 — convenient while writing tests, and a trap after a rebuild, because the running server
-keeps serving the older `dist`. Stop it before a fresh run.
+has to come first. The Playwright config deliberately sets `reuseExistingServer: false`: if any
+preview, including one from another worktree, already owns port 4321, the run fails instead of
+silently testing that server's `dist`. Check the port with `ss -ltnp | grep 4321` before starting a
+local run. In CI, `CHROME_PATH` is set to Playwright's installed Chromium before LHCI runs, so the
+gate does not depend on whichever system Chrome happens to be on the runner image.

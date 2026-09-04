@@ -47,7 +47,7 @@ export default defineConfig({
       i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } },
       // Settings is `noindex` and search is a query interface, not a document: neither belongs
       // in the sitemap, and listing an unindexable URL is a Search Console warning.
-      filter: (page) => !/\/(settings|search)\/$/.test(new URL(page).pathname),
+      filter: (page) => !/^\/(zh\/)?(settings|search)\/$/.test(new URL(page).pathname),
     }),
   ],
   vite: { plugins: [tailwindcss()] },

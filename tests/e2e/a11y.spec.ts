@@ -64,16 +64,16 @@ for (const path of PAGES) {
  * which is a design decision and not this suite's to make — hence `fixme` rather than a deleted
  * test: it is listed on every run until the palette is settled.
  */
-test.fixme('every surface meets the WCAG AA contrast floor', async ({ page }) => {
-  for (const theme of THEMES) {
+for (const theme of THEMES) {
+  test.fixme(`every surface meets the WCAG AA contrast floor in the ${theme} palette`, async ({ page }) => {
     await usingTheme(page, theme);
     for (const path of PAGES) {
       await page.goto(path);
       const { violations } = await scan(page, ['color-contrast']);
       expect(violations, `${path} in ${theme}:\n  ${describe(violations)}`).toEqual([]);
     }
-  }
-});
+  });
+}
 
 test('the article is reachable from the keyboard without walking the whole nav', async ({ page }) => {
   await page.goto('/python/closures/');

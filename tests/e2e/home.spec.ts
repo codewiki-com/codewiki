@@ -28,6 +28,11 @@ async function captureThemeAtParse(page: Page): Promise<void> {
 const themeAtParse = (page: Page) =>
   page.evaluate(() => (window as unknown as { __themeAtParse?: string | null }).__themeAtParse ?? null);
 
+/** The server-rendered button is visible before its `client:idle` click handler exists. */
+async function waitForThemeToggle(page: Page): Promise<void> {
+  await expect(page.locator('astro-island[component-url*="ThemeToggle"]:not([ssr])').first()).toBeAttached();
+}
+
 test('the English home page renders its headline', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
@@ -60,6 +65,7 @@ test('the theme toggle cycles system, light and dark', async ({ page }) => {
 
   // The toggle is `client:idle`; the bootstrap has already resolved a preference for it to adopt.
   await expect(root).toHaveAttribute('data-theme-pref', 'system');
+  await waitForThemeToggle(page);
   await expect(toggle).toBeVisible();
 
   await toggle.click();
@@ -82,6 +88,7 @@ test('the chosen theme survives a reload with no flash of the other palette', as
   expect(await themeAtParse(page)).toMatch(/^(light|dark)$/);
 
   const toggle = page.locator('button.theme-toggle').first();
+  await waitForThemeToggle(page);
   await expect(toggle).toBeVisible();
   await toggle.click();
   await toggle.click();
