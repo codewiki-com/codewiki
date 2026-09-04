@@ -19,20 +19,22 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-04 P2 sub-spec `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (user: “你自己决策，选最佳的”); decisions: 4 flashcard ratings, 2-column print, paired bilingual default, kata with line comments, CodeMirror 6 lazy. Next: P2 plan.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are (updated 2026-09-04, 04:45)
+## Where things are (updated 2026-09-04, 06:30)
 | Item | State |
 |---|---|
 | Master spec | done, approved |
-| Design mockups (16 artboards, light/dark) | done, approved; sources in `docs/design/mockups/` |
-| P1 plan (site foundation, 20 tasks) | Tasks 0–18 complete and merged into `p1-site-foundation` (HEAD `faabc37`): scaffold, tokens/theme, fonts, i18n, tracks, collections + sample topics, SEO, layout, home, track hub, markdown pipeline, topic page, runners (JS sandbox + Pyodide), glossary, search palette (Pagefind), Ask-AI + markdown twin, endpoints/settings/RSS/llms.txt, OG images. Task 19 (e2e, axe, Lighthouse, `_headers`, deploy doc) dispatched 2026-09-04 04:45; then final whole-branch review, then merge to `main` |
-| P0 plan (content pipeline, 14 tasks) | Tasks 1–10 and 13 complete on `p0-content-pipeline` (HEAD `b94d82f`); Task 11 (Codex polish runner) implemented at `87cef34`, review found 3 Important (gate accepted non-DONE Codex, batch commit staged whole `src/content`, interrupt commit did not wait) — fix round 1 dispatched; Tasks 12 (calibration, 5 topics) and 14 (wave 1, tier 1 = 252 topics) pending |
-| Content | 4 sample MDX topics + 7 glossary terms + 1 quiz by Codex; 918 staged pairs in `content/staging/topics` with tiers 252/425/241 |
+| P2 sub-spec | `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (decisions §7) |
+| Design mockups | P1: `docs/design/mockups/`; P2: `docs/design/mockups/p2/` (build with `p2/src/build.py`), canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137 |
+| P1 plan (20 tasks) | Tasks 0–18 merged into `p1-site-foundation` (faabc37). Task 19 implemented at `a734c3e` on the same branch — **review pending**. Visual sweep branch `p1-visual-sweep` (9080d23, worktree `.worktrees/p1-visual-sweep`) — **review running**; merge it into `p1-site-foundation` after Task 19 (expect conflicts in TrackHub.astro, 404.astro, Nav/Footer, global.css; keep both sides). Then: contrast token pass (Fable, see ledger ruling), final whole-branch review (opus), merge to `main` |
+| P0 plan (14 tasks) | Tasks 1–11 and 13 complete on `p0-content-pipeline` (89e811b + tier pins df2d3c5). Task 12 calibration **started**: `pnpm content:polish --only backend/jwt-authentication` running in the background from the P0 worktree (log: scratchpad `polish/jwt.log`; journal `reports/polish/state.json`; the runner commits on success). Next: inspect the produced pair + `reports/polish/backend__jwt-authentication/`, then the other four with `--n 4`, then tune `prompts/polish-topic.md`, then Task 14 wave 1 |
+| P2 plan | `docs/superpowers/plans/2026-09-04-p2-learning-layer.md` written (17 tasks; P2a = 1–11, P2b = 12–17). Execution starts on branch `p2-learning-layer` from `main` after the P1 merge |
+| Content | 4 sample topics + 7 glossary terms + 1 quiz; 918 staged pairs; tiers 257/423/238 after the calibration pins |
 
-## Active work (updated 2026-09-04 04:45, parallel mode)
-- **P1** `p1-site-foundation` (worktree `.worktrees/p1-site-foundation/`): Task 19 implementer running (report → `.superpowers/sdd/2026-09-03-p1-site-foundation/task-19-report.md`). All parallel task branches (`p1-t14-glossary`, `p1-t15-search`, `p1-t16-askai`, `p1-t17-endpoints`, `p1-t18-og`) are merged; they can be deleted after the final review. Ledger: `.worktrees/p1-site-foundation/.superpowers/sdd/2026-09-03-p1-site-foundation/progress.md` (18 deferred minors listed per task for the final review).
-- **P0** `p0-content-pipeline` (worktree `.worktrees/p0-content-pipeline/`): Task 11 fix round 1 running (report → `.superpowers/sdd/2026-09-03-p0-content-pipeline/task-11-fix1-report.md`; review at `task-11-review.md`). Next: scoped re-review, then Task 12 calibration via Codex on `backend/jwt-authentication`, `cpp/move-semantics`, `python/asyncio`, `ai/langchain`, `architecture/cap-theorem`, then Task 14 wave 1. Rebase P0 onto `main` after P1 merges.
-- **P2** (learning layer: paths pages, quizzes/predict/review katas, bilingual mode, flashcards, playground, cheatsheets, compare; new ai-era/foundations content via Codex): plan not yet written — Fable writes it with superpowers:writing-plans from spec §6/§14 once P1 is merged.
-- Resume rule: for every branch above, `git log --oneline -3` shows whether the implementer committed; if a `task-N-report.md` exists but no review entry is in the ledger, dispatch the task review (superpowers:subagent-driven-development) before merging.
+## Active work (updated 2026-09-04 06:30)
+- **P1**: Task 19 review to dispatch (package `faabc37..a734c3e` in the P1 ledger dir); sweep review running (report → `.worktrees/p1-visual-sweep/.superpowers/sdd/2026-09-03-p1-site-foundation/sweep-v1-report.md`, review package `review-faabc37..9080d23.diff`). Ledger: `.worktrees/p1-site-foundation/.superpowers/sdd/2026-09-03-p1-site-foundation/progress.md`.
+- **P0**: Task 12 in progress (controller-run Codex). If the background run was interrupted, re-run the same command: the journal skips finished topics and marks interrupted ones for retry. Ledger: `.worktrees/p0-content-pipeline/.superpowers/sdd/2026-09-03-p0-content-pipeline/progress.md`.
+- **P2**: plan ready; not started. First step when resuming after the P1 merge: `git worktree add .worktrees/p2-learning-layer -b p2-learning-layer main`, then superpowers:subagent-driven-development on the P2 plan (Task 1 first).
+- Resume rule: for every branch above, `git log --oneline -3` shows whether the implementer committed; if a `task-N-report.md` exists but no review entry is in the ledger, dispatch the task review before merging.
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
