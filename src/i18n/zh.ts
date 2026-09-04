@@ -626,4 +626,16 @@ export default {
   'rules.count': '从 {track} 学习方向生成了 {n} 条规则',
   'rules.agentTitle': '供编码智能体使用的 {track} 规则',
   'rules.agentBody': '下载本方向的常见陷阱与审查项，文件格式可直接供编码智能体读取。',
+  // Task 12
+  'bilingual.enZh': 'EN + 中文',
+  'bilingual.zhEn': '中文 + EN',
+  'bilingual.aligned': '已对齐 · 逐段对应',
+  'bilingual.codeShared': '代码块两种语言共用',
+  'bilingual.reading': '阅读方式',
+  'bilingual.layout': '布局',
+  'bilingual.paired': '上下对照',
+  'bilingual.side': '左右对照',
+  'bilingual.pairedExplain': '上下对照会把每段译文放在对应原文下方。',
+  'bilingual.sideExplain': '左右对照需要至少 1440 像素宽的屏幕。',
+  'bilingual.notAligned': '尚未对齐',
 } satisfies Record<keyof typeof en, string>;

@@ -656,4 +656,16 @@ export default {
   'rules.count': '{n} rules generated from the {track} track',
   'rules.agentTitle': '{track} rules for your coding agent',
   'rules.agentBody': "Download the track's pitfalls and review checks in the format your coding agent reads.",
+  // Task 12
+  'bilingual.enZh': 'EN + 中文',
+  'bilingual.zhEn': '中文 + EN',
+  'bilingual.aligned': 'aligned · paragraph for paragraph',
+  'bilingual.codeShared': 'code blocks are shared',
+  'bilingual.reading': 'reading',
+  'bilingual.layout': 'Layout',
+  'bilingual.paired': 'paired',
+  'bilingual.side': 'side by side',
+  'bilingual.pairedExplain': 'Paired puts each translated paragraph under its matching paragraph.',
+  'bilingual.sideExplain': 'Side by side needs a screen at least 1440 px wide.',
+  'bilingual.notAligned': 'not aligned yet',
 } as const;
