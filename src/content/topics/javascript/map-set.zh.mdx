@@ -1,0 +1,423 @@
+---
+title: Map 与 Set
+description: JavaScript 的键值集合与唯一值集合，以及键相等、插入顺序、现代集合运算和弱集合的边界。
+track: javascript
+section: core
+difficulty: intermediate
+tags: [map, set, keyed-collections, object-identity]
+prerequisites: [javascript/fundamentals, javascript/data-types, javascript/iterators-generators]
+related: [javascript/objects-prototypes, javascript/array-methods, javascript/weakmap-weakset, javascript/json]
+terms: [ordered-map, object-identity, same-value-zero, weak-collection]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/map-set
+sources:
+  - { title: 'ECMAScript Language Specification — Keyed Collections', url: 'https://tc39.es/ecma262/multipage/keyed-collections.html' }
+  - { title: 'MDN — Map', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map' }
+  - { title: 'MDN — Set', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set' }
+  - { title: 'MDN — WeakMap', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap' }
+  - { title: 'MDN — WeakSet', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakSet' }
+origin: old/src/content/docs/javascript/map-set.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `Map` 按键保存值，`Set` 保存不重复的成员；二者都可直接遍历，并保留插入顺序。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    对象键和对象成员按标识比较，不按字段比较；`get()` 返回 `undefined` 也不能单独证明键不存在。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先定义键的规范表示，再用 `has()` 区分缺失值，并在需要集合代数时使用 Node 24 的原生 `Set` 方法。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+JavaScript 的 `Map` 是一种<Term id="ordered-map">有序映射（ordered map）</Term>，把唯一的键关联到值。键和值都可以是任意 JavaScript 值，不必先转成属性名。`Set` 则保存一组唯一值，适合表达成员资格，而不是某个位置上的元素。
+
+普通对象也能关联名称与值，但它的自有属性键只能是字符串或 `Symbol`。数字等其他值会先转换成属性键，对象也不能直接保持自身作为属性键。对象适合表示字段已知的记录，`Map` 更适合运行时才出现的键、对象键和需要直接遍历的键值集合。
+
+数组能保存顺序与重复项，却不能自动保证唯一性。反复使用 `includes()` 检查成员会把序列当成集合使用，意图不清晰。`Set` 把唯一性和 `has()` 成员检测放进数据结构的契约中，同时仍按插入顺序遍历。
+
+`WeakMap` 与 `WeakSet` 是<Term id="weak-collection">弱集合（weak collection）</Term>。它们让元数据或标记跟随对象键的可达生命周期，又不提供枚举或大小。弱集合不是更轻量的通用 `Map` 或 `Set`，因为你无法列出其中当前存活的条目。
+
+这四种集合解决的是不同的数据建模问题。选择时先问数据是记录、序列、映射还是成员集合，再问键是否需要由集合拥有其生命周期。不要仅凭方法名相似就互换它们。
+
+### 选择集合形状
+
+| 需求 | 首选 | 原因 |
+|---|---|---|
+| 字段固定的业务记录 | `Object` | 属性访问、解构和 JSON 形状自然 |
+| 运行时键对应值 | `Map` | 任意键类型，直接迭代键值对 |
+| 有序且允许重复的序列 | `Array` | 有索引和序列变换方法 |
+| 唯一成员与集合关系 | `Set` | 唯一性、成员检测和集合运算 |
+| 随对象键失去可达性的元数据 | `WeakMap` | 键不被集合强行保活 |
+| 随对象值失去可达性的标记 | `WeakSet` | 只记录对象是否被标记 |
+
+这个表描述语义，不是性能排行榜。真实速度取决于引擎、键分布、集合大小和操作比例。先选择能准确表达不变量的数据结构，再测量热点路径。
+
+## 工作原理
+
+### 四种接口
+
+`Map` 的核心操作是 `set(key, value)`、`get(key)`、`has(key)` 和 `delete(key)`，`size` 给出条目数，`clear()` 删除全部条目。`set()` 返回接收者，因此可以链式调用。`delete()` 返回是否真的删除了现有键。
+
+`Set` 对应的核心操作是 `add(value)`、`has(value)` 和 `delete(value)`。`add()` 同样返回接收者，重复添加已有值不会增加 `size`。`clear()` 会删除全部成员。
+
+| 集合 | 保存内容 | 可枚举 | 大小 | 写入操作 |
+|---|---|---:|---:|---|
+| `Map` | 键和值 | 是 | `size` | `set()` |
+| `Set` | 唯一值 | 是 | `size` | `add()` |
+| `WeakMap` | 弱键和值 | 否 | 无 | `set()` |
+| `WeakSet` | 弱值 | 否 | 无 | `add()` |
+
+`Map` 默认迭代器与 `entries()` 都产出 `[key, value]`。`keys()` 和 `values()` 分别只产出键和值。`Set` 默认迭代器与 `values()` 产出成员；为了与 `Map` 接口一致，它的 `keys()` 也产出成员，`entries()` 则产出 `[value, value]`。
+
+### 构造与复制
+
+`new Map(iterable)` 从可迭代的键值对创建映射，例如二维数组、另一个 `Map` 或 `Object.entries(record)`。`new Set(iterable)` 从可迭代对象读取每个值，因此数组、字符串和另一个 `Set` 都可作为输入。两种构造器都会按读取顺序建立条目。
+
+`new Map(existingMap)` 和 `new Set(existingSet)` 创建新的集合容器，但不会深拷贝其中的对象。键、成员和值若是对象，新旧集合仍引用同一对象。修改这些对象的字段，会从两个集合中观察到同一变化。
+
+`Object.fromEntries(map)` 适合把字符串键或 `Symbol` 键的映射变成记录。其他键会被转换成属性键，所以对象键可能都变成同一个 `"[object Object]"` 属性。转换之前必须确认这种信息损失符合接口契约。
+
+### 相等规则
+
+`Map` 的键与 `Set` 的成员都使用<Term id="same-value-zero">SameValueZero</Term> 判断相等。它大体与 `===` 相同，但所有 `NaN` 被视为相等，`+0` 与 `-0` 也被视为相等。因此，同一个集合中只能有一个 `NaN` 和一个零值。
+
+对象、数组和函数按<Term id="object-identity">对象标识（object identity）</Term>比较。两个对象即使字段逐项相同，只要不是同一个对象，就会成为两个不同键或成员。集合不会调用自定义哈希函数，也不会自动执行深层内容比较。
+
+| 左值 | 右值 | 在 `Map` 或 `Set` 中相同 |
+|---|---|---:|
+| `NaN` | `NaN` | 是 |
+| `+0` | `-0` | 是 |
+| `7` | `'7'` | 否 |
+| 同一对象引用 | 同一对象引用 | 是 |
+| `{ id: 7 }` | `{ id: 7 }` | 否 |
+
+如果业务需要按 `id` 去重，就直接用稳定的 `id` 作为键，或先生成明确的规范键。把临时对象作为键，再在查询时重新构造同形对象，无法命中原条目。使用 `JSON.stringify()` 临时拼复合键也需要先定义属性顺序、缺失值和不支持类型的规则。
+
+### 插入顺序与迭代
+
+`Map` 和 `Set` 都按首次成功插入的顺序遍历。更新已有 `Map` 键的值不会移动该键，重复 `add()` 已有成员也不会移动它。删除后重新插入会创建新的顺序位置，把条目放到当前末尾。
+
+这一顺序是集合语义的一部分，但不是业务排序。若展示结果必须按时间、优先级或本地化名称排序，应把条目转成数组并写出比较规则。依赖偶然到达顺序，会让上游查询或网络批次的变化改变输出。
+
+迭代器是实时读取集合的，不是创建时的快照。尚未访问就被删除的条目不会出现；在迭代结束前新增的条目可能出现。删除已访问条目再重新插入，还可能让它以新位置再次被访问。
+
+遍历时只更新当前键对应的值通常容易理解，遍历时重排键则很难审查。若循环需要删除并重新插入，先对 `[...map]` 或 `[...set]` 的快照迭代，或者把变更记录到单独集合中，循环结束后再应用。
+
+### 缺失与 `undefined`
+
+`map.get(key)` 在键不存在时返回 `undefined`，但存在的键也可以明确保存 `undefined`。因此，只检查返回值无法区分这两种状态。需要区分时先用 `map.has(key)`，再读取值。
+
+用 `map.get(key) || fallback` 还会把 `0`、`false` 和空字符串等合法值当成缺失。仅当 `null` 和 `undefined` 都表示缺失时才使用 `??`，而需要区分“未存储”与“存储了 `undefined`”时仍必须使用 `has()`。
+
+计数代码常写成 `counts.set(key, (counts.get(key) ?? 0) + 1)`。这里的 `??` 合适，因为计数契约不把 `undefined` 当作已存储计数。如果值域确实允许 `undefined`，就应把缺失分支明确写出来。
+
+### 原生集合运算
+
+Node 24 的 `Set` 提供 `union()`、`intersection()`、`difference()` 和 `symmetricDifference()`，这些方法返回新的 `Set`，不修改两个输入。关系方法 `isSubsetOf()`、`isSupersetOf()` 和 `isDisjointFrom()` 返回布尔值。方法名直接表达集合代数，比散落的展开、`filter()` 和 `every()` 组合更容易审查。
+
+| 表达式 | 含义 | 结果类型 |
+|---|---|---|
+| `a.union(b)` | 至少属于一边 | `Set` |
+| `a.intersection(b)` | 同时属于两边 | `Set` |
+| `a.difference(b)` | 属于 `a` 但不属于 `b` | `Set` |
+| `a.symmetricDifference(b)` | 只属于其中一边 | `Set` |
+| `a.isSubsetOf(b)` | `a` 的成员是否都在 `b` 中 | `boolean` |
+| `a.isSupersetOf(b)` | `b` 的成员是否都在 `a` 中 | `boolean` |
+| `a.isDisjointFrom(b)` | 两边是否没有共同成员 | `boolean` |
+
+接收者必须是真正的 `Set`，参数只需满足类集合协议：有数字 `size`、`has()` 和返回成员迭代器的 `keys()`。`Map` 满足该协议，会把自己的键当成成员。数组不满足，因为它没有 `size` 与 `has()`，而且 `keys()` 产出索引。
+
+### 弱集合的边界
+
+在 Node 24 中，`WeakMap` 的键与 `WeakSet` 的成员必须是可被垃圾回收的值，也就是对象或未注册的 `Symbol`。`Symbol.for()` 返回的注册符号不能使用，因为全局注册表会让它可再次取得。字符串、数字、布尔值、`null` 和 `undefined` 也不能作为弱键。
+
+弱集合中的键不会仅因存在于集合中而保持可达。对象从程序其他位置不再可达后，引擎可以回收它，并使相关条目消失。何时回收由引擎决定，应用不能观察或强制这一时刻。
+
+正因为回收时间不确定，弱集合没有 `size`、`clear()` 或迭代器。若能枚举键，程序就可能观察垃圾回收决定，甚至在检查过程中重新让键可达。需要列出缓存、执行容量淘汰或生成统计时，应使用普通 `Map` 并明确管理生命周期。
+
+`WeakMap` 适合把解析结果、DOM 元数据或外部状态关联到一个对象，而不修改该对象。`WeakSet` 适合回答“这个对象是否已经处理过”。它们不能代替显式的注销、关闭事务或清除敏感数据。
+
+## 示例
+
+### 键标识与唯一成员
+
+第一个示例把同形订单对象、数字键和字符串键放进一个 `Map`，再观察 `Set` 的 SameValueZero 去重。输出只依赖语言规则，不依赖对象的调试显示格式。
+
+<Depth level="quick">
+
+```javascript run title="key_identity.js"
+const firstOrder = { id: 'A-17' };
+const sameFields = { id: 'A-17' };
+
+const statusByOrder = new Map();
+statusByOrder.set(firstOrder, 'queued');
+statusByOrder.set(7, 'numeric key');
+statusByOrder.set('7', 'string key');
+
+console.log(statusByOrder.get(firstOrder));
+console.log(statusByOrder.get(sameFields));
+console.log(statusByOrder.get(7));
+console.log(statusByOrder.get('7'));
+
+const observed = new Set([NaN, NaN, 0, -0, '0']);
+console.log(observed.size);
+console.log([...new Set(['draft', 'sent', 'draft'])].join(','));
+```
+
+```text
+queued
+undefined
+numeric key
+string key
+3
+draft,sent
+```
+
+</Depth>
+
+`firstOrder` 能命中，因为查询使用同一对象。`sameFields` 只是字段相同，所以结果为 `undefined`。最后的集合包含 `NaN`、零和字符串 `'0'` 三个不同成员。
+
+### 同时建立索引与成员集合
+
+这里用 `Map` 建立订单主键索引，用 `Set` 汇总去重后的审核人标识。重复订单是输入契约错误，所以在覆盖旧条目前主动抛错。
+
+```javascript run title="index_orders.js"
+function indexOrders(orders) {
+  const byId = new Map();
+  const reviewerIds = new Set();
+
+  for (const order of orders) {
+    if (byId.has(order.id)) {
+      throw new Error(`duplicate order: ${order.id}`);
+    }
+    byId.set(order.id, order);
+    for (const reviewerId of order.reviewerIds) {
+      reviewerIds.add(reviewerId);
+    }
+  }
+
+  return { byId, reviewerIds };
+}
+
+const orders = [
+  { id: 'A-17', total: 18, reviewerIds: ['u1', 'u2'] },
+  { id: 'A-18', total: 24.5, reviewerIds: ['u2', 'u3'] },
+];
+
+const index = indexOrders(orders);
+console.log(index.byId.get('A-18').total);
+console.log([...index.reviewerIds].join(','));
+console.log([...index.byId.keys()].join(' -> '));
+```
+
+```text
+24.5
+u1,u2,u3
+A-17 -> A-18
+```
+
+`u2` 出现在两张订单中，但 `Set` 只保留一次。两个集合都保留首次插入顺序，所以输出可预测；如果业务要求按审核人姓名排序，还需要另写排序步骤。
+
+### 组合资格集合
+
+集合运算可以把资格规则直接写成成员关系。准备名单是“符合资格且受过培训，但未被阻止”的人员，不会修改三个输入集合。
+
+```javascript run title="set_composition.js"
+const eligible = new Set(['ana', 'bo', 'chen']);
+const trained = new Set(['bo', 'chen', 'dara']);
+const blocked = new Set(['chen']);
+
+const ready = eligible
+  .intersection(trained)
+  .difference(blocked);
+
+console.log([...ready].join(','));
+console.log([...eligible.union(trained)].join(','));
+console.log([...eligible.symmetricDifference(trained)].join(','));
+console.log(ready.isSubsetOf(eligible));
+console.log(ready.isDisjointFrom(blocked));
+```
+
+```text
+bo
+ana,bo,chen,dara
+ana,dara
+true
+true
+```
+
+`ready` 只包含 `bo`，并且确实是 `eligible` 的子集，也与 `blocked` 不相交。`union()` 与 `symmetricDifference()` 返回的是新集合，因此后续仍可复用原始规则集合。
+
+### 让元数据跟随对象生命周期
+
+这个例子用 `WeakMap` 记录每个模式对象被验证的次数，用 `WeakSet` 防止同一订单对象被重复访问。未注册的本地 `Symbol` 也是 Node 24 支持的弱键。
+
+```javascript run title="weak_metadata.js"
+const validationRuns = new WeakMap();
+const visited = new WeakSet();
+
+function validate(schema, input) {
+  const previous = validationRuns.get(schema) ?? 0;
+  validationRuns.set(schema, previous + 1);
+  const valid = schema.required.every((key) => Object.hasOwn(input, key));
+  return `${schema.name}:${valid}:${validationRuns.get(schema)}`;
+}
+
+function visitOnce(record) {
+  if (visited.has(record)) return false;
+  visited.add(record);
+  return true;
+}
+
+const orderSchema = { name: 'order', required: ['id', 'total'] };
+const order = { id: 'A-17', total: 18 };
+
+console.log(validate(orderSchema, order));
+console.log(validate(orderSchema, { id: 'A-18' }));
+console.log(visitOnce(order), visitOnce(order));
+
+const requestMarker = Symbol('request');
+validationRuns.set(requestMarker, 1);
+console.log(validationRuns.has(requestMarker));
+```
+
+```text
+order:true:1
+order:false:2
+true false
+true
+```
+
+统计属于 `orderSchema` 这个对象标识，不属于模式的字段内容。示例没有尝试证明垃圾回收发生；这类时机不能通过普通程序输出可靠验证。
+
+## 陷阱
+
+### 用同形对象重新查询
+
+> [!PITFALL]
+> 生成的代码常写成 `map.set({ id }, value)`，随后又用 `map.get({ id })` 查询。两个对象字段相同但标识不同，所以查询永远无法命中。
+
+**修复：** 如果 `id` 定义业务身份，就直接用 `id` 作为键。如果必须使用对象键，应保存并传递那个规范对象引用，并在接口文档中明确键采用标识语义。
+
+### 把假值当作缺失
+
+> [!PITFALL]
+> `map.get(key) || defaultValue` 会覆盖合法的 `0`、`false` 和空字符串。只检查 `get()` 是否返回 `undefined`，也会混淆缺失键与明确存储的 `undefined`。
+
+**修复：** 根据值域选择检查方式。只把空值当成缺失时使用 `??`；必须区分键是否存在时使用 `has()`，并为缺失、`undefined`、零和 `false` 分别测试。
+
+### 以为 `Set` 会按内容去重对象
+
+> [!PITFALL]
+> `new Set([{ id: 1 }, { id: 1 }])` 的大小是 `2`。`Set` 只根据对象标识去重，不会递归比较字段。
+
+**修复：** 按稳定业务键去重时，使用 `Map` 把业务键映射到要保留的对象，并明确保留第一项还是最后一项。不要把通用 `JSON.stringify()` 当成没有契约的深层相等函数。
+
+### 遍历时删除并重新插入
+
+> [!PITFALL]
+> 为了“刷新顺序”而在实时迭代中删除当前条目并重新插入，可能让同一条目在末尾再次被访问。循环持续这样做时，甚至可能无法结束。
+
+**修复：** 遍历快照，或把重排意图收集起来并在循环后执行。如果只是更新 `Map` 中已有键的值，直接调用 `set()`，不要先删除键。
+
+### 直接 JSON 序列化集合
+
+> [!PITFALL]
+> `JSON.stringify(new Map([['a', 1]]))` 和 `JSON.stringify(new Set(['a']))` 默认都得到 `'{}'`，因为 JSON 序列化读取的是可枚举自有字符串属性，不是集合条目。
+
+**修复：** 先制定线格式。字符串键记录可以用 `Object.fromEntries()`；需要保留键类型和顺序时可以编码为条目数组，`Set` 可以编码为值数组，并在读取后验证再重建集合。
+
+### 把弱集合当作可观察缓存
+
+> [!PITFALL]
+> 生成的缓存代码可能尝试读取 `weakMap.size`、遍历键或在固定时刻断言条目已经回收。弱集合故意不支持这些操作，垃圾回收时机也不是业务事件。
+
+**修复：** 需要容量、淘汰、指标或枚举时使用普通 `Map`，并实现显式策略。`WeakMap` 只用于按仍可取得的弱键查询附属值；资源释放仍需明确的 `close()`、注销函数或 `finally`。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常从接口中的 `{ id }` 临时构造对象键，误以为 `Map` 会按字段匹配；也会用 `get() || fallback` 抹掉零与 `false`，或用 `Set` 对对象数组做无效的内容去重。另一些生成结果会调用并不存在的 `map.map()`、`set.filter()`，重复实现 Node 24 已有的集合运算，或者把 `Map` 直接交给 `JSON.stringify()`。为了“防止内存泄漏”而机械换成 `WeakMap` 时，代码又常保留字符串键、需要枚举缓存，或依赖垃圾回收触发业务清理。
+
+**让 AI 检查**
+
+- 列出每个 `Map` 键和 `Set` 成员的规范表示，并说明相等依据是 SameValueZero、对象标识还是业务字段。
+- 为每次 `get()` 标出缺失、明确的 `undefined`、零、`false` 和空字符串路径，再验证默认值操作符。
+- 跟踪每个集合的迭代、序列化和生命周期需求，确认弱集合没有承担枚举、容量控制或确定性清理。
+
+**审查清单**
+
+- 用同一引用和同形新对象分别测试对象键，按业务 `id` 去重时再加入重复字段对象。
+- 检查遍历中的所有 `set()`、`add()`、`delete()` 和 `clear()`，确认实时迭代不会漏项、重访或不终止。
+- 在真实目标 Node 版本运行集合方法，并对每个跨进程边界写出可往返的显式线格式。
+
+**提示词词汇**
+
+使用准确术语：`keyed collection`（键控集合）、`SameValueZero`（同值零相等）、`object identity`（对象标识）、`insertion order`（插入顺序）、`set composition`（集合组合）、`set-like protocol`（类集合协议）、`weak key`（弱键）、`non-registered symbol`（未注册符号）和 `explicit serialization format`（显式序列化格式）。要求 AI 给出键规范与所有权表，比“用 `Map` 优化这段代码”更容易暴露语义错误。
+
+<Depth level="deep">
+
+## 相等、遍历与弱可达性
+
+### 规范保证的复杂度
+
+ECMAScript 要求 `Map` 与 `Set` 的实现平均提供次线性访问时间，但不规定必须使用哈希表，也不承诺每次操作都是 `O(1)`。引擎可以采用哈希表、树或其他满足可观察语义与复杂度要求的结构。应用代码不应依赖内部桶数量、哈希值或扩容时机。
+
+这项保证足以说明成员查找不应被实现成每次扫描整个集合，却不足以替代基准测试。把数组转成 `Set` 还有构造成本，单次查询未必值得转换；同一个成员集合被反复查询时，数据模型才更自然。性能结论必须包含目标引擎、数据规模、键类型和读写比例。
+
+### 顺序状态转换
+
+插入顺序属于条目状态，而不是键本身的永久时间戳。下面的转换适用于 `Map` 的键，`Set` 成员遵循同样规则。
+
+| 操作 | 是否改变大小 | 是否改变位置 |
+|---|---:|---:|
+| 插入新键 | 是 | 添加到末尾 |
+| 更新已有键 | 否 | 否 |
+| 重复添加已有成员 | 否 | 否 |
+| 删除已有键 | 是 | 移除位置 |
+| 删除后重新插入 | 是 | 添加到末尾 |
+| `clear()` 后再插入 | 是 | 从新顺序开始 |
+
+实时迭代让集合变更立即影响尚未完成的迭代器。更新未访问键的值后，迭代器会看到新值；在访问前删除该键，则不会看到它。新条目只要在迭代结束前加入，就可能被访问。
+
+这个行为可用于工作队列，但普通业务循环往往更需要稳定输入。若新增条目应留到下一轮，开始时复制键或条目。若数据量大到无法复制，就明确维护当前批次边界，不要让迭代器的实时语义暗中定义调度策略。
+
+### 类集合参数与结果顺序
+
+集合组合方法通过 `size`、`has()` 和 `keys()` 使用右侧参数，不读取其默认迭代器。这个设计使 `Map` 能作为键集合参与运算，也解释了为什么数组不是合格参数。自定义类集合对象的三个成员必须彼此一致，否则结果没有可靠含义。
+
+`intersection()` 可以根据双方大小选择遍历较小的一边，因此结果的插入顺序不应当作左侧集合的筛选顺序。例如，左侧是 `a, b, c`，较小的右侧是 `c, a` 时，Node 24 的交集顺序是 `c, a`。若输出需要领域排序，应在集合运算后显式排序。
+
+关系方法可以利用大小提前返回，也可以在找到足够证据后停止。不要把类集合对象的 `has()` 或 `keys()` 写成带副作用的函数；规范允许的调用顺序应被视为实现契约的一部分，而不是业务事件流。
+
+### 弱键为何不可枚举
+
+弱键表达的是条件可达关系：集合本身不会让键保持存活，但只要程序还能取得键，就可以用它查到关联值。`WeakMap` 中的值可以是任意值，并在键仍可达时通过键取得。是否以及何时回收由引擎的垃圾回收器决定。
+
+如果弱集合公开键列表或大小，同一段代码会因为一次不可预测的垃圾回收而得到不同结果。更严重的是，枚举本身会重新取得本来即将失去可达性的对象。删除这些观察接口，才能让引擎在不改变程序可见逻辑的情况下回收键。
+
+未注册的 `Symbol` 不可从全局注册表重新取得，所以当前规范允许它作为弱键。`Symbol.for(name)` 的结果保存在全局符号注册表中，因而不是可被垃圾回收的键，传给 `WeakMap.set()` 或 `WeakSet.add()` 会抛出 `TypeError`。
+
+弱集合不会自动提供安全边界。拿到同一个 `WeakMap` 和键的代码仍能读取关联值，拿到对象的代码也可能通过其他路径泄露数据。类内部状态优先考虑私有字段；只有元数据所有权独立于对象实现，或需要跨多个对象类型关联时，`WeakMap` 才更合适。
+
+最后，弱可达性也不是资源管理。文件句柄、订阅、锁和事务必须在确定的控制流中释放。垃圾回收只能处理内存可达性，不能保证外部系统在某个截止时间前观察到清理。
+
+</Depth>
+
+<Checkpoint id="javascript/map-set" />
+
+## 延伸阅读
+
+- [ECMAScript 语言规范：键控集合](https://tc39.es/ecma262/multipage/keyed-collections.html)
+- [MDN：`Map`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map)
+- [MDN：`Set`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set)
+- [MDN：`WeakMap`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap)
+- [MDN：`WeakSet`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakSet)
