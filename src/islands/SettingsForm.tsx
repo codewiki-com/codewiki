@@ -12,6 +12,8 @@ import {
   readStore,
   writeStore,
   type FontSize,
+  type BilingualLayout,
+  type BilingualMode,
   type Prefs,
   type Progress,
   type RevealMode,
@@ -25,9 +27,11 @@ export interface SettingsLabels {
   depth: string;
   depths: Record<Depth, string>;
   bilingual: string;
-  bilingualOff: string;
-  bilingualSoon: string;
-  soon: string;
+  bilingualModes: Record<BilingualMode, string>;
+  bilingualHint: string;
+  bilingualLayout: string;
+  bilingualLayouts: Record<BilingualLayout, string>;
+  bilingualLayoutHint: string;
   interviewReveal: string;
   revealModes: Record<RevealMode, string>;
   cardSources: string;
@@ -59,6 +63,8 @@ export interface SettingsFormProps {
 
 const THEMES: ThemePref[] = ['system', 'light', 'dark'];
 const FONTS: FontSize[] = ['s', 'm', 'l'];
+const BILINGUAL_MODES: BilingualMode[] = ['off', 'en-zh', 'zh-en'];
+const BILINGUAL_LAYOUTS: BilingualLayout[] = ['paired', 'side'];
 const MODES: ImportMode[] = ['merge', 'replace'];
 const REVEAL_MODES: RevealMode[] = ['one', 'all'];
 type CardSources = ReturnType<typeof cardSources>;
@@ -164,6 +170,10 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
   const [theme, setTheme] = useState<ThemePref>(DEFAULT_PREFS.theme);
   const [depth, setDepth] = useState<Depth>(DEFAULT_PREFS.depth);
   const [font, setFont] = useState<FontSize>(DEFAULT_PREFS.fontSize);
+  const [bilingual, setBilingual] = useState<BilingualMode>(DEFAULT_PREFS.bilingual);
+  const [bilingualLayout, setBilingualLayout] = useState<BilingualLayout>(
+    DEFAULT_PREFS.bilingualLayout ?? 'paired',
+  );
   const [reveal, setReveal] = useState<RevealMode>(DEFAULT_PREFS.interviewReveal ?? 'one');
   const [sources, setSources] = useState<CardSources>(() => cardSources(DEFAULT_PREFS));
   const [mode, setMode] = useState<ImportMode>('merge');
@@ -177,6 +187,8 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     setTheme(readThemePref());
     setDepth(prefs.depth ?? DEFAULT_PREFS.depth);
     setFont(prefs.fontSize ?? DEFAULT_PREFS.fontSize);
+    setBilingual(prefs.bilingual);
+    setBilingualLayout(prefs.bilingualLayout ?? 'paired');
     setReveal(prefs.interviewReveal ?? 'one');
     setSources(cardSources(prefs));
   }, []);
@@ -200,6 +212,19 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     setFont(next);
     writeStore<Prefs>(KEYS.prefs, { ...readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS), fontSize: next });
     document.documentElement.setAttribute('data-font', next);
+  }, []);
+
+  const selectBilingual = useCallback((next: BilingualMode) => {
+    setBilingual(next);
+    writeStore<Prefs>(KEYS.prefs, { ...readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS), bilingual: next });
+  }, []);
+
+  const selectBilingualLayout = useCallback((next: BilingualLayout) => {
+    setBilingualLayout(next);
+    writeStore<Prefs>(KEYS.prefs, {
+      ...readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS),
+      bilingualLayout: next,
+    });
   }, []);
 
   const selectReveal = useCallback((next: RevealMode) => {
@@ -310,14 +335,26 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
         />
       </Row>
 
-      {/* P1 ships the bilingual markup but not the reading mode, so the control says so. */}
-      <Row label={labels.bilingual} hint={labels.bilingualSoon}>
-        <span class="seg" data-setting="bilingual">
-          <button type="button" class="on" disabled aria-disabled="true">
-            {labels.bilingualOff}
-          </button>
-        </span>
-        <span class="tag">{labels.soon}</span>
+      <Row label={labels.bilingual} hint={labels.bilingualHint}>
+        <OptionGroup
+          name="bilingual"
+          label={labels.bilingual}
+          options={BILINGUAL_MODES}
+          value={bilingual}
+          labels={labels.bilingualModes}
+          onSelect={selectBilingual}
+        />
+      </Row>
+
+      <Row label={labels.bilingualLayout} hint={labels.bilingualLayoutHint}>
+        <OptionGroup
+          name="bilingual-layout"
+          label={labels.bilingualLayout}
+          options={BILINGUAL_LAYOUTS}
+          value={bilingualLayout}
+          labels={labels.bilingualLayouts}
+          onSelect={selectBilingualLayout}
+        />
       </Row>
 
       <Row label={labels.interviewReveal}>

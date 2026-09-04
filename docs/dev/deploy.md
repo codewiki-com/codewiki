@@ -16,10 +16,11 @@ host the repository is set up for, and the only one with files checked in (`publ
 | environment variables | none |
 | root directory | the repository root |
 
-`pnpm build` runs `scripts/vendor-pyodide.mjs` first (it copies the Python runtime into
-`public/vendor/`), then `astro build`, then `pagefind --site dist` to write the search index.
-All three are part of the one command; a host that runs only `astro build` ships a site whose
-search and Python runner are missing.
+`pnpm build` runs its `prebuild` lifecycle first. That invokes `scripts/vendor-pyodide.mjs` and
+`scripts/vendor-sqljs.mjs`, which copy the Python and SQL runtimes into `public/vendor/`. The build
+then runs `astro build` and `pagefind --site dist` to write the search index. All four operations
+are part of the one command; a host that runs only `astro build` ships a site whose search, Python
+runner and SQL runner are missing.
 
 The build downloads about 17 MB of fonts into `.cache/fonts` for the OG image renderer. On a
 host with no cache the first build is a few minutes slower; the CI workflow caches that
@@ -68,9 +69,12 @@ other static host, serves for a directory request.
 ## Performance budgets
 
 `lighthouserc.json` drives `pnpm exec lhci autorun`, which builds nothing itself: it serves the
-existing `dist` and audits four URLs — the English home page, a track hub, and the topic page in
-both languages. Lighthouse uses its default mobile emulation. The gates are the four category
-scores at 0.95 and a 60 KB budget on scripts.
+existing `dist` and audits ten URLs. The four P1 surfaces are the English home page, a track hub,
+and the topic page in both languages. The P2 surfaces are Practice, Python from zero, Flashcards,
+the Python cheatsheet, Prompt Builder and Playground. Lighthouse uses its default mobile
+emulation. All four category scores are gated at 0.95. The transferred-script ceilings are 60 KiB
+for P1, 100 KiB for Practice, paths, Flashcards, cheatsheets and Prompt Builder, and 300 KiB for
+Playground.
 
 Three notes on that file, since JSON cannot carry comments:
 

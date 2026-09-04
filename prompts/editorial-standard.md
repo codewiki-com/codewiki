@@ -41,6 +41,8 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 - APIs removed or deprecated in the verified version must not be taught as current. Mention a deprecated form only inside a pitfall ("code generated from older tutorials still uses…").
 - AI/LLM content: name current models and SDK entry points only; anything older than the verified date must be labelled as historical.
 
+Place `<TryToBreak items={[...]} />` after the main runnable example and its output when two to four concrete edge cases would help the reader test the example's limits. Keep the English and Chinese item lists aligned in count and meaning; the component receives the preceding runnable code at build time, so authors provide only `items`.
+
 ## 6. Code
 
 - Runs. Before publishing, every runnable block is executed with the local toolchain (`python3`, `node`, `tsc`/`tsx`, `go run`, `cargo run`, `java`, `dotnet`, `php`, `swift`, `kotlinc` where installed) and the shown output is the real output. Where a toolchain is missing, the block is marked with a comment `# not executed here: {reason}` and the reviewer is told in the report.
@@ -49,6 +51,8 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 - Short: ten to forty lines per block. Split longer examples.
 - Idiomatic for the verified version (f-strings, `match`, `TaskGroup`, `const`/`let`, `async/await`, generics with `type` parameters, etc.).
 - Fence meta: ` ```python run title="make_counter.py" `. Optional `highlight="3-4"`. Output blocks use ` ```text `.
+
+For reusable SQL fixtures, a visible ` ```sql seed="name" ` fence without `run` declares the setup SQL, and a ` ```sql run seed="name" ` fence runs that setup before its query. Seed names are page-local; the first declaration wins, and the declaration remains a normal code block so readers can inspect the schema and rows.
 
 ## 7. Bilingual rule
 

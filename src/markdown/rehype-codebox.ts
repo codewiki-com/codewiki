@@ -68,6 +68,15 @@ function element(tagName: string, properties: Element['properties'], children: E
   return { type: 'element', tagName, properties, children };
 }
 
+function nodeText(node: { type: string; value?: string; children?: ElementContent[] }): string {
+  if (node.type === 'text') return node.value ?? '';
+  return node.children?.map((child) => nodeText(child)).join('') ?? '';
+}
+
+function preLanguage(node: Element): string | undefined {
+  return text(node, 'data-lang') ?? text(node, 'dataLanguage') ?? text(node, 'data-language');
+}
+
 function button(className: string[], flag: string, key: string, label: string): Element {
   // The `data-i18n` hook lets Base update legacy output while the supplied locale keeps the
   // initial, server-rendered label correct when JavaScript is unavailable.
@@ -79,6 +88,17 @@ function button(className: string[], flag: string, key: string, label: string): 
 export function rehypeCodebox(options: Options = {}) {
   return (tree: Root, file: MarkdownFile = {}): void => {
     const locale = localeFor(options, file);
+    const seeds = new Map<string, string>();
+
+    // Resolve declarations before wrapping any fences. This permits a runnable query to refer to a
+    // declaration later on the same page, while Map's first write makes duplicate names stable.
+    visit(tree, 'element', (node) => {
+      if (node.tagName !== 'pre' || preLanguage(node)?.toLowerCase() !== 'sql') return;
+      const seed = text(node, 'data-seed');
+      if (!seed || text(node, 'data-run') || seeds.has(seed)) return;
+      seeds.set(seed, nodeText(node));
+    });
+
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'pre' || !parent || index === undefined) return;
       // Only code fences belong in a codebox. Earlier rehype plugins may replace their `<pre>`
@@ -87,16 +107,19 @@ export function rehypeCodebox(options: Options = {}) {
 
       // Astro's own Shiki transformer writes the language as `dataLanguage`; a rehype plugin
       // upstream of us may have written the dashed form instead.
-      const lang = text(node, 'data-lang') ?? text(node, 'dataLanguage') ?? text(node, 'data-language');
+      const lang = preLanguage(node);
       if (!lang) return;
 
       const title = text(node, 'data-title');
       const run = Boolean(text(node, 'data-run'));
+      const seedName = text(node, 'data-seed');
+      const seed = run && lang.toLowerCase() === 'sql' && seedName ? seeds.get(seedName) : undefined;
 
       // The figure owns the metadata from here on, so the `<pre>` does not repeat it.
       delete node.properties['data-lang'];
       delete node.properties['data-title'];
       delete node.properties['data-run'];
+      delete node.properties['data-seed'];
 
       if (OUTPUT_LANGUAGES.has(lang)) {
         parent.children[index] = element('figure', { className: ['codebox', 'codebox-output'] }, [node]);
@@ -122,6 +145,7 @@ export function rehypeCodebox(options: Options = {}) {
       const properties: Element['properties'] = { className: ['codebox'], 'data-lang': lang };
       if (title) properties['data-title'] = title;
       if (run) properties['data-run'] = 'true';
+      if (seed !== undefined) properties['data-seed'] = seed;
 
       parent.children[index] = element('figure', properties, children);
       return [SKIP];

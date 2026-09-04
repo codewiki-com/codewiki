@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { PRESETS, buildPrompt, deepLinks, type Preset } from '@/lib/prompts';
+import { PAGE_PRESETS, PRESETS, buildPrompt, deepLinks, type Preset } from '@/lib/prompts';
 import type { Locale } from '@/lib/urls';
 
 export interface AskAILabels {
@@ -35,6 +35,8 @@ export interface AskAIContext {
   sectionText?: string;
   /** Optional heading for fixed scope text. */
   section?: string;
+  /** Port targets, selected from the language-track registry by the topic shell. */
+  languages?: Array<{ value: string; label: string }>;
 }
 
 export interface AskAIProps {
@@ -48,10 +50,11 @@ export interface AskAIProps {
 interface Scope {
   section: string;
   text: string;
+  presets: readonly Preset[];
 }
 
 /** Page furniture that is not the text: the ask buttons themselves, code headers, teasers. */
-const FURNITURE = '.sec-ask, .codehead, .depth-teaser, [data-copy], [data-run]';
+const FURNITURE = '.sec-ask, .ask-block, .codehead, .depth-teaser, [data-copy], [data-run]';
 
 /** Elements that end a line of prose when their content is collected. */
 const BLOCKS = new Set([
@@ -129,34 +132,63 @@ function collect(root: Element, from: Element | null, to: Element | null): strin
 }
 
 /** The scope one `h2` opens: from that heading to the next one. */
-function sectionScope(heading: HTMLElement): Scope {
+function sectionScope(heading: HTMLElement, presets: readonly Preset[]): Scope {
   const article = heading.closest('#article') ?? document.body;
   const headings = [...article.querySelectorAll('h2')];
   const next = headings[headings.indexOf(heading as HTMLHeadingElement) + 1] ?? null;
-  return { section: (heading.textContent ?? '').trim(), text: collect(article, heading, next) };
+  return { section: (heading.textContent ?? '').trim(), text: collect(article, heading, next), presets };
 }
 
 /** The scope the action row opens: the whole article, at the depth the reader is reading it. */
-function pageScope(): Scope {
+function pageScope(presets: readonly Preset[]): Scope {
   const article = document.getElementById('article');
-  return { section: '', text: article ? collect(article, null, null) : '' };
+  return { section: '', text: article ? collect(article, null, null) : '', presets };
+}
+
+/** The exact code or pitfall text named by a generated block button. */
+function blockScope(button: HTMLElement): Scope | null {
+  const block = button.dataset.block;
+  if (!block) return null;
+
+  const target = [...document.querySelectorAll<HTMLElement>('[data-block]')].find(
+    (candidate) => candidate !== button && candidate.dataset.block === block,
+  );
+  if (!target) return null;
+
+  const presets = (button.dataset.preset ?? '')
+    .split('|')
+    .filter((value): value is Preset => PRESETS.includes(value as Preset));
+  if (presets.length === 0) return null;
+
+  const isCode = target.matches('figure.codebox');
+  const text = isCode
+    ? (target.querySelector('pre code')?.textContent ?? target.querySelector('pre')?.textContent ?? '')
+    : (target.textContent ?? '');
+  const section = isCode
+    ? (target.querySelector('.codetitle')?.textContent ?? '').trim()
+    : (target.querySelector('.callout-label')?.textContent ?? '').trim();
+  return { section, text: text.trim(), presets };
 }
 
 /**
  * The Ask-AI panel — spec §14.2 and the "ask your ai" band of the mockups.
  *
- * Six presets, each of which can open Claude, open ChatGPT, or land on the clipboard. Every one
- * of them quotes the page verbatim, so the assistant answers about what the reader is looking at
+ * Page, section and block presets can open Claude, open ChatGPT, or land on the clipboard. Every
+ * one quotes its scope verbatim, so the assistant answers about what the reader is looking at
  * rather than about the subject in general. Nothing is sent anywhere by this island: the deep
  * links are ordinary links the reader follows, and the copy goes to their own clipboard.
  *
  * The panel serves two triggers: the action-row button, which scopes it to the page, and the
- * `.sec-ask` buttons the markdown pipeline writes after every `h2`, which scope it to a section.
- * Those live inside the article, so they are reached by delegation.
+ * `.sec-ask` / `.ask-block` buttons the markdown pipeline writes into the article. Those live
+ * outside the island's component tree, so they are reached by delegation.
  */
 export default function AskAI({ labels, context, preset }: AskAIProps) {
   const [scope, setScope] = useState<Scope | null>(null);
   const [copied, setCopied] = useState<{ preset: Preset; ok: boolean } | null>(null);
+  const [targetLanguage, setTargetLanguage] = useState(
+    () => context.languages?.find((track) => track.value !== context.language)?.value ?? context.language,
+  );
+  const [userCode, setUserCode] = useState('');
   const [ready, setReady] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
   const panel = useRef<HTMLDivElement | null>(null);
@@ -169,6 +201,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
     const inside = panel.current?.contains(document.activeElement);
     setScope(null);
     setCopied(null);
+    setUserCode('');
     if (inside) opener.current?.focus();
   }, []);
 
@@ -186,26 +219,32 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
     const onClick = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const button = target.closest<HTMLElement>('.sec-ask');
+      const button = target.closest<HTMLElement>('.sec-ask, .ask-block');
       if (!button) return;
 
+      if (button.matches('.ask-block')) {
+        const next = blockScope(button);
+        if (next) openWith(next, button);
+        return;
+      }
+
       const heading = document.getElementById(button.dataset.section ?? '');
-      if (heading) openWith(sectionScope(heading), button);
+      if (heading) openWith(sectionScope(heading, preset ? [preset] : PAGE_PRESETS), button);
     };
     document.addEventListener('click', onClick);
     return () => document.removeEventListener('click', onClick);
-  }, [openWith]);
+  }, [openWith, preset]);
 
   useEffect(() => {
     /** Cheatsheet rows are server-rendered buttons. Their event supplies the exact row as scope. */
     const onAsk = (event: Event) => {
       if (!(event instanceof CustomEvent) || typeof event.detail?.text !== 'string') return;
       const from = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      openWith({ section: '', text: event.detail.text }, from);
+      openWith({ section: '', text: event.detail.text, presets: preset ? [preset] : PAGE_PRESETS }, from);
     };
     document.addEventListener('cw:ask', onAsk);
     return () => document.removeEventListener('cw:ask', onAsk);
-  }, [openWith]);
+  }, [openWith, preset]);
 
   useEffect(() => {
     if (!scope) return;
@@ -218,7 +257,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (panel.current?.contains(target) || trigger.current?.contains(target)) return;
-      if (target instanceof Element && target.closest('.sec-ask')) return;
+      if (target instanceof Element && target.closest('.sec-ask, .ask-block')) return;
       close();
     };
 
@@ -233,7 +272,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
 
   /** One prompt per available preset, built from the scope the panel was opened with. */
   const rows = useMemo(() => {
-    const available = preset ? [preset] : PRESETS;
+    const available = scope?.presets ?? (preset ? [preset] : PAGE_PRESETS);
     return available.map((rowPreset) => {
       const prompt = buildPrompt({
         preset: rowPreset,
@@ -243,16 +282,22 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
         section: scope?.section ?? '',
         sectionText: scope?.text ?? '',
         language: context.language,
+        targetLanguage,
+        userCode,
         prerequisite: context.prerequisite,
       });
       return { preset: rowPreset, prompt, links: deepLinks(prompt) };
     });
-  }, [scope, context, preset]);
+  }, [scope, context, preset, targetLanguage, userCode]);
 
   const openScope = (): Scope =>
     context.sectionText === undefined
-      ? pageScope()
-      : { section: context.section ?? '', text: context.sectionText };
+      ? pageScope(preset ? [preset] : PAGE_PRESETS)
+      : {
+          section: context.section ?? '',
+          text: context.sectionText,
+          presets: preset ? [preset] : PAGE_PRESETS,
+        };
 
   const copy = (prompt: string, preset: Preset) => {
     // An insecure origin has no clipboard at all, and a denied permission rejects the write.
@@ -304,7 +349,32 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
           <ul class="ask-list">
             {rows.map(({ preset, prompt, links }) => (
               <li key={preset} class="ask-row">
-                <span class="ask-preset">{labels.presets[preset]}</span>
+                <span class="ask-preset">
+                  {labels.presets[preset]}
+                  {preset === 'port' && (
+                    <select
+                      class="ask-language"
+                      value={targetLanguage}
+                      aria-label={labels.presets.port}
+                      onChange={(event) => setTargetLanguage(event.currentTarget.value)}
+                    >
+                      {(context.languages ?? []).map((track) => (
+                        <option key={track.value} value={track.value}>
+                          {track.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </span>
+                {preset === 'check-pitfall' && (
+                  <textarea
+                    class="ask-code"
+                    rows={5}
+                    value={userCode}
+                    aria-label={labels.presets['check-pitfall']}
+                    onInput={(event) => setUserCode(event.currentTarget.value)}
+                  />
+                )}
                 <span class="ask-actions">
                   <a class="act act-sm" href={links.claude} target="_blank" rel="noopener">
                     {labels.claude}

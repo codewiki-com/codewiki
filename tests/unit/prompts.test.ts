@@ -68,7 +68,7 @@ describe('prompts', () => {
     expect(buildPrompt({ preset: 'quiz', locale: 'zh', ...page })).toContain('Answer in 中文.');
   });
 
-  /** One assertion per preset: the instruction line is what makes the six presets different. */
+  /** One assertion per preset: the instruction line is what makes the presets different. */
   const instructions: Record<Preset, RegExp> = {
     explain: /^Explain this as if I only know/m,
     quiz: /^Ask me one question at a time/m,
@@ -76,6 +76,10 @@ describe('prompts', () => {
     compare: /^Show the same idea in another language/m,
     apply: /^Here is my own code:/m,
     feynman: /^I will explain this section back to you/m,
+    'explain-code': /^Explain this code block line by line/m,
+    port: /^Port this code block to/m,
+    tests: /^Write tests for this code block/m,
+    'check-pitfall': /^Check my code for the pitfall described above/m,
   };
 
   it.each(PRESETS)('writes the %s instruction', (preset) => {
@@ -86,8 +90,39 @@ describe('prompts', () => {
     expect(p).toContain('Where you are unsure, say so.');
   });
 
-  it('lists the six presets of the spec', () => {
-    expect(PRESETS).toEqual(['explain', 'quiz', 'bugs', 'compare', 'apply', 'feynman']);
+  it('lists the page presets followed by the four block presets', () => {
+    expect(PRESETS).toEqual([
+      'explain',
+      'quiz',
+      'bugs',
+      'compare',
+      'apply',
+      'feynman',
+      'explain-code',
+      'port',
+      'tests',
+      'check-pitfall',
+    ]);
+  });
+
+  it('fills the port language and the reader code for focused block prompts', () => {
+    const port = buildPrompt({
+      preset: 'port',
+      locale: 'en',
+      ...page,
+      targetLanguage: 'Rust',
+    });
+    expect(port).toContain('Port this code block to Rust.');
+    expect(port).toContain('Keep code examples in Rust.');
+
+    const pitfall = buildPrompt({
+      preset: 'check-pitfall',
+      locale: 'zh',
+      ...page,
+      userCode: 'readers.append(lambda: index)',
+    });
+    expect(pitfall).toContain('readers.append(lambda: index)');
+    expect(pitfall).toContain('Answer in 中文.');
   });
 
   it('leaves a short prompt whole and encodes it once', () => {

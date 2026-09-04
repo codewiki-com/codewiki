@@ -15,10 +15,10 @@ export const SITE = {
 export const P2_NAV = true;
 
 /** Task 13 exposes the Playground after its static page and runtimes land. */
-export const P2B_NAV = false;
+export const P2B_NAV = true;
 
 /** Compare belongs to P3 and remains hidden until its routes exist. */
 export const P3_NAV = false;
 
 /** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
-export const P2_RULES = false;
+export const P2_RULES = true;

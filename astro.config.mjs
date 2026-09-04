@@ -6,6 +6,7 @@ import preact from '@astrojs/preact';
 import tailwindcss from '@tailwindcss/vite';
 
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
+import { rehypeBlockIds } from './src/markdown/rehype-block-ids.ts';
 import { rehypeDepthHeadings } from './src/markdown/rehype-depth-headings.ts';
 import { rehypeMermaidDiagrams } from './src/markdown/mermaid.ts';
 import { remarkCallouts } from './src/markdown/remark-callouts.ts';
@@ -40,6 +41,7 @@ export default defineConfig({
         rehypeMermaidDiagrams,
         rehypeCodebox,
         rehypeDepthHeadings,
+        rehypeBlockIds,
         rehypeSectionActions,
       ],
     }),
