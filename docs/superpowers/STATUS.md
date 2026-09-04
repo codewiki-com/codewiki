@@ -19,7 +19,7 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-04 P2 sub-spec `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (user: “你自己决策，选最佳的”); decisions: 4 flashcard ratings, 2-column print, paired bilingual default, kata with line comments, CodeMirror 6 lazy. Next: P2 plan.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are (updated 2026-09-04 23:40 local)
+## Where things are (updated 2026-09-05 00:30 local)
 | Item | State |
 |---|---|
 | Specs / mockups | approved; P1 `docs/design/mockups/`, P2 `docs/design/mockups/p2/` |
@@ -28,11 +28,17 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-04 23:40 local)
+## Active work (updated 2026-09-05 00:30 local — Claude usage near its limit; jobs keep running)
 - **Routing:** Opus for insight-heavy content, reviews, complex merges; Codex for bulk mechanical work; running jobs never re-routed.
-- Running (5): Opus daily-kata home surface on branch `feat-daily-kata` (design: `docs/design/daily-kata.md`; server-rendered card + 7-day client rotation, review/spotbug pool shared with the practice hub); Opus PWA offline feature on branch `feat-pwa` (manifest, service worker with shell precache + visited pages + per-track 'save for offline', opt-in runtimes, update prompt); Opus whole-site review on `main` (root checkout; report → `docs/superpowers/ledgers/2026-09-04-site-review.md`); Codex UI fixes on branch `fix-ui-real-content` (hero mock capped, wrapping track filter, path-map label clipping; design notes in `ledgers/2026-09-04-real-content-design-notes.md`); Opus content taxonomy pass on branch `fix-content-taxonomy` (sections, titles, duplicates; report → `ledgers/2026-09-04-taxonomy-pass.md`). Merge both fix branches into `main` after review, then act on the site-review findings, then deploy.
+- **Done, reviewed by the design lead, NOT yet merged:** `fix-content-taxonomy` (3 commits, HEAD 5936b3b; 30 sections, 142 titles, 7 duplicate pairs, 8 quiz line-span repairs; ledger `ledgers/2026-09-04-taxonomy-pass.md`). Merge into `main` once the site review finishes (it reads the root checkout). Follow-up decided: delete `python/scope` (byte-identical to `python/scope-namespaces`) and redirect `/python/scope/` → `/python/scope-namespaces/` in both locales; update its 2 inbound references.
+- **Running (4):**
+  - Opus whole-site review on `main` (root checkout, read-only; report → `ledgers/2026-09-04-site-review.md`, ends with the deploy verdict).
+  - Codex UI fixes on `fix-ui-real-content` (files edited, tests running, no commit yet; log `codex-fix-ui.log` in the session scratchpad; report `.superpowers/sdd/fix/report.md` in that worktree; hero mock capped, wrapping track filter, path-map label clipping).
+  - Opus PWA offline on `feat-pwa` (manifest, `sw.js` shell precache + visited pages, per-track "save offline", opt-in runtimes, update toast; report → `ledgers/2026-09-04-pwa-report.md`).
+  - Opus daily kata on `feat-daily-kata` (design `docs/design/daily-kata.md`; Chinese name 每日一练; report → `ledgers/2026-09-04-daily-kata-report.md`).
+- **Merge order when they finish:** taxonomy → fix-ui → daily-kata → pwa (each: read its report, `git log main..HEAD`, spot-check, `git merge --no-ff` into `main`, run `pnpm lint && pnpm check && pnpm test`), then one Opus fix round for the site-review findings + the `python/scope` redirect, then `pnpm build && pnpm check:links && pnpm test:e2e && pnpm exec lhci autorun`, then deploy prep (Cloudflare Pages needs the user's auth).
 - Branches: `p0-content-pipeline` (worktree kept for future tier-2 runs), `p2-learning-layer`, `p1-site-foundation` are merged; `p0-generate` worktree removed.
-- Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`.
+- Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; Opus subagent reports live under `docs/superpowers/ledgers/` on their branches.
 
 ## TODO (deferred by the user)
 - **MCP server: dropped** by the user on 2026-09-04 (do not build). P3 keeps compare pages, visualizer tools and the daily kata surface.
