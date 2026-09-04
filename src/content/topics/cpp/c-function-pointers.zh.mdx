@@ -1,0 +1,420 @@
+---
+title: C 函数指针
+description: 理解 C23 函数指针的声明、兼容类型、回调上下文与分发表，并避免错误强转、空调用和悬空上下文。
+track: cpp
+section: basics
+difficulty: intermediate
+tags: [function-pointers, callbacks, dispatch-tables, qsort]
+prerequisites: [cpp/c-basics, cpp/c-pointers]
+related: [cpp/c-arrays, cpp/c-structs-unions, cpp/function-objects, cpp/lambdas]
+terms: [function-pointer, callback, comparator, undefined-behavior]
+verified: { version: 'C23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/c-function-pointers
+sources:
+  - { title: 'WG14 N3096 - C23 working draft', url: 'https://www.iso-9899.info/n3096.pdf' }
+  - { title: 'cppreference - Pointer declarations', url: 'https://en.cppreference.com/w/c/language/pointer.html' }
+  - { title: 'cppreference - qsort', url: 'https://en.cppreference.com/w/c/algorithm/qsort.html' }
+  - { title: 'GCC manual - Warning options', url: 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html' }
+origin: old/src/content/docs/cpp/c-function-pointers.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    函数指针保存某类函数的指示值，让代码可以把“调用哪个函数”作为数据传递、保存和选择。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    返回类型或参数类型不兼容时，强制转换只能压住诊断；通过转换后的指针调用仍会产生未定义行为。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    用 `typedef` 固定回调签名，调用前验证指针与表索引，并把 `void *` 上下文的类型、所有权和生命周期写进契约。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="function-pointer">函数指针（function pointer）</Term>是一个对象指针之外的指针类别，它的值可以指向具有特定类型的函数。声明 `int (*operation)(int, int)` 表示 `operation` 指向“接收两个 `int` 并返回 `int`”的函数。通过 `operation(4, 5)` 调用时，实际执行哪个函数由该指针当前的值决定。
+
+普通函数调用把目标写死在调用表达式里。函数指针把目标变成运行时可选择的值，因此算法可以接收策略，事件源可以通知处理器，解析器可以从表中选择命令。C 标准库的 `qsort` 就接收一个<Term id="comparator">比较函数（comparator）</Term>指针，由调用方定义元素顺序。
+
+你会在回调 API、设备驱动、解析器、状态机和 C ABI 中遇到函数指针。它们也常作为结构体成员出现，使一组函数形成显式接口。函数指针不拥有任何状态；需要让回调携带状态时，C API 通常另传一个 `void *` 上下文。
+
+函数指针与数据指针不能混为一谈。数据指针指向对象，函数指针指向函数；标准 C 没有保证二者表示方式、大小或转换行为相同。函数指针也不是 C++ 的可调用对象包装器，不能自行保存捕获值。
+
+| 需求 | 合适的机制 | 调用目标何时确定 |
+|---|---|---|
+| 固定调用一个函数 | 直接调用 | 编写调用表达式时 |
+| 从同一签名的函数中选择 | 函数指针 | 运行时赋值或查表时 |
+| 给 C 回调附带状态 | 函数指针加 `void *` 上下文 | 注册回调与上下文时 |
+| 保存任意 C++ 可调用对象 | 函数对象或 `std::function` | 构造可调用对象时 |
+
+当行为确实要作为参数或数据变化时，函数指针很合适。如果目标在编译时固定，直接调用通常更清楚；如果 C++ 代码需要捕获状态、重载调用或拥有资源，应考虑函数对象、lambda 或标准库包装器。机制的选择先取决于接口语义，而不是声明是否够短。
+
+这里以 C23 规则和 GCC 13.3.0 为准。示例使用 C 接口风格，也可以帮助你阅读 C++ 项目中的 C 兼容边界；C++ 可调用对象的额外规则放在后面的专门小节。
+
+## 工作原理
+
+C 声明需要从标识符附近向外读。`int (*operation)(int, int)` 中，括号先把 `*operation` 组合起来，随后的 `(int, int)` 再说明它指向函数。去掉括号写成 `int *operation(int, int)`，含义就变成“一个返回 `int *` 的函数”。
+
+函数类型由返回类型和参数类型共同决定。`int (*)(int, int)` 与 `double (*)(double, double)` 不是同一指针类型，即使某个平台恰好用同样宽度的寄存器传递这些值。C 没有通过调用位置自动修补不兼容回调签名的机制。
+
+`typedef` 有两种实用写法。`typedef int (*BinaryOp)(int, int)` 直接给指针类型命名，变量写成 `BinaryOp selected`；`typedef int BinaryOperation(int, int)` 给函数类型命名，指针则写成 `BinaryOperation *selected`。后一种写法没有把指针层级藏在别名里，在复杂接口中有时更容易审查。
+
+函数名出现在多数表达式中时，会转换成指向该函数的指针。因此，若 `add` 的类型匹配，`operation = add` 与 `operation = &add` 都可以。通过指针调用时，`operation(2, 3)` 与 `(*operation)(2, 3)` 等价；前一种写法更常见。
+
+函数指针可以赋值、复制、与空指针比较，也可以与指向同一函数的兼容指针比较是否相等。它不能像数组元素指针那样做有意义的加减法。函数不是排列成可遍历对象序列的数据对象。
+
+空函数指针不指向可调用目标。API 必须说明回调是必需还是可选：必需回调应在接口边界拒绝 `NULL`，可选回调则应在每次可能调用的位置先检查。检查表中元素之前，还必须先证明索引有效，否则读取指针本身就已经越界。
+
+把一种函数指针转换为另一种函数指针后，再转换回原类型，标准保证它与原值相等。但这不表示中间类型可以安全调用。实际调用时，指针所指函数的类型必须与调用使用的函数类型兼容，否则行为未定义。
+
+一个典型回调交互包含四步：
+
+1. 调用方提供签名匹配的函数，并准备回调需要的上下文。
+2. 接收方保存或立即使用函数指针与上下文指针。
+3. 接收方在契约允许的时间，以约定参数调用该函数。
+4. 回调把 `void *` 转回约定的对象指针类型，并只在对象仍存活时访问它。
+
+<Term id="callback">回调函数（callback）</Term>的类型只约束返回值和参数。它不会表达调用次数、调用线程、是否允许重入、上下文归谁所有，也不会表达错误如何传播。这些条件必须由 API 文档和调用方共同维护。
+
+`void *` 上下文是 C 中模拟“函数加状态”的常见做法。对象指针可以隐式转换为 `void *` 并转换回来，但转换后的类型必须与原对象一致。若接收方把回调保存到当前函数返回之后，上下文也必须至少存活到最后一次调用或注销完成。
+
+`qsort` 把两个数组元素的地址传给比较函数。比较函数要把参数转换成正确的元素指针类型，并返回负数、零或正数。返回值表达相对顺序，不要求恰好是 `-1`、`0`、`1`，但比较结果必须对算法处理的值保持一致。
+
+分发表把同一签名的多个函数指针放入数组或结构体数组。表索引、枚举值或命令名选择一项，然后代码间接调用对应处理器。表项可以同时保存名称、权限或上下文，但所有路径仍要验证选择结果和指针有效性。
+
+## 示例
+
+下面四个程序依次展示基本赋值、标准库比较回调、分发表，以及带上下文的回调。它们都是独立文件；输出来自 GCC 13.3.0 使用 `-std=c2x -Wall -Wextra -Wconversion -Wpedantic -Werror` 编译后的实际运行结果。
+
+### 选择同一签名的运算
+
+第一个示例用 `BinaryOp` 命名函数指针类型。`apply` 不知道具体运算，只要求传入的函数接收两个 `int` 并返回 `int`。
+
+<Depth level="quick">
+
+```c title="basic.c"
+#include <stdio.h>
+
+typedef int (*BinaryOp)(int left, int right);
+
+int add(int left, int right) {
+    return left + right;
+}
+
+int multiply(int left, int right) {
+    return left * right;
+}
+
+int apply(BinaryOp operation, int left, int right) {
+    return operation(left, right);
+}
+
+int main(void) {
+    BinaryOp selected = add;
+    printf("add: %d\n", apply(selected, 6, 7));
+
+    selected = multiply;
+    printf("multiply: %d\n", apply(selected, 6, 7));
+    printf("selected multiply: %s\n", selected == multiply ? "yes" : "no");
+}
+```
+
+```text
+add: 13
+multiply: 42
+selected multiply: yes
+```
+
+</Depth>
+
+函数名 `add` 和 `multiply` 在赋值时转换为函数指针。`selected` 可以改指向另一函数，也可以与函数名转换得到的指针比较。若要禁止变量改指向别处，可以声明一个 `BinaryOp const` 对象，但这不会改变目标函数本身。
+
+### 用 qsort 接收比较策略
+
+`qsort` 不知道 `Job` 的字段。它只知道元素大小，并通过比较回调取得任意两个元素的顺序关系。
+
+```c title="sort_jobs.c"
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    const char *name;
+    int priority;
+} Job;
+
+int compare_jobs(const void *lhs, const void *rhs) {
+    const Job *left = lhs;
+    const Job *right = rhs;
+
+    return (left->priority > right->priority) -
+           (left->priority < right->priority);
+}
+
+int main(void) {
+    Job jobs[] = {
+        {"render", 3},
+        {"cleanup", 1},
+        {"backup", 2},
+    };
+    size_t count = sizeof jobs / sizeof jobs[0];
+
+    qsort(jobs, count, sizeof jobs[0], compare_jobs);
+
+    for (size_t index = 0; index < count; ++index) {
+        printf("%d: %s\n", jobs[index].priority, jobs[index].name);
+    }
+}
+```
+
+```text
+1: cleanup
+2: backup
+3: render
+```
+
+比较函数用两个关系表达式组成结果，避免直接计算 `left->priority - right->priority` 可能产生的有符号整数溢出。两个 `const void *` 参数只在回调契约已经确认元素类型为 `Job` 后才转换。
+
+`qsort` 可以按算法需要多次调用比较函数，调用顺序也不是接口承诺。比较函数不应依赖调用次数或修改元素；若两个优先级相等，`qsort` 也不保证保留原来的相对顺序。
+
+### 用结构体构造分发表
+
+函数指针可以与描述信息一起存进结构体数组。调用前先验证索引、处理器和输出指针，避免把外部选择值直接当作可信下标。
+
+```c title="dispatch.c"
+#include <stdio.h>
+
+typedef int (*CommandHandler)(int value);
+
+typedef struct {
+    const char *name;
+    CommandHandler handler;
+} Command;
+
+int double_value(int value) {
+    return value * 2;
+}
+
+int negate(int value) {
+    return -value;
+}
+
+int square(int value) {
+    return value * value;
+}
+
+int run_command(size_t index, int value, int *result) {
+    static const Command commands[] = {
+        {"double", double_value},
+        {"negate", negate},
+        {"square", square},
+    };
+    size_t count = sizeof commands / sizeof commands[0];
+
+    if (index >= count || commands[index].handler == NULL || result == NULL) {
+        return 0;
+    }
+    *result = commands[index].handler(value);
+    return 1;
+}
+
+int main(void) {
+    int result = 0;
+    printf("square(5): %d\n", run_command(2, 5, &result) ? result : -1);
+    printf("command 9: %s\n", run_command(9, 5, &result) ? "ok" : "unavailable");
+}
+```
+
+```text
+square(5): 25
+command 9: unavailable
+```
+
+短路求值保证只有 `index < count` 时才读取 `commands[index]`。表被声明为 `static const`，所以这些固定映射不会在每次调用时重新创建，也不能被普通赋值意外改写。
+
+真实命令表往往通过名称查找而不是直接接收数字索引。无论选择值来自网络、文件还是枚举转换，都应把“找到表项”和“调用处理器”分成两个可检查的步骤。
+
+### 给回调附带上下文
+
+函数指针本身不捕获 `limit` 或计数。示例另传 `ThresholdState` 的地址，使同一个 `count_above` 函数可以服务不同阈值和独立计数。
+
+```c title="callback_context.c"
+#include <stddef.h>
+#include <stdio.h>
+
+typedef void (*ReadingCallback)(int reading, void *context);
+
+typedef struct {
+    int limit;
+    size_t matches;
+} ThresholdState;
+
+void count_above(int reading, void *context) {
+    ThresholdState *state = context;
+    if (reading > state->limit) {
+        ++state->matches;
+    }
+}
+
+void visit_readings(const int *readings, size_t count,
+                    ReadingCallback callback, void *context) {
+    if (callback == NULL) {
+        return;
+    }
+
+    for (size_t index = 0; index < count; ++index) {
+        callback(readings[index], context);
+    }
+}
+
+int main(void) {
+    int readings[] = {18, 25, 21, 19, 30};
+    ThresholdState state = {.limit = 20, .matches = 0};
+
+    visit_readings(readings, 5, count_above, &state);
+    printf("readings above %d: %zu\n", state.limit, state.matches);
+}
+```
+
+```text
+readings above 20: 3
+```
+
+`visit_readings` 同步完成所有调用，因此 `main` 的局部变量 `state` 在整个回调期间都存活。如果函数把回调和上下文保存起来供以后使用，这个局部地址就不再安全；调用方必须改用更长生命周期的存储，并明确注销时机。
+
+这里把 `NULL` 回调定义成“不做任何事”。另一个 API 完全可以把它定义成错误。关键不是统一选择某种策略，而是让声明、文档、返回值和所有调用点执行同一个契约。
+
+## 陷阱
+
+### 强转不兼容的函数类型
+
+> [!PITFALL]
+> 生成或遗留代码可能把 `double (*)(double)` 强转成 `int (*)(int)`，只因为编译器原本拒绝赋值。转换改变了静态类型，却没有改变目标函数实际接收参数和返回结果的方式。
+
+**修复方法：** 修改回调实现或适配器，使其声明真正匹配 API 的 `typedef`，并保留 `-Wall -Wextra -Wcast-function-type` 等诊断。不要用强制转换消除签名问题；通过不兼容类型调用函数会产生<Term id="undefined-behavior">未定义行为（undefined behavior）</Term>。
+
+### 在验证之前读取分发表
+
+> [!PITFALL]
+> `if (handlers[index] != NULL && index < count)` 的检查顺序是错的。索引无效时，左侧表达式已经越界读取，右侧边界检查来不及保护它。
+
+**修复方法：** 先写 `index < count`，再依赖 `&&` 的从左到右短路求值检查 `handlers[index]`。若选择值是有符号整数，还要在转换成 `size_t` 前拒绝负数。
+
+### 用减法实现比较函数
+
+> [!PITFALL]
+> `return left->key - right->key` 看似同时产生负、零、正三种结果，但两个 `int` 相差过大时可能发生有符号溢出。算法随后得到的不是可靠顺序，而是未定义行为。
+
+**修复方法：** 使用 `(left->key > right->key) - (left->key < right->key)`，或用明确分支返回顺序。还要确保参数转换成正确元素类型，并让相等、反向比较和传递关系保持一致。
+
+### 保存局部上下文供以后调用
+
+> [!PITFALL]
+> 注册函数可能保存 `&local_state`，而回调在注册函数返回后才执行。函数指针仍然有效，但 `void *` 已指向生命周期结束的对象，解引用会访问悬空上下文。
+
+**修复方法：** 先确定回调是同步、借用到注销为止，还是由接收方接管上下文。异步或长期注册需要堆分配、拥有者对象或其他足够长寿的存储，并且注销流程必须等到进行中的回调结束后再释放它。
+
+### 把函数指针塞进 void 指针
+
+> [!PITFALL]
+> `void *` 是通用对象指针，不是标准 C 的通用函数指针容器。把函数指针转换成 `void *` 再调用依赖实现或平台扩展，不能因为两者在当前机器上大小相同就视为可移植。
+
+**修复方法：** 用准确的函数指针类型保存调用目标，用独立的 `void *` 保存对象上下文。动态链接 API 若规定了额外转换规则，应把这种代码隔离在平台适配层，并按该 API 的文档验证。
+
+### 把局部副本误当作线程同步
+
+> [!PITFALL]
+> 一个线程改写全局处理器，另一个线程同时读取或调用它时，普通函数指针对象上的冲突访问会形成数据竞争。先复制到局部变量只能缩短后续使用窗口，不能让最初的无同步读取变得安全。
+
+**修复方法：** 用互斥量或适合该平台与类型的原子发布机制同步注册和读取，并同时保护上下文生命周期。还要决定是否在持锁期间调用外部回调；回调若重入注册 API，持锁调用可能死锁。
+
+### 忘记回调的行为契约
+
+> [!PITFALL]
+> 签名匹配不表示语义匹配。比较函数修改元素、日志回调递归触发日志，或者清理回调被调用两次，都可能破坏调用方维护的不变量。
+
+**修复方法：** 为回调记录调用次数、顺序、线程、重入、可修改数据、错误传播和上下文所有权。测试至少覆盖零次、一次和多次调用，以及回调主动失败或尝试注销自身的路径。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型经常用函数指针强转压住不兼容签名诊断，或者把 C++ 捕获 lambda、GCC 嵌套函数当成可移植 C 回调。生成的 `qsort` 比较函数常直接相减，可能溢出；事件注册代码则容易保存栈上上下文，或把 `void *` 同时当成对象指针和函数指针。另一个隐蔽错误是先索引分发表再检查边界。
+
+**让 AI 检查**
+
+- 列出每个回调 `typedef` 与实现的完整返回类型和参数类型，指出所有强制转换。
+- 对每个保存的上下文画出注册、可能调用、注销和释放的时间线，并证明生命周期覆盖全部调用。
+- 检查每个分发表索引和 `qsort` 比较函数，给出负数、边界值、空指针与极端整数测试。
+
+**审查清单**
+
+- 在打开 `-Wcast-function-type` 等严格警告后，确认没有靠强转连接不兼容函数。
+- 在读取或调用表项前验证索引和空指针，并用 sanitizer 运行错误输入路径。
+- 确认回调的线程、重入、调用次数、错误处理和上下文所有权都有明确契约。
+
+**提示词词汇**
+
+使用准确术语：`function pointer`（函数指针）、`function type compatibility`（函数类型兼容性）、`callback`（回调函数）、`user-data context`（用户数据上下文）、`dispatch table`（分发表）、`indirect call`（间接调用）、`calling convention`（调用约定）。要求 AI 给出“完整原型与生命周期时间线”，比只说“检查这个回调”更容易暴露类型和所有权错误。
+
+<Depth level="deep">
+
+## 复杂声明的阅读方法
+
+函数指针声明变长时，先找到标识符，再按括号与后缀的绑定顺序向外读。`int (*handler)(int)` 是一个指针；`int (*handlers[4])(int)` 是含 4 个函数指针的数组；`int (*factory(void))(int)` 是一个返回函数指针的函数；`int (**slot)(int)` 则是指向函数指针的指针。
+
+括号不是排版偏好，而是声明语法的一部分。函数调用后缀 `()` 和数组下标后缀 `[]` 比前缀 `*` 绑定得更紧，所以需要括号让星号先与变量组合。审查时把每个声明改写成一句自然语言，往往能立刻发现“函数数组”或“返回函数”这类不可能的误读。
+
+| 声明 | 从标识符向外读 |
+|---|---|
+| `int (*handler)(int)` | `handler` 是指针，指向接收 `int` 并返回 `int` 的函数 |
+| `int (*handlers[4])(int)` | `handlers` 是含 4 项的数组，每项都是同类函数指针 |
+| `int (*factory(void))(int)` | `factory` 是无参数函数，返回同类函数指针 |
+| `int (**slot)(int)` | `slot` 指向一个函数指针 |
+
+`typedef` 适合在公共接口上给契约命名，但别让名字抹掉重要差异。`BinaryOp` 若已经是指针别名，`const BinaryOp fixed = add` 限定的是指针对象，表示它不能再指向 `multiply`。目标函数没有因此变成“只读函数”；函数类型本身不是靠这里的 `const` 限定。
+
+数组中的所有函数指针必须能转换到数组元素类型。需要混合不同签名时，不应把它们强转进同一个表；可以设计多个表、统一的适配器签名，或让表项带有能安全解释参数的显式变体信息。
+
+## 回调契约的隐藏维度
+
+类型检查只能覆盖一次调用的机器级形状。可靠 API 还要回答谁可以注册、接收方是否复制上下文、回调可能执行多少次，以及回调返回后是否仍有工作引用该上下文。缺少这些答案时，即使每个原型都正确，系统仍可能悬空、泄漏或重复释放。
+
+| 契约维度 | 接口必须回答的问题 |
+|---|---|
+| 调用时机 | 注册期间同步调用，还是以后异步调用 |
+| 生命周期 | 上下文借用多久，由谁释放，注销何时完成 |
+| 并发 | 哪个线程调用，注册与调用是否可并发 |
+| 重入 | 回调能否再次进入注册者或注销自己 |
+| 失败 | 返回值、错误码或外部状态如何传播失败 |
+
+同步遍历 API 的契约最简单：调用结束后不再保留回调或上下文，栈上状态通常足够。长期订阅则需要一个完成边界；“注销函数已经返回”是否意味着不会再有回调，必须由 API 明说。仅把表项设为 `NULL` 不一定能停止另一个线程已经取得的旧副本。
+
+回调若可能重入，调用方应在进入外部代码前把内部状态放到一致状态。持锁调用可以保护表项，却把锁暴露给未知代码；先解锁再调用又需要稳定保存目标和上下文。这里没有适用于所有系统的固定答案，接口必须选择一种所有权与同步模型并执行到底。
+
+错误处理同样不在函数指针语法中。返回 `void` 的回调无法直接向调用方报告失败，除非上下文中另有状态或 API 提供取消机制。设计签名时应先确定失败是否影响剩余迭代，再选择返回码，而不是等实现完成后用全局变量补救。
+
+## C 与 C++ 的可调用边界
+
+C++ 的非捕获 lambda 在满足转换规则和签名时可以转换成普通函数指针，捕获 lambda 则不能，因为它需要保存对象状态。把捕获列表删掉只为满足 C API，可能悄悄丢失所需状态；通常应使用一个普通桥接函数，并通过 API 的用户数据参数传递对象地址。
+
+函数对象和 `std::function` 能拥有状态，也能包装更多可调用形式，但它们不是 C ABI 函数指针。向 C 库注册 C++ 对象时，桥接函数要有匹配的 C 可调用签名，在内部把上下文转换回正确对象类型，并阻止异常越过 C 边界。
+
+跨语言头文件通常用 `extern "C"` 为 C++ 编译器声明 C 语言链接。它解决的是链接名称和语言边界问题，不会自动修复参数布局、生命周期或调用约定错误。公共声明应由双方包含同一个头文件，而不是分别手写看似相同的原型。
+
+平台 API 可能为动态符号、调用约定或中断处理器增加标准 C 之外的规则。此类保证只在对应平台契约内成立。把扩展封装在一个小适配层，并让其余代码继续使用准确的函数指针类型，能把不可移植假设限制在可审查的位置。
+
+</Depth>
+
+<Checkpoint id="cpp/c-function-pointers" />
+
+## 延伸阅读
+
+先用 C23 工作草案核对语言规则，再查指针声明和 `qsort` 接口。编译器警告文档说明如何打开能暴露不兼容转换的诊断。
+
+- [WG14 N3096：C23 工作草案](https://www.iso-9899.info/n3096.pdf)
+- [cppreference：指针声明](https://en.cppreference.com/w/c/language/pointer.html)
+- [cppreference：qsort](https://en.cppreference.com/w/c/algorithm/qsort.html)
+- [GCC 手册：警告选项](https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html)

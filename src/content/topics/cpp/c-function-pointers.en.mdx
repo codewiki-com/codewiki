@@ -1,0 +1,420 @@
+---
+title: C Function Pointers
+description: C23 function-pointer declarations, compatible types, callback context, and dispatch tables, including the casts and lifetime bugs to avoid.
+track: cpp
+section: basics
+difficulty: intermediate
+tags: [function-pointers, callbacks, dispatch-tables, qsort]
+prerequisites: [cpp/c-basics, cpp/c-pointers]
+related: [cpp/c-arrays, cpp/c-structs-unions, cpp/function-objects, cpp/lambdas]
+terms: [function-pointer, callback, comparator, undefined-behavior]
+verified: { version: 'C23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/c-function-pointers
+sources:
+  - { title: 'WG14 N3096 - C23 working draft', url: 'https://www.iso-9899.info/n3096.pdf' }
+  - { title: 'cppreference - Pointer declarations', url: 'https://en.cppreference.com/w/c/language/pointer.html' }
+  - { title: 'cppreference - qsort', url: 'https://en.cppreference.com/w/c/algorithm/qsort.html' }
+  - { title: 'GCC manual - Warning options', url: 'https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html' }
+origin: old/src/content/docs/cpp/c-function-pointers.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A function pointer stores a value designating a particular kind of function, so code can pass, retain, and select “which function to call” as data.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    When return or parameter types are incompatible, a cast only suppresses a diagnostic; calling through the converted pointer still has undefined behavior.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Use a `typedef` to fix the callback signature, validate pointers and table indexes before calling, and specify the type, ownership, and lifetime of every `void *` context.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A <Term id="function-pointer">function pointer</Term> belongs to a pointer category distinct from object pointers, and its value can point to a function of a particular type. The declaration `int (*operation)(int, int)` says that `operation` points to a function that takes two `int` arguments and returns `int`. When code calls `operation(4, 5)`, the pointer's current value determines which function runs.
+
+A direct call fixes its target in the call expression. A function pointer turns that target into a runtime-selectable value, so an algorithm can accept a strategy, an event source can notify a handler, or a parser can select a command from a table. The C standard library's `qsort` accepts a <Term id="comparator">comparator</Term> pointer that lets the caller define element ordering.
+
+You encounter function pointers in callback APIs, device drivers, parsers, state machines, and C ABIs. They also appear as structure members, where a group of functions forms an explicit interface. A function pointer owns no state; when a callback needs state, a C API commonly passes a separate `void *` context.
+
+Function pointers and data pointers are not interchangeable. A data pointer points to an object, while a function pointer points to a function; standard C does not guarantee that they have the same representation, size, or conversion behavior. A function pointer is also not a C++ callable wrapper and cannot store captured values by itself.
+
+| Need | Suitable mechanism | When the call target is chosen |
+|---|---|---|
+| Always call one function | Direct call | When the call expression is written |
+| Select among functions with one signature | Function pointer | On runtime assignment or lookup |
+| Attach state to a C callback | Function pointer plus `void *` context | When callback and context are registered |
+| Store an arbitrary C++ callable | Function object or `std::function` | When the callable object is constructed |
+
+Function pointers fit when behavior truly needs to vary as a parameter or data value. A direct call is clearer when the target is fixed at compile time. If C++ code needs captured state, an overloaded call operator, or owned resources, consider a function object, lambda, or standard-library wrapper. Choose the mechanism from the interface semantics, not from which declaration is shortest.
+
+This topic targets C23 rules and GCC 13.3.0. Its examples use C-style interfaces and also help you read C-compatible boundaries in C++ projects; a later section covers the additional boundary with C++ callables.
+
+## How it works
+
+Read a C declaration outward from the identifier. In `int (*operation)(int, int)`, the parentheses first group `*operation`, and the following `(int, int)` says that the pointed-to entity is a function. Remove the parentheses to get `int *operation(int, int)`, and the meaning becomes “a function returning `int *`.”
+
+A function type includes its return type and parameter types. `int (*)(int, int)` and `double (*)(double, double)` are different pointer types even if a platform happens to pass those values in registers of the same width. C has no mechanism that repairs an incompatible callback signature at the call site.
+
+There are two useful `typedef` styles. `typedef int (*BinaryOp)(int, int)` names the pointer type directly, so a variable is `BinaryOp selected`. `typedef int BinaryOperation(int, int)` names the function type, so its pointer is `BinaryOperation *selected`. The second form does not hide the pointer level inside an alias, which can make a complex interface easier to review.
+
+A function name in most expressions converts to a pointer to that function. Consequently, if `add` has a compatible type, both `operation = add` and `operation = &add` work. When calling through the pointer, `operation(2, 3)` and `(*operation)(2, 3)` are equivalent; the first spelling is more common.
+
+A function pointer can be assigned, copied, compared with a null pointer, and compared for equality with a compatible pointer to the same function. It cannot participate in meaningful arithmetic like a pointer into an array. Functions are not data objects arranged as a traversable sequence.
+
+A null function pointer designates no callable target. An API must state whether a callback is required or optional: reject a missing required callback at the boundary, and check an optional callback at every possible call site. Before examining an entry in a table, also prove that its index is valid, or the program has already read out of bounds.
+
+A pointer to one function type may be converted to a pointer to another function type and back, and the C standard guarantees that the restored value compares equal to the original. That does not make the intermediate type callable. At the actual call, the pointed-to function type must be compatible with the function type used for the call, or behavior is undefined.
+
+A typical callback interaction has four steps:
+
+1. The caller supplies a function with the matching signature and prepares any context it needs.
+2. The receiver stores or immediately uses the function pointer and context pointer.
+3. At a time allowed by the contract, the receiver calls the function with the agreed arguments.
+4. The callback converts `void *` back to the agreed object-pointer type and accesses it only while that object is alive.
+
+A <Term id="callback">callback</Term> type constrains only return and parameter types. It does not express how many calls occur, which thread calls, whether reentrancy is allowed, who owns the context, or how errors propagate. The API documentation and caller must preserve those conditions together.
+
+A `void *` context is C's common way to model “function plus state.” An object pointer converts implicitly to `void *` and back, but the recovered type must agree with the original object. If the receiver retains the callback beyond the current function call, the context must live through the last invocation or completed unregistration.
+
+`qsort` passes the addresses of two array elements to its comparator. The comparator converts them to the correct element-pointer type and returns a negative, zero, or positive value. The result expresses relative order and need not be exactly `-1`, `0`, or `1`, but comparisons must remain consistent for the values handled by the algorithm.
+
+A dispatch table puts several function pointers with the same signature in an array or an array of structures. A table index, enumeration value, or command name selects an entry, after which code indirectly calls its handler. Entries can also carry names, permissions, or contexts, but every path must still validate the selection and pointer.
+
+## Examples
+
+These four programs progress from basic assignment to a standard-library comparator, a dispatch table, and a callback with context. Each is an independent file, and every output came from compiling with GCC 13.3.0 using `-std=c2x -Wall -Wextra -Wconversion -Wpedantic -Werror` and then running the result.
+
+### Select an operation with one signature
+
+The first example names its function-pointer type `BinaryOp`. `apply` does not know the concrete operation; it only requires a function that takes two `int` values and returns `int`.
+
+<Depth level="quick">
+
+```c title="basic.c"
+#include <stdio.h>
+
+typedef int (*BinaryOp)(int left, int right);
+
+int add(int left, int right) {
+    return left + right;
+}
+
+int multiply(int left, int right) {
+    return left * right;
+}
+
+int apply(BinaryOp operation, int left, int right) {
+    return operation(left, right);
+}
+
+int main(void) {
+    BinaryOp selected = add;
+    printf("add: %d\n", apply(selected, 6, 7));
+
+    selected = multiply;
+    printf("multiply: %d\n", apply(selected, 6, 7));
+    printf("selected multiply: %s\n", selected == multiply ? "yes" : "no");
+}
+```
+
+```text
+add: 13
+multiply: 42
+selected multiply: yes
+```
+
+</Depth>
+
+The names `add` and `multiply` convert to function pointers when assigned. `selected` can point to a different function and can be compared with the pointer produced from a function name. To prevent the variable from being redirected, you can declare a `BinaryOp const` object, but that does not change the target function itself.
+
+### Give qsort a comparison strategy
+
+`qsort` knows nothing about the fields in `Job`. It knows the element size and asks the comparison callback for the ordering of any two elements.
+
+```c title="sort_jobs.c"
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct {
+    const char *name;
+    int priority;
+} Job;
+
+int compare_jobs(const void *lhs, const void *rhs) {
+    const Job *left = lhs;
+    const Job *right = rhs;
+
+    return (left->priority > right->priority) -
+           (left->priority < right->priority);
+}
+
+int main(void) {
+    Job jobs[] = {
+        {"render", 3},
+        {"cleanup", 1},
+        {"backup", 2},
+    };
+    size_t count = sizeof jobs / sizeof jobs[0];
+
+    qsort(jobs, count, sizeof jobs[0], compare_jobs);
+
+    for (size_t index = 0; index < count; ++index) {
+        printf("%d: %s\n", jobs[index].priority, jobs[index].name);
+    }
+}
+```
+
+```text
+1: cleanup
+2: backup
+3: render
+```
+
+The comparator builds its result from two relational expressions, avoiding the signed overflow that `left->priority - right->priority` could cause. It converts the two `const void *` parameters only after the callback contract has established that the elements are `Job` objects.
+
+`qsort` may call the comparator as often and in whatever order its algorithm requires. A comparator should not rely on a call count or modify elements. If two priorities are equal, `qsort` also does not promise to preserve their original relative order.
+
+### Build a dispatch table from structures
+
+Function pointers can sit beside descriptive data in an array of structures. This code validates the index, handler, and output pointer before it treats an external selection as a trusted subscript.
+
+```c title="dispatch.c"
+#include <stdio.h>
+
+typedef int (*CommandHandler)(int value);
+
+typedef struct {
+    const char *name;
+    CommandHandler handler;
+} Command;
+
+int double_value(int value) {
+    return value * 2;
+}
+
+int negate(int value) {
+    return -value;
+}
+
+int square(int value) {
+    return value * value;
+}
+
+int run_command(size_t index, int value, int *result) {
+    static const Command commands[] = {
+        {"double", double_value},
+        {"negate", negate},
+        {"square", square},
+    };
+    size_t count = sizeof commands / sizeof commands[0];
+
+    if (index >= count || commands[index].handler == NULL || result == NULL) {
+        return 0;
+    }
+    *result = commands[index].handler(value);
+    return 1;
+}
+
+int main(void) {
+    int result = 0;
+    printf("square(5): %d\n", run_command(2, 5, &result) ? result : -1);
+    printf("command 9: %s\n", run_command(9, 5, &result) ? "ok" : "unavailable");
+}
+```
+
+```text
+square(5): 25
+command 9: unavailable
+```
+
+Short-circuit evaluation ensures that `commands[index]` is read only when `index < count`. The table is `static const`, so these fixed mappings are not recreated on every call and cannot be accidentally changed by an ordinary assignment.
+
+A real command table often searches by name instead of accepting a numeric index directly. Whether a selector comes from a network request, file, or converted enumeration, keep “find the entry” and “invoke the handler” as two separately checkable steps.
+
+### Attach context to a callback
+
+A function pointer does not capture `limit` or a count. This example separately passes the address of `ThresholdState`, allowing the same `count_above` function to serve different thresholds and independent counts.
+
+```c title="callback_context.c"
+#include <stddef.h>
+#include <stdio.h>
+
+typedef void (*ReadingCallback)(int reading, void *context);
+
+typedef struct {
+    int limit;
+    size_t matches;
+} ThresholdState;
+
+void count_above(int reading, void *context) {
+    ThresholdState *state = context;
+    if (reading > state->limit) {
+        ++state->matches;
+    }
+}
+
+void visit_readings(const int *readings, size_t count,
+                    ReadingCallback callback, void *context) {
+    if (callback == NULL) {
+        return;
+    }
+
+    for (size_t index = 0; index < count; ++index) {
+        callback(readings[index], context);
+    }
+}
+
+int main(void) {
+    int readings[] = {18, 25, 21, 19, 30};
+    ThresholdState state = {.limit = 20, .matches = 0};
+
+    visit_readings(readings, 5, count_above, &state);
+    printf("readings above %d: %zu\n", state.limit, state.matches);
+}
+```
+
+```text
+readings above 20: 3
+```
+
+`visit_readings` completes every call synchronously, so the local `state` in `main` stays alive for the whole callback period. If the function retained the callback and context for later, that local address would no longer be safe; the caller would need longer-lived storage and a defined unregistration point.
+
+Here a `NULL` callback means “do nothing.” Another API could define it as an error. The important part is not choosing one universal policy, but making the declaration, documentation, return value, and every call site enforce the same contract.
+
+## Pitfalls
+
+### Casting an incompatible function type
+
+> [!PITFALL]
+> Generated or legacy code may cast `double (*)(double)` to `int (*)(int)` only because the compiler rejected the original assignment. The cast changes the static type, not how the target function actually receives arguments or returns a result.
+
+**Fix:** change the callback implementation or adapter so its declaration genuinely matches the API's `typedef`, and retain diagnostics such as `-Wall -Wextra -Wcast-function-type`. Do not use a cast to erase a signature problem; calling a function through an incompatible type has <Term id="undefined-behavior">undefined behavior</Term>.
+
+### Reading a dispatch table before validation
+
+> [!PITFALL]
+> The checks in `if (handlers[index] != NULL && index < count)` are in the wrong order. With an invalid index, the left operand has already read out of bounds before the right operand can protect it.
+
+**Fix:** write `index < count` first, then rely on the left-to-right short-circuit behavior of `&&` before inspecting `handlers[index]`. If the selector is a signed integer, reject negative values before converting it to `size_t`.
+
+### Implementing a comparator with subtraction
+
+> [!PITFALL]
+> `return left->key - right->key` appears to produce negative, zero, and positive results, but two distant `int` values can cause signed overflow. The algorithm then receives undefined behavior rather than a reliable ordering.
+
+**Fix:** use `(left->key > right->key) - (left->key < right->key)`, or return the order with explicit branches. Also convert parameters to the correct element type and preserve equality, reverse-comparison, and transitivity properties.
+
+### Retaining a local context for later
+
+> [!PITFALL]
+> A registration function may retain `&local_state`, then invoke the callback only after the registration function returns. The function pointer remains valid, but the `void *` points to an object whose lifetime has ended.
+
+**Fix:** establish whether the callback is synchronous, borrowed until unregistration, or accompanied by context ownership transfer. Asynchronous or persistent registration needs heap storage, an owner object, or some other sufficiently long-lived storage, and unregistration must wait for in-progress callbacks before freeing it.
+
+### Storing a function pointer in void pointer
+
+> [!PITFALL]
+> `void *` is a generic object pointer, not standard C's generic function-pointer container. Converting a function pointer to `void *` and later calling it depends on implementation or platform extensions; equal sizes on one machine do not make the pattern portable.
+
+**Fix:** store a call target in its exact function-pointer type and store object context in a separate `void *`. If a dynamic-linking API specifies extra conversion rules, isolate that code in a platform adapter and verify it against that API's documentation.
+
+### Mistaking a local copy for synchronization
+
+> [!PITFALL]
+> If one thread rewrites a global handler while another thread reads or calls it, conflicting accesses to the ordinary function-pointer object form a data race. Copying it to a local variable only narrows later use; it does not make the initial unsynchronized read safe.
+
+**Fix:** synchronize registration and reading with a mutex or an atomic publication mechanism suitable for the platform and type, and protect the context lifetime at the same time. Also decide whether to invoke foreign code while holding the lock; a callback that reenters the registration API can deadlock.
+
+### Forgetting the callback's behavioral contract
+
+> [!PITFALL]
+> A matching signature does not imply matching semantics. A comparator that mutates elements, a logging callback that recursively logs, or a cleanup callback invoked twice can all break invariants maintained by the caller.
+
+**Fix:** document call count, order, thread, reentrancy, mutable data, error propagation, and context ownership. Tests should cover zero, one, and multiple invocations, plus a callback that fails or attempts to unregister itself.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models frequently cast a function pointer to silence an incompatible-signature diagnostic, or treat a capturing C++ lambda or GCC nested function as a portable C callback. Generated `qsort` comparators often subtract and overflow, while event-registration code retains a stack context or uses `void *` as both an object pointer and a function pointer. Another subtle error indexes a dispatch table before checking its bound.
+
+**Ask your AI to check**
+
+- List the full return and parameter types of every callback `typedef` and implementation, and identify every cast.
+- Draw a registration, possible-call, unregistration, and release timeline for each retained context, then prove its lifetime covers every call.
+- Inspect every dispatch-table index and `qsort` comparator, and provide tests for negatives, boundaries, null pointers, and extreme integers.
+
+**Review checklist**
+
+- Enable strict diagnostics including `-Wcast-function-type`, and confirm that no cast joins incompatible functions.
+- Validate indexes and null pointers before reading or calling entries, then run invalid-input paths under sanitizers.
+- Confirm that callback thread, reentrancy, call count, error handling, and context ownership all have an explicit contract.
+
+**Prompt vocabulary**
+
+Use the precise terms `function pointer`, `function type compatibility`, `callback`, `user-data context`, `dispatch table`, `indirect call`, and `calling convention`. Ask the AI for “complete prototypes and a lifetime timeline”; “check this callback” is too vague to expose type and ownership errors.
+
+<Depth level="deep">
+
+## Reading nested declarations
+
+When a function-pointer declaration grows, find the identifier and read outward according to parentheses and postfix binding. `int (*handler)(int)` is a pointer; `int (*handlers[4])(int)` is an array of four function pointers; `int (*factory(void))(int)` is a function returning a function pointer; and `int (**slot)(int)` is a pointer to a function pointer.
+
+Parentheses are part of the declaration grammar, not a formatting preference. Function-call suffixes `()` and array-subscript suffixes `[]` bind more tightly than prefix `*`, so parentheses make the star combine with the variable first. Rewriting every declaration as a sentence during review often reveals impossible misreadings such as “array of functions” or “function returning a function.”
+
+| Declaration | Read outward from the identifier |
+|---|---|
+| `int (*handler)(int)` | `handler` is a pointer to a function taking and returning `int` |
+| `int (*handlers[4])(int)` | `handlers` is a four-item array of pointers to that function type |
+| `int (*factory(void))(int)` | `factory` is a no-argument function returning that function-pointer type |
+| `int (**slot)(int)` | `slot` points to a function pointer |
+
+A `typedef` usefully names a contract at a public boundary, but do not let the name erase an important distinction. If `BinaryOp` is already a pointer alias, `const BinaryOp fixed = add` qualifies the pointer object, preventing it from being redirected to `multiply`. It does not create a “read-only function”; the function type itself is not qualified by this `const`.
+
+Every function pointer in an array must be convertible to the array's element type. If you need to mix signatures, do not cast them into one table. Design separate tables, a common adapter signature, or entries with explicit variant information that lets code interpret arguments safely.
+
+## Hidden dimensions of a callback contract
+
+Type checking covers only the machine-level shape of one call. A reliable API must also answer who may register, whether the receiver copies context, how many times callbacks may run, and whether work still references context after a callback returns. Without those answers, a system can dangle, leak, or free twice even when every prototype is correct.
+
+| Contract dimension | Question the interface must answer |
+|---|---|
+| Invocation | Synchronous during registration, or asynchronous later |
+| Lifetime | How long context is borrowed, who releases it, when unregistration finishes |
+| Concurrency | Which thread invokes, and whether registration can overlap invocation |
+| Reentrancy | Whether a callback may enter the registrant again or unregister itself |
+| Failure | How a return value, error code, or external state propagates failure |
+
+A synchronous traversal API has the simplest contract: it retains neither callback nor context after returning, so stack state is usually enough. A persistent subscription needs a completion boundary. The API must say whether “unregister returned” means no callback can occur afterward. Merely setting an entry to `NULL` may not stop another thread that already copied its old value.
+
+If a callback may reenter, the caller should put internal state into a consistent form before entering foreign code. Calling while locked protects the entry but exposes the lock to unknown code; unlocking first requires a stable target and context. No single choice fits every system, so an API must choose one ownership and synchronization model and enforce it consistently.
+
+Error handling is likewise absent from function-pointer syntax. A callback returning `void` cannot directly report failure unless context carries status or the API offers cancellation. Decide whether failure stops remaining iteration before choosing the signature, rather than patching in a global variable after implementation.
+
+## The C and C++ callable boundary
+
+A noncapturing C++ lambda can convert to an ordinary function pointer when the conversion rules and signature match. A capturing lambda cannot, because it needs stored object state. Deleting a capture list only to satisfy a C API can silently discard required state; the usual bridge is an ordinary function plus an object address passed through the API's user-data parameter.
+
+Function objects and `std::function` can own state and wrap more callable forms, but they are not C ABI function pointers. When registering a C++ object with a C library, give the bridge a matching C-callable signature, convert its context back to the correct object type internally, and prevent exceptions from crossing the C boundary.
+
+Cross-language headers commonly use `extern "C"` to declare C language linkage to a C++ compiler. It addresses linkage names and the language boundary; it does not automatically repair argument layout, lifetime, or calling-convention errors. Both sides should include one shared public declaration instead of handwriting prototypes that merely look alike.
+
+A platform API may add rules for dynamic symbols, calling conventions, or interrupt handlers beyond standard C. Those guarantees hold only inside that platform contract. Encapsulate the extension in a small adapter and keep the rest of the program on exact function-pointer types, confining nonportable assumptions to a reviewable location.
+
+</Depth>
+
+<Checkpoint id="cpp/c-function-pointers" />
+
+## Further reading
+
+Start with the C23 working draft for the language rules, then use the pointer-declaration and `qsort` references for focused lookup. The compiler warning manual shows how to enable diagnostics that expose incompatible conversions.
+
+- [WG14 N3096: C23 working draft](https://www.iso-9899.info/n3096.pdf)
+- [cppreference: pointer declarations](https://en.cppreference.com/w/c/language/pointer.html)
+- [cppreference: qsort](https://en.cppreference.com/w/c/algorithm/qsort.html)
+- [GCC manual: warning options](https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html)

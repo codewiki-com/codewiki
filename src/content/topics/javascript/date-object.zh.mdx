@@ -1,0 +1,401 @@
+---
+title: Date 对象
+description: JavaScript 用 Date 对象表示时间点；准确理解字符串解析、UTC 与本地视图、格式化、日期计算、可变性和有效性检查。
+track: javascript
+section: core
+difficulty: intermediate
+tags: [date, timestamps, time-zones, intl]
+prerequisites: [javascript/fundamentals, javascript/data-types]
+related: [javascript/json, javascript/error-handling, javascript/objects-prototypes]
+terms: [instant, unix-epoch, time-zone, daylight-saving-time]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/date-object
+sources:
+  - { title: 'MDN — Date', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date' }
+  - { title: 'MDN — Date.parse()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/parse' }
+  - { title: 'MDN — Intl.DateTimeFormat', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat' }
+  - { title: 'MDN — Date.prototype.setDate()', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/setDate' }
+origin: old/src/content/docs/javascript/date-object.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `Date` 用毫秒时间值保存一个时间点。它不会保留日历、区域设置或时区名称。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    字符串解析、从零开始的月份、可变的 setter、无效日期和夏令时切换，都可能让看似合理的代码在边界条件下出错。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明确输入格式和时区，验证所得时间值，不要混用 UTC 与本地方法，并在调用 setter 前复制对象。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+JavaScript 的 `Date` 表示一个<Term id="instant">时间点（instant）</Term>，也就是时间线上的一个位置。它的时间值是相对于<Term id="unix-epoch">Unix 纪元（Unix epoch）</Term> `1970-01-01T00:00:00.000Z` 的毫秒数，类型为 `Number`。因此，有效对象能回答“发生在何时”，但自身不保存地点、区域设置或面向日历的标签。
+
+应用需要这种中立的值来记录事件、比较截止时间、序列化时间戳，并把同一时刻转换成人类可读的不同视图。浏览器与 Node 边界、API 载荷、数据库记录、文件元数据、日志和用户界面中都会遇到 `Date`。同一个时间点可能是纽约的周五晚上，却是上海的周六早上。
+
+`Date` 并不是所有时间相关值的完整模型。不带时间的生日、指定<Term id="time-zone">时区（time zone）</Term>中每次都在 09:00 开始的会议，以及三小时的时长，是三种不同概念。把它们都强行表示成时间点，会造成意外的 UTC 偏移和夏令时错误。
+
+应在名称和 schema 中明确保留领域差异：
+
+| 需求 | 必须保留的数据 |
+|---|---|
+| 已经发生的事件 | 时间点 |
+| 表单中的日期 | 日历年、月、日 |
+| 用户当地 09:00 的闹钟 | 墙上时钟字段与指定时区 |
+| 任务在 30 分钟后过期 | 时长与合适的时钟 |
+| 审计记录展示 | 时间点，以及展示所需的区域设置与时区 |
+
+只有确实得到时间点时才转换为 `Date`。纯日历值不应只是为了适配这个 API，就被迫加上午夜时间和时区。
+
+实用的心智模型是“时间值加投影视图”。UTC getter 把该值投影成 UTC 日历字段。本地 getter 使用宿主环境当前的本地时区规则，而 `Intl.DateTimeFormat` 可以把它投影成指定时区的展示文本。
+
+## 工作原理
+
+### 一个数值时间值
+
+每个有效的 `Date` 都有一个时间值，范围包含 `-8.64e15` 到 `8.64e15` 毫秒的两个端点。经过规范定义的截断操作后，这个值是整数。超出范围的值、解析失败的字符串和非有限数值都会生成无效的 `Date`，其时间值为 `NaN`。
+
+`getTime()` 和 `valueOf()` 返回这个数值。`Date.now()` 不创建 `Date` 对象，直接返回当前挂钟时间值。两个有效日期相减可行，是因为数值转换会使用其时间值；严格相等仍然比较对象标识。
+
+| 操作 | 结果 | 涉及的时区 |
+|---|---|---|
+| `new Date(milliseconds)` | 对应时间值的 `Date` | 无 |
+| `date.getTime()` | 相对 Unix 纪元的毫秒数 | 无 |
+| `date.toISOString()` | 规范的 UTC 字符串 | UTC |
+| `date.getFullYear()` | 日历年份 | 宿主本地时区 |
+| `date.getUTCFullYear()` | 日历年份 | UTC |
+| `formatter.format(date)` | 本地化标签 | formatter 的配置 |
+
+### 构造方式决定如何解释输入
+
+`new Date()` 读取当前系统时钟。单个数值被解释为 Unix 纪元之后的毫秒数。单个字符串按语言的日期字符串解析规则处理，多个独立数值组件则按宿主的本地时区解释。
+
+组件构造函数的月份从零开始：一月是 `0`，十二月是 `11`。组件可以上溢或下溢，因此日期 `0` 表示上个月的最后一天，月份 `12` 会前进到下一年的一月。组件构造函数和 `Date.UTC()` 还保留一项旧规则：年份 `0` 到 `99` 会增加 `1900`。
+
+对于规范定义的日期时间字符串，显式的 `Z` 表示 UTC，`+08:00` 这样的显式偏移则确定对应时间点。`2026-04-05` 这样的纯日期形式按 UTC 解释。`2026-04-05T09:00:00` 这样没有偏移的日期时间形式按本地时间解释；这种不对称是代码审查中的常见问题。
+
+其他面向人的字符串可能由实现自行定义。即使某个引擎碰巧能解析示例，也应把接受 `04/05/2026`、月份名称或字段不全的日期视为输入契约缺陷。
+
+### 输入形式属于契约
+
+构造语法应与跨越边界的值类型匹配。带时间戳的 API 不应与生日字段共用解析器，因为前者标识时间点，后者可能有意不带时区。
+
+| 输入 | 需要说明的含义 | 常见用途 |
+|---|---|---|
+| `1772951400000` | Unix 纪元毫秒数 | 内部时间戳交换 |
+| `2026-03-08T06:30:00.000Z` | 规范 UTC 时间点 | API 与日志时间戳 |
+| `2026-03-08T14:30:00+08:00` | 带数值偏移的时间点 | 感知偏移的外部输入 |
+| `2026-03-08` | 按 `Date` 解析规则得到的 UTC 午夜 | 仅在确实需要时使用 |
+| `new Date(2026, 2, 8, 14, 30)` | 宿主本地字段 | 本地用户界面行为 |
+
+不要根据一个裸数值猜测单位。Unix 时间戳常以秒交换，而 JavaScript `Date` 需要毫秒。验证范围，并把值命名为 `createdAtMs` 或 `createdAtSeconds`，让相差 1000 倍的错误在审查中显现出来。
+
+### UTC、本地与指定时区视图
+
+本地 getter 包括 `getFullYear()`、`getMonth()`、`getDate()` 和 `getHours()`。对应的 UTC 方法会在名称中加入 `UTC`。对于同一个时间值，第一组方法在不同时区的机器上可能返回不同字段；第二组会返回相同字段。
+
+`getTimezoneOffset()` 针对该时间点和宿主本地时区，以分钟为单位返回 `UTC - local`。它的正负号很容易理解反；在实行<Term id="daylight-saving-time">夏令时（daylight saving time）</Term>的地区，其数值还可能随一年中的时间而变化。它不会给出时区名称。
+
+要按指定时区展示，请创建 `Intl.DateTimeFormat`，明确提供区域设置、`timeZone` 和所需字段。格式化只改变表示形式，不会改变 `Date`。如果应用之后还要重现用户设置日程时的意图，就应把时区标识符和时间点分开保存。
+
+### 容易混淆的字段名称
+
+`getDate()` 返回一个月中的日期，范围是 `1` 到 `31`。`getDay()` 返回一周中的星期，范围是 `0` 到 `6`，其中星期日为 `0`。生成的日历代码经常把二者互换，因为名称看起来很相似。
+
+`getMonth()` 和 `getUTCMonth()` 返回的月份从零开始，但一个月中的日期从一开始。小时、分钟、秒和毫秒则使用从零开始的数值范围。这些看似不一致的约定是稳定的历史行为，因此可以尽量把组件访问封装在名称清晰的辅助函数后面。
+
+setter 返回的是数值，不是 `Date` 对象。因此，`date.setDate(...).setHours(...)` 会在第一次调用后失败。每次修改都应写成独立语句，或让辅助函数显式返回复制后的 `Date`。
+
+### 序列化、计算与可变性
+
+`toISOString()` 返回 UTC 表示；无效日期调用它会抛出 `RangeError`。对于有效日期，`toJSON()` 通常委托给它；时间值非有限时，`toJSON()` 返回 `null`。因此，`JSON.stringify()` 可能在后续流程中悄悄把无效日期属性变成 `null`。
+
+时间值相减得到经过的毫秒数。增加 `86_400_000` 也表示经过恰好 24 小时，并不等于“本地时间的明天同一时刻”。遇到夏令时切换时，这两个需求可能指向不同时间点。
+
+所有 `set...` 方法都会修改接收者，并返回修改后的数值时间值。本地 setter 应用本地日历规则，UTC setter 应用 UTC 规则。如果调用方还要保留原值，应先用 `new Date(original)` 创建副本。
+
+### 存储与展示边界
+
+对于时间点，只要外围 schema 明确定义，Unix 纪元毫秒数或规范 UTC 字符串都可以作为稳定的存储形式。每个接口应选择一种表示，不要在字符串、数值和 `Date` 对象之间来回切换。JSON 没有日期标量，因此解析 JSON 后只会得到字符串或数值，直到应用代码完成验证和转换。
+
+面向人的输出应留在展示边界。需要一致输出时，给 formatter 传入明确的区域设置和指定时区；否则，宿主默认值也会成为结果的一部分。同一种配置要格式化多个值时可以缓存 formatter，但未经真实工作负载测量，不应宣称性能提升。
+
+时区标识符和数值偏移不能互相替代。偏移描述某个时间点与 UTC 的关系，而时区标识一组偏移可能随日期变化的规则。应用需要重建日程的本地时间时，应同时保存时间点与指定时区。
+
+## 示例
+
+### 同一个时间点在两个指定时区中的视图
+
+这个示例先用带明确偏移的字符串构造时间点，再输出底层数值和两个投影视图。使用 `formatToParts()` 组装标签，可以避免结果依赖区域设置的标点。
+
+<Depth level="quick">
+
+```javascript run title="instant_views.js"
+function wallClock(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${value.year}-${value.month}-${value.day} ${value.hour}:${value.minute}`;
+}
+
+const release = new Date('2026-03-08T06:30:00.000Z');
+
+console.log(release.getTime());
+console.log(release.toISOString());
+console.log(wallClock(release, 'America/New_York'));
+console.log(wallClock(release, 'Asia/Shanghai'));
+```
+
+```text
+1772951400000
+2026-03-08T06:30:00.000Z
+2026-03-08 01:30
+2026-03-08 14:30
+```
+
+</Depth>
+
+四行结果都描述同一个时间点。指定时区只影响最后两个标签。格式化过程中，`release` 及其时间值都没有改变。
+
+### 验证 API 的规范时间戳
+
+对于严格的 API 契约，仅仅解析成功还不够，因为一些越界的日历字段会被规范化。这个验证器先检查要求的文本形状，再通过 `toISOString()` 往返转换结果，从而拒绝规范化。
+
+```javascript run title="strict_timestamps.js"
+function parseCanonicalUtc(value) {
+  const shape = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  if (typeof value !== 'string' || !shape.test(value)) {
+    throw new TypeError('expected YYYY-MM-DDTHH:mm:ss.sssZ');
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.toISOString() !== value) {
+    throw new RangeError('timestamp is not a real UTC instant');
+  }
+  return date;
+}
+
+for (const input of [
+  '2026-02-28T12:30:00.000Z',
+  '2026-02-30T12:30:00.000Z',
+  '02/28/2026',
+]) {
+  try {
+    console.log('OK', parseCanonicalUtc(input).toISOString());
+  } catch (error) {
+    console.log(error.name, error.message);
+  }
+}
+```
+
+```text
+OK 2026-02-28T12:30:00.000Z
+RangeError timestamp is not a real UTC instant
+TypeError expected YYYY-MM-DDTHH:mm:ss.sssZ
+```
+
+第二个输入具有正确的文本形状，但二月三十日并不存在。引擎的宽松解析器可能接受第三个输入，但它不属于这个 API 的契约，因此在解析前就被拒绝。
+
+### 区分日历重复与经过时间
+
+在示例所表示的边界上，纽约从 `UTC−05:00` 切换到 `UTC−04:00`。两个日历日期连续、都在 01:30 开始的日程实际上只相隔 23 小时；若增加恰好 24 小时，本地时间会变成 02:30。
+
+```javascript run title="calendar_vs_elapsed.js"
+function clockTime(date, timeZone) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(date);
+}
+
+const zone = 'America/New_York';
+const firstAppointment = new Date('2026-03-08T01:30:00-05:00');
+const nextCalendarDay = new Date('2026-03-09T01:30:00-04:00');
+const afterTwentyFourHours = new Date(firstAppointment.getTime() + 86_400_000);
+
+const elapsedHours = (nextCalendarDay - firstAppointment) / 3_600_000;
+console.log(`calendar recurrence: ${elapsedHours} elapsed hours`);
+console.log(`next local time: ${clockTime(nextCalendarDay, zone)}`);
+console.log(`after 24 hours: ${clockTime(afterTwentyFourHours, zone)}`);
+```
+
+```text
+calendar recurrence: 23 elapsed hours
+next local time: 01:30
+after 24 hours: 02:30
+```
+
+显式偏移让输入时间点具有确定含义。生产环境中的日程数据仍需保留指定时区，因为固定偏移不包含未来的夏令时规则。
+
+### 增加月份时不修改原值，也不溢出
+
+直接调用月份 setter 会保留当前日期数字，再对溢出进行规范化。要实现截断到月末的操作，必须先移到安全日期，找出目标月的最后一天，再恢复不超过该上限的日期数字。
+
+```javascript run title="clamped_months.js"
+function addUtcMonthsClamped(date, months) {
+  const result = new Date(date);
+  const originalDay = result.getUTCDate();
+
+  // 先移到 1 日，避免原日期数字溢出目标月份。
+  result.setUTCDate(1);
+  result.setUTCMonth(result.getUTCMonth() + months);
+
+  const endOfTargetMonth = new Date(result);
+  endOfTargetMonth.setUTCMonth(endOfTargetMonth.getUTCMonth() + 1, 0);
+  result.setUTCDate(Math.min(originalDay, endOfTargetMonth.getUTCDate()));
+  return result;
+}
+
+const issuedAt = new Date('2026-01-31T09:00:00.000Z');
+const oneMonthLater = addUtcMonthsClamped(issuedAt, 1);
+const twoMonthsLater = addUtcMonthsClamped(issuedAt, 2);
+
+console.log(issuedAt.toISOString());
+console.log(oneMonthLater.toISOString());
+console.log(twoMonthsLater.toISOString());
+console.log(issuedAt === oneMonthLater);
+```
+
+```text
+2026-01-31T09:00:00.000Z
+2026-02-28T09:00:00.000Z
+2026-03-31T09:00:00.000Z
+false
+```
+
+UTC 方法让这个辅助函数不受宿主本地夏令时规则影响。最后的 `false` 证明函数返回了不同对象，没有修改 `issuedAt`。
+
+## 陷阱
+
+### 接受 `Date.parse()` 能接受的所有格式
+
+> [!PITFALL]
+> 生成的解析器经常把用户文本直接传给 `new Date(value)`。非标准字符串可能由实现自行定义，就连外形符合规范的字段也可能被规范化，而不是被拒绝。
+
+**修复方法：** 选择有文档说明的传输格式，时间点必须带明确偏移，并同时验证输入形状和结果时间值。契约要求规范 UTC 文本时，应进行往返检查。不要声称仅凭正则表达式就能证明某个日历日期真实存在。
+
+### 用对象的真假值判断无效日期
+
+> [!PITFALL]
+> `new Date('invalid')` 创建的是一个真值对象。大多数 getter 返回 `NaN`，`toISOString()` 会抛错，JSON 序列化还可能在后续流程中把它变成 `null`。
+
+**修复方法：** 在边界处检查 `Number.isNaN(date.getTime())`，并明确无效输入是抛出异常还是返回类型化失败。完成验证后再格式化、比较或存储该值。
+
+### 混用 UTC 与本地访问器
+
+> [!PITFALL]
+> 把 `getUTCFullYear()` 与 `getMonth()` 组合，或先按本地组件构造日期再序列化为 UTC，都可能把两个日历视图中的字段拼在一起。
+
+**修复方法：** 先说清楚目标视图，在一次操作中始终使用同一组方法。展示指定时区时，使用一个配置好的 `Intl.DateTimeFormat`，不要手动增加偏移。
+
+### 修改共享的日期对象
+
+> [!PITFALL]
+> setter 会改变原对象，因此辅助函数可能悄悄改掉仍归调用方所有的值。月份和日期 setter 还会规范化溢出，而不是把值截断到边界。
+
+**修复方法：** 使用 `new Date(input)` 复制对象，并在辅助函数名称和测试中明确溢出策略。测试应覆盖月末、闰日、负数增量；涉及本地 setter 时，还要覆盖夏令时切换的两侧。
+
+### 把 24 小时当作一个日历日
+
+> [!PITFALL]
+> 用毫秒差除以 `86_400_000` 计算的是经过多少个 24 小时单位，不是本地日历上的日期数。跨越夏令时边界时，增加这个常量可能改变显示出来的小时。
+
+**修复方法：** 先判断需求是经过时长还是日历重复。前者使用时间值计算；后者则要保留相关时区，并明确应用日历规则。
+
+### 把对象标识当作时间值比较
+
+> [!PITFALL]
+> 分别构造的两个日期即使表示同一时间点，也是不同对象，所以 `left === right` 为 `false`。关系比较碰巧会进行数值转换，因此只在相等判断中出现的错误很容易漏掉。
+
+**修复方法：** 验证两个操作数，再比较 `left.getTime() === right.getTime()`。如果需求是“同一个本地日期”，则应在明确选择的时区中比较字段；这是另一个问题。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+生成的日期代码常常接受区域格式输入，用 `if (!date)` 检查，随后立即调用 `toISOString()`。它还可能混用本地构造函数与 UTC getter，通过增加固定偏移来假装处理指定时区，用 `86_400_000` 做除数计算日历天数，或直接对参数调用可变 setter。计时器代码也可能把 `Date.now()` 当作单调递增的系统时钟。
+
+**让 AI 检查**
+
+- 说明每个值究竟是时间点、纯日历值、墙上时钟时间、指定时区日程，还是经过时长。
+- 跟踪每个边界处的输入语法、缺少偏移时的行为、无效日期路径、方法家族和修改权限。
+- 测试月末和相关时区的夏令时切换，并同时给出 ISO 输出与经过的毫秒数。
+
+**审查清单**
+
+- 每个外部时间戳都有明确契约；无效值进入存储或格式化流程前就会被拒绝。
+- 每项操作始终使用 UTC、宿主本地时区或某个指定时区，不会用固定偏移冒充时区。
+- 日历操作不会修改调用方所有的对象，时长测量也不会假设挂钟单调递增。
+
+**提示词词汇**
+
+使用准确术语：`instant`（时间点）、`epoch milliseconds`（纪元毫秒数）、`canonical ISO timestamp`（规范 ISO 时间戳）、`UTC offset`（UTC 偏移）、`named time zone`（指定时区）、`local calendar arithmetic`（本地日历计算）、`elapsed duration`（经过时长）、`DST gap`（夏令时空缺）、`DST overlap`（夏令时重叠）、`invalid Date`（无效 Date）和 `monotonic clock`（单调时钟）。这些术语会迫使生成的设计区分不同值，避免用“增加一天”这样的模糊要求把它们混为一谈。
+
+<Depth level="deep">
+
+## 在契约边界解析
+
+语言保证支持自身定义的日期时间字符串格式，也就是 `toISOString()` 输出的形式。对于毫秒数为零的日期，它还要求支持由 `toString()` 和 `toUTCString()` 产生字符串的若干往返不变量。即使流行引擎目前碰巧接受某种输入，也不能把无关格式视为可移植契约。
+
+缺少偏移时的规则值得单独测试。纯日期字符串按 UTC 解释，但不带 `Z` 或偏移的日期时间字符串按本地时间解释。在 UTC 以西的机器上，`new Date('2026-01-01').getDate()` 可能因此返回本地日历的前一天，而 `new Date('2026-01-01T00:00:00')` 从本地午夜开始。
+
+规范化与语法是两回事。例如，引擎可能把外形符合语法的二月三十日变成三月的某个时间点。表示民用日期的表单应把年、月、日当作日历字段验证；表示 API 时间点时，则可要求规范文本，并像示例那样与 `toISOString()` 比较。
+
+明确的数值偏移确定一个时间点，却不是可长期使用的时区规则。`2026-07-01T09:00:00-04:00` 说明本次事件与 UTC 的关系。它没有说明会议是否属于 `America/New_York`，也没有说明规则变化后重复日程应使用哪个偏移。
+
+组件构造可以避开字符串解析，却会引入另一组规则。月份从零开始，字段会规范化，年份 `0` 到 `99` 会映射为 `1900` 到 `1999`。要构造这些早期年份，可以先创建一个有效日期，再显式调用 `setUTCFullYear()` 或 `setFullYear()`。
+
+## 跨越时区规则变化的日历计算
+
+两个输入都通过验证后，经过时间的计算很直接：时间值相减，并让单位清晰可见。它适合有效期、延迟和“恰好 30 分钟后”等需求。系统时钟调整仍可能影响两次 `Date.now()` 读数，因此在同一个运行上下文中测量间隔时，`performance.now()` 这样的单调时钟是更合适的来源。
+
+日历计算从字段和时区开始。“本地时间的明天同一时刻”是指在该日历中推进日期，再按该时区规则解析所得墙上时钟字段。春季切换可能让某些本地时间不存在；秋季切换则可能让一个本地时间对应两个时间点，因此产品必须定义空缺和重叠策略。
+
+本地 `setDate(getDate() + 1)` 会应用宿主本地时区，通常在推进日期时保留本地时钟字段。跨越切换点时，经过时间可能是 23 或 25 小时。UTC setter 可以避开宿主时区切换，但 UTC 日历计算并不能实现某个指定时区的日历。
+
+`Intl.DateTimeFormat` 可以把时间点显示在 `Asia/Shanghai` 这样的 IANA 时区中。它不能解析该时区的墙上时钟时间，也不能执行指定时区的日历加法。如果日程功能需要这些操作，就应把时区建模为数据，并使用能明确定义空缺、重叠和重复行为的 API。
+
+## 范围、精度与时钟语义
+
+允许的时间值范围恰好是 Unix 纪元前后的 `±8.64e15` 毫秒。`new Date(8.64e15)` 有效，再多一毫秒就无效。这个截断范围还能保证 JavaScript `Number` 精确表示范围内的每个整数毫秒。
+
+该模型把每个民用日都视为 `86_400_000` 毫秒，以此计算毫秒数。它不会把闰秒表示成独立时间点。交换更高精度时间戳的系统必须规定如何舍入，或在 `Date` 之外保留亚毫秒数据。
+
+`Date.now()` 读取系统挂钟，而管理员或时间同步机制可以调整它。运行环境也可能出于隐私保护降低其分辨率。需要挂钟时间戳时用它记录事件；在进程或页面内测量截止时间和性能耗时时，应使用单调计时来源。
+
+## 暴露环境假设的测试
+
+可靠的日期测试会固定所有原本来自环境的输入。使用字面量时间点，向 formatter 传入区域设置和时区；除非已经注入或控制时钟，否则不要对 `new Date()` 的结果作断言。这样可以避免开发者电脑、CI worker 和生产容器悄悄测试不同日历。
+
+解析测试应按契约划分，而不是随意收集格式错误的字符串。需要覆盖准确的规范形式、缺少偏移、单位错误、不可能的日历日期、刚刚超出允许范围的值，以及对非字符串输入的预期处理。既要断言失败类型，也要确认没有部分转换的值逃出边界。
+
+日历计算测试应包括最短的目标月份、闰年二月、跨年和负向移动。如果本地或指定时区行为很重要，应从相关时区规则中选择真实的空缺与重叠切换。既要断言预期本地字段，也要断言经过的毫秒数，因为只看其中一项可能掩盖错误的语义选择。
+
+实用的不变量包括：
+
+- 复制有效日期会保留时间值，但改变对象标识。
+- 在不同时区格式化不会改变原始时间值。
+- 成功通过的规范解析结果经 `toISOString()` 往返后保持不变。
+- 标明不修改输入的辅助函数，无论成功或失败，都不会改变输入的时间值。
+
+控制环境是测试设置的一部分，不能作为未说明的假设。测试宿主本地方法时，如果运行时支持，可以为目标测试进程设置已知的 `TZ`。测试指定时区展示时，应直接传入 `timeZone`，并确认部署环境带有需要的国际化与时区数据。
+
+</Depth>
+
+<Checkpoint id="javascript/date-object" />
+
+## 延伸阅读
+
+- [MDN：`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date)
+- [MDN：`Date.parse()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/parse)
+- [MDN：`Intl.DateTimeFormat`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DateTimeFormat)
+- [MDN：`Date.prototype.setDate()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/setDate)
