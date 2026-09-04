@@ -7,8 +7,8 @@
  * the read/write pair is guarded so a page rendered on the server, a private window with storage
  * disabled or a corrupted value all degrade to the fallback instead of throwing.
  *
- * The theme is read a second time by `src/lib/theme.ts`, which the pre-paint bootstrap inlines and
- * therefore cannot import from here. `KEYS.prefs` and `PREFS_KEY` must stay the same string.
+ * The self-contained pre-paint bootstraps repeat only the key and their small validation rules;
+ * every importable reader and writer, including the theme controls, goes through this module.
  */
 import type { Locale } from '@/lib/urls';
 
@@ -117,13 +117,36 @@ function storage(): Storage | null {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function oneOf<T extends string>(value: unknown, choices: readonly T[], fallback: T): T {
+  return typeof value === 'string' && choices.includes(value as T) ? (value as T) : fallback;
+}
+
+/** Validates each preference independently, so one corrupt field cannot poison the others. */
+export function sanitizePrefs(value: Record<string, unknown>): Prefs {
+  const lang = oneOf(value.lang, ['en', 'zh'] as const, '' as Locale | '');
+  return {
+    theme: oneOf(value.theme, ['system', 'light', 'dark'] as const, DEFAULT_PREFS.theme),
+    depth: oneOf(value.depth, ['quick', 'standard', 'deep'] as const, DEFAULT_PREFS.depth),
+    bilingual: oneOf(value.bilingual, ['off', 'en-zh', 'zh-en'] as const, DEFAULT_PREFS.bilingual),
+    fontSize: oneOf(value.fontSize, ['s', 'm', 'l'] as const, DEFAULT_PREFS.fontSize),
+    ...(lang ? { lang } : {}),
+  };
+}
+
 /** Reads one key, returning `fallback` for a missing, unreadable or malformed value. */
 export function readStore<T>(key: StoreKey, fallback: T): T {
   const store = storage();
   if (!store) return fallback;
   try {
     const raw = store.getItem(key);
-    return raw === null ? fallback : (JSON.parse(raw) as T);
+    if (raw === null) return fallback;
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value)) return fallback;
+    return (key === KEYS.prefs ? sanitizePrefs(value) : value) as T;
   } catch {
     return fallback;
   }

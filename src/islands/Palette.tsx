@@ -270,7 +270,12 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
 
     const onKeyDown = (event: KeyboardEvent) => {
       const chord = event.metaKey || event.ctrlKey;
-      if (chord && !event.altKey && event.key.toLowerCase() === 'k') {
+      if (event.key === 'Escape' && open) {
+        // The dialog is painted before its focus effect runs. Listening here too makes Escape
+        // reliable in that short interval when focus is still on the control that opened it.
+        event.preventDefault();
+        close();
+      } else if (chord && !event.altKey && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         openPalette();
       } else if (event.key === '/' && !chord && !event.altKey && !isTyping(event.target)) {
@@ -296,7 +301,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
       document.removeEventListener('click', onClick);
       setReady(false);
     };
-  }, [inline, openPalette]);
+  }, [inline, open, openPalette, close]);
 
   /* ---- the page behind the dialog ---- */
 
@@ -389,6 +394,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   const onDialogKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close();
       return;
     }
@@ -457,6 +463,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
             href={row.url}
             onClick={() => pushRecent(store(), row.url, row.title)}
             onMouseEnter={() => !inline && setActive(index)}
+            onFocus={() => !inline && setActive(index)}
           >
             {row.tag ? <span class={row.variant ? `tag ${row.variant}` : 'tag'}>{row.tag}</span> : null}
             <span class="palette-title">{row.title}</span>

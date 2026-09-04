@@ -6,21 +6,9 @@ export interface TermCard {
   zh: string;
   /** The one-sentence definition, already in the page's language. */
   short: string;
-  /** The term page, already in the page's locale. */
-  url: string;
 }
 
-export interface TermsProps {
-  /** Localised copy. Islands never import `t`: the locale is a page-level fact. */
-  labels: {
-    /** Link out of the card, e.g. "Glossary". */
-    open: string;
-  };
-  /** Where the card's link points before a term has been opened: the glossary index. */
-  glossaryUrl: string;
-}
-
-/** How long the card survives the pointer leaving, so it can be moved onto and its link clicked. */
+/** How long the card survives the pointer leaving, avoiding a flicker across wrapped text. */
 const GRACE_MS = 140;
 
 /** Gap between the term and the card, and the margin the card keeps from the viewport edges. */
@@ -31,20 +19,19 @@ const GAP = 8;
  * underline of docs/design/mockups/Topic.dc.html makes, and what the home page calls "a bilingual
  * glossary with hover definitions".
  *
- * `<Term>` renders `<span class="term" data-term="{id}" tabindex="0">`, and the page embeds the
- * definitions it needs as JSON, so this island neither fetches nor duplicates content: it reads
- * that script, and lends one card to whichever term is being hovered or focused. Without
- * JavaScript the terms stay readable prose, and the right rail already links every one of them.
+ * `<Term>` renders `<a class="term" data-term="{id}" href="…">`, and the page embeds the definitions
+ * it needs as JSON, so this island neither fetches nor duplicates content: it reads that script,
+ * and lends one descriptive card to whichever term link is being hovered or focused. Without
+ * JavaScript the inline links still reach their glossary pages.
  *
  * One card exists for the whole page, which is what keeps two from being open at once. It is
  * appended to the body rather than beside each term, so its position is unaffected by whatever
- * the article wraps a term in; the tab order therefore skips it, and the reader who wants the
- * term page reaches it from the rail or from the card's own link with the pointer.
+ * the article wraps a term in. It is a tooltip only and contains no interactive content.
  */
-export default function Terms({ labels, glossaryUrl }: TermsProps) {
+export default function Terms() {
   useEffect(() => {
     const script = document.getElementById('cw-terms');
-    const terms = [...document.querySelectorAll<HTMLElement>('.term[data-term]')];
+    const terms = [...document.querySelectorAll<HTMLAnchorElement>('a.term[data-term][href]')];
     if (!script?.textContent || terms.length === 0) return;
 
     let cards: Record<string, TermCard>;
@@ -80,14 +67,7 @@ export default function Terms({ labels, glossaryUrl }: TermsProps) {
     const short = document.createElement('p');
     short.className = 'term-tip-short';
 
-    const link = document.createElement('a');
-    link.className = 'term-tip-link';
-    link.textContent = `${labels.open} →`;
-    // `show()` repoints this at the term being read. It starts on the glossary index rather than
-    // bare, because an <a> with no href is not a link: it is unfocusable and crawlers flag it.
-    link.href = glossaryUrl;
-
-    tip.append(head, short, link);
+    tip.append(head, short);
     document.body.append(tip);
 
     /* ---- opening and closing ---- */
@@ -123,7 +103,6 @@ export default function Terms({ labels, glossaryUrl }: TermsProps) {
       en.textContent = card.en;
       zh.textContent = card.zh;
       short.textContent = card.short;
-      link.href = card.url;
 
       open = term;
       term.setAttribute('aria-describedby', tip.id);
@@ -142,10 +121,7 @@ export default function Terms({ labels, glossaryUrl }: TermsProps) {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !open) return;
-      const term = open;
       close();
-      // Escape from inside the card returns the reader to the term they came from.
-      if (tip.contains(document.activeElement)) term.focus();
     };
 
     /* Pointer and keyboard reach the same card: hover opens it, so does focus, and the term is
@@ -163,10 +139,6 @@ export default function Terms({ labels, glossaryUrl }: TermsProps) {
       on(term, 'mouseleave', closeSoon);
       on(term, 'blur', closeSoon);
     }
-    on(tip, 'mouseenter', cancel);
-    on(tip, 'mouseleave', closeSoon);
-    on(tip, 'focusin', cancel);
-    on(tip, 'focusout', closeSoon);
     on(document, 'keydown', onKeyDown as EventListener);
 
     return () => {
@@ -175,7 +147,7 @@ export default function Terms({ labels, glossaryUrl }: TermsProps) {
       open?.removeAttribute('aria-describedby');
       tip.remove();
     };
-  }, [labels, glossaryUrl]);
+  }, []);
 
   return null;
 }

@@ -80,6 +80,17 @@ test('the theme toggle cycles system, light and dark', async ({ page }) => {
   await expect(root).toHaveAttribute('data-theme-pref', 'system');
 });
 
+test('the desktop and mobile theme toggles stay synchronized', async ({ page }) => {
+  await page.goto('/');
+  const toggles = page.locator('button.theme-toggle');
+  await expect(page.locator('astro-island[component-url*="ThemeToggle"]:not([ssr])')).toHaveCount(2);
+  await toggles.first().click();
+
+  await expect(toggles).toHaveCount(2);
+  await expect(toggles.nth(0)).toHaveAttribute('aria-label', 'Light');
+  await expect(toggles.nth(1)).toHaveAttribute('aria-label', 'Light');
+});
+
 test('the chosen theme survives a reload with no flash of the other palette', async ({ page }) => {
   await captureThemeAtParse(page);
   await page.goto('/');

@@ -93,6 +93,22 @@ test('Enter belongs to whichever control has focus', async ({ page }) => {
   expect(page.url()).toBe(here);
 });
 
+test('Tab focus makes a palette result the active option', async ({ page }) => {
+  await page.goto('/');
+  const dialog = await openPalette(page);
+  await dialog.getByRole('combobox').fill('callback');
+  await expect(dialog.getByRole('option')).toHaveCount(2);
+
+  // input → EN → 中文 → esc → first result → second result
+  for (let index = 0; index < 5; index += 1) await page.keyboard.press('Tab');
+  const second = dialog.getByRole('option').nth(1);
+  const secondId = await second.getAttribute('id');
+  expect(secondId).not.toBeNull();
+  await expect(second).toBeFocused();
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('combobox')).toHaveAttribute('aria-activedescendant', secondId!);
+});
+
 test('the two palettes on /search/ do not share element ids', async ({ page }) => {
   await page.goto('/search/?q=closure');
   await expect(page.locator('.search-results a.row').first()).toBeVisible();

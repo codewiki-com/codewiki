@@ -161,22 +161,32 @@ test('reading to the checkpoint completes the topic at any depth', async ({ page
   await expect(page.locator('.tree a[data-topic-id="python/closures"]')).toHaveClass(/done/);
 });
 
-test('a term in the article defines itself on hover', async ({ page }) => {
+test('an inline term is a keyboard-reachable glossary link with a descriptive tooltip', async ({ page }) => {
   await page.goto('/python/closures/');
   // The card is built when the island hydrates, so waiting for it keeps the hover from arriving first.
   const tip = page.locator('#cw-term-tip');
   await expect(tip).toBeAttached();
 
-  const term = page.locator('.term').first();
+  const term = page.locator('a.term[href]').first();
   await term.hover();
   await expect(tip).toBeVisible();
   await expect(tip).toContainText('Free variable');
   await expect(tip).toContainText('自由变量');
-  await expect(tip.locator('.term-tip-link')).toHaveAttribute('href', '/glossary/free-variable/');
+  await expect(tip.getByRole('link')).toHaveCount(0);
+  await expect(term).toHaveAttribute('href', '/glossary/free-variable/');
   await expect(term).toHaveAttribute('aria-describedby', 'cw-term-tip');
 
   await page.keyboard.press('Escape');
   await expect(tip).toBeHidden();
+
+  // The section action immediately before the prose is the preceding tab stop. Tabbing from it
+  // reaches the first inline term link, focus opens the tooltip, and Enter follows the real href.
+  await page.locator('#article .sec-ask').first().focus();
+  await page.keyboard.press('Tab');
+  await expect(term).toBeFocused();
+  await expect(tip).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/glossary\/free-variable\/$/);
 });
 
 test('the breadcrumb and the JSON-LD trail agree', async ({ page }) => {

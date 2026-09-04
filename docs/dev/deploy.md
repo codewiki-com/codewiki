@@ -44,10 +44,10 @@ Two details are worth knowing before editing that file:
   `blocking="render"` and drop the keyword.
 - **`/sandbox.html` has its own rule.** The JavaScript runner compiles the reader's snippet with
   `new Function`, which CSP counts as eval, so that one document adds `'unsafe-eval'`. Pages
-  applies the most specific matching rule rather than merging rules, so the block repeats every
-  directive the sandbox still needs. The frame is embedded with `sandbox="allow-scripts"` and
-  without `allow-same-origin`, so it runs on an opaque origin and the relaxation cannot reach the
-  site's DOM, storage or cookies.
+  merges every matching rule, so the sandbox block uses `! Content-Security-Policy` to detach the
+  global value before setting its own complete policy. The frame is embedded with
+  `sandbox="allow-scripts"` and without `allow-same-origin`, so it runs on an opaque origin and the
+  relaxation cannot reach the site's DOM, storage or cookies.
 
 On a host without a `_headers` file, translate the same values into whatever it uses — Netlify
 reads `_headers` too, Vercel wants `vercel.json`, and CloudFront wants a response-headers policy.
@@ -81,21 +81,20 @@ Three notes on that file, since JSON cannot carry comments:
   starts with the row collapsed, while a browser with JavaScript disabled still sees the expanded
   contents. A local mobile run measured CLS 0 on all four URLs and performance 1.00, 0.99, 0.99,
   and 0.99 respectively, so the 0.95 performance gate remains unchanged.
-- **`color-contrast` and `label-content-name-mismatch` are `warn`.** Both are real, both are open.
-  Several palette tokens miss the 4.5:1 AA floor for small text (`--ink3` worst at 3.31:1, and
-  `.toc a.deep` multiplies it by opacity 0.7 to reach 2.32:1), and the home page's palette preview
-  is a button labelled "Search" whose visible text is a sample query. `tests/e2e/a11y.spec.ts`
-  carries the contrast list as a `fixme` test so it is named on every run.
+- **Accessibility is release-gated.** `color-contrast` and `label-content-name-mismatch` are
+  Lighthouse errors, and the Playwright accessibility coverage checks the contrast-sensitive UI
+  directly. The earlier set of ten open contrast pairs has been corrected.
 - **`network-dependency-tree-insight` is `off`.** It scores zero for any critical request chain
   deeper than one hop, which the HTML → stylesheet → webfont chain of a self-hosted static site
   always has.
 
 ## Checks before shipping
 
-`pnpm lint && pnpm check && pnpm test && pnpm build && pnpm test:e2e && pnpm exec lhci autorun` is
-what CI runs, in that order. `pnpm test:e2e` and the Lighthouse run both read `dist`, so the build
-has to come first. The Playwright config deliberately sets `reuseExistingServer: false`: if any
-preview, including one from another worktree, already owns port 4321, the run fails instead of
-silently testing that server's `dist`. Check the port with `ss -ltnp | grep 4321` before starting a
-local run. In CI, `CHROME_PATH` is set to Playwright's installed Chromium before LHCI runs, so the
-gate does not depend on whichever system Chrome happens to be on the runner image.
+`pnpm lint && pnpm check && pnpm test && pnpm build && pnpm check:links && pnpm test:e2e && pnpm exec
+lhci autorun` is what CI runs, in that order. The link checker, Playwright and Lighthouse all read
+`dist`, so the build has to come first. The Playwright config deliberately sets
+`reuseExistingServer: false`: if any preview, including one from another worktree, already owns
+port 4321, the run fails instead of silently testing that server's `dist`. Check the port with
+`ss -ltnp | grep ':4321 '` before starting a local run. In CI, `CHROME_PATH` is set to Playwright's
+installed Chromium before LHCI runs, so the gate does not depend on whichever system Chrome
+happens to be on the runner image.

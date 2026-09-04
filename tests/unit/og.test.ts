@@ -2,7 +2,9 @@
 // head, and `renderOg()` must produce a real PNG for both locales. The rendering tests need
 // the build-time font binaries, so they skip (loudly) when `.cache/fonts` is empty and the
 // download cannot run — an offline checkout still gets a green unit suite.
-import { ensureFonts, ogPaths, renderOg } from '@/lib/og';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { ensureFonts, ogPaths, parseLightPalette, renderOg } from '@/lib/og';
 import { ogImageUrl } from '@/lib/seo';
 import { SITE } from '@/data/site';
 
@@ -18,13 +20,20 @@ if (!canRender) {
 describe('ogPaths', () => {
   const paths = ogPaths();
 
-  it('covers topics, tracks and both home pages in both locales', () => {
+  it('covers topics, track hubs and both home pages in both locales', () => {
     expect(paths).toContain('python/closures');
     expect(paths).toContain('zh/python/closures');
     expect(paths).toContain('python');
     expect(paths).toContain('zh/python');
     expect(paths).toContain('home');
     expect(paths).toContain('zh/home');
+  });
+
+  it('covers every localized generic page and glossary term', () => {
+    for (const path of ['glossary', 'glossary/closure', 'tracks', 'search', 'settings', '404']) {
+      expect(paths).toContain(path);
+      expect(paths).toContain(`zh/${path}`);
+    }
   });
 
   it('matches the URLs seo.ts advertises', () => {
@@ -46,6 +55,25 @@ describe('ogPaths', () => {
   it('emits no duplicates and no leading slashes', () => {
     expect(new Set(paths).size).toBe(paths.length);
     expect(paths.filter((p) => p.startsWith('/'))).toEqual([]);
+  });
+});
+
+describe('parseLightPalette', () => {
+  it('reads every OG color from the light :root tokens', () => {
+    const source = readFileSync(path.join(process.cwd(), 'src/styles/tokens.css'), 'utf8');
+    expect(parseLightPalette(source)).toEqual({
+      bg: '#f6f7f9',
+      line: '#e2e5eb',
+      ink: '#15181e',
+      ink2: '#4b5160',
+      ink3: '#676d7c',
+      acc: '#3451d1',
+      'acc-soft': '#e9ecfa',
+    });
+  });
+
+  it('fails when a required OG token is absent', () => {
+    expect(() => parseLightPalette(':root { --bg: white; }')).toThrow(/--line/);
   });
 });
 

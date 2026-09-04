@@ -74,12 +74,14 @@ for (const { path, ld } of SAMPLES) {
   });
 }
 
-test('a page that opts out of indexing says so and claims no alternates', async ({ page }) => {
-  await page.goto('/settings/');
-  await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', 'noindex, nofollow');
+for (const path of ['/settings/', '/search/', '/zh/search/']) {
+  test(`${path} opts out of indexing and claims no alternates`, async ({ page }) => {
+    await page.goto(path);
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /^noindex/);
 
-  // hreflang describes a set of pages that compete in search results; an unindexable page is in
-  // no such set, so it advertises none.
-  await expect(page.locator('link[rel="alternate"][hreflang]')).toHaveCount(0);
-  await expect(page.locator('link[rel="canonical"]')).toHaveCount(1);
-});
+    // hreflang describes a set of pages that compete in search results; an unindexable page is in
+    // no such set, so it advertises none.
+    await expect(page.locator('link[rel="alternate"][hreflang]')).toHaveCount(0);
+    await expect(page.locator('link[rel="canonical"]')).toHaveCount(1);
+  });
+}

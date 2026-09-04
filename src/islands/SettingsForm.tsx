@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { DEPTHS, type Depth } from '@/lib/depth';
 import { clearAll, exportAll, importAll, type ImportMode } from '@/lib/export';
 import { DEFAULT_PREFS, KEYS, readStore, writeStore, type FontSize, type Prefs } from '@/lib/prefs';
-import { readThemePref, resolveTheme, writeThemePref, type ThemePref } from '@/lib/theme';
+import { applyThemePreference, readThemePref, THEME_EVENT, type ThemePref } from '@/lib/theme';
 
 /** Localised copy. Islands never import `t`: the locale is a page-level fact. */
 export interface SettingsLabels {
@@ -111,9 +111,8 @@ function Row(props: { label: string; hint?: string; children: ComponentChildren 
 
 /**
  * Local storage, or `null` where it is unavailable: a private window, a browser with site data
- * blocked, or the server render. `readStore`/`writeStore` guard themselves the same way, but the
- * backup helpers and `readThemePref` take a store as an argument, so this page has to do the
- * guarding for them — an unavailable store must not break hydration or a button.
+ * blocked, or the server render. The preference helpers guard themselves; the backup helpers
+ * still take a store explicitly because they enumerate all codewiki keys.
  */
 function store(): Storage | null {
   try {
@@ -147,22 +146,19 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
   // what puts the controls in step with the document.
   useEffect(() => {
     const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
-    const local = store();
-    if (local) setTheme(readThemePref(local));
+    setTheme(readThemePref());
     setDepth(prefs.depth ?? DEFAULT_PREFS.depth);
     setFont(prefs.fontSize ?? DEFAULT_PREFS.fontSize);
   }, []);
 
   const selectTheme = useCallback((next: ThemePref) => {
     setTheme(next);
-    const local = store();
-    if (local) writeThemePref(next, local);
-    const root = document.documentElement;
-    root.setAttribute(
-      'data-theme',
-      resolveTheme(next, window.matchMedia('(prefers-color-scheme: dark)').matches),
+    applyThemePreference(
+      next,
+      window.matchMedia('(prefers-color-scheme: dark)').matches,
+      document.documentElement,
     );
-    root.setAttribute('data-theme-pref', next);
+    window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: next }));
   }, []);
 
   const selectDepth = useCallback((next: Depth) => {

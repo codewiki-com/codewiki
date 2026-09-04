@@ -32,6 +32,8 @@ export default {
   'home.verified': 'Currently verified against',
   'home.tracks': 'Tracks',
   'home.allTracks': 'All tracks',
+  'home.tagTerm': 'term',
+  'home.tagQuiz': 'quiz',
 
   // The static command-palette panel in the hero. Arrows and slashes are template chrome.
   'home.palette.query': 'closure',
@@ -142,6 +144,7 @@ export default {
   'callout.ai': 'AI tip',
 
   'checkpoint.soon': 'Checkpoint available in Practice',
+  'checkpoint.label': 'checkpoint',
 
   'code.copy': 'Copy',
   'code.copied': 'Copied',

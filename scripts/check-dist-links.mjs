@@ -1,7 +1,8 @@
 /**
  * Dead-link check over the built site.
  *
- * Walks `dist/**\/*.html`, collects every same-origin `href` and `src`, and resolves each one
+ * Walks `dist/**\/*.html`, collects every same-origin `href` and `src` plus the URL-valued head
+ * metadata (`og:image`, `twitter:image`, canonical and hreflang alternates), and resolves each one
  * against `dist/` the way the deployed site does. `trailingSlash: 'always'` in astro.config.mjs
  * means a directory URL `/x/` is the file `dist/x/index.html`; a path that carries an extension
  * is the file itself.
@@ -39,11 +40,45 @@ async function htmlFiles(dir) {
 
 /** `href="…"` and `src="…"` values, quoted or bare. Attribute order and case do not matter. */
 const ATTR = /\s(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+const HEAD_TAG = /<(meta|link)\b[^>]*>/gi;
 
-const IGNORED_SCHEME = /^(?:mailto:|tel:|data:|javascript:|blob:|#|\/\/)/i;
+const IGNORED_SCHEME = /^(?:mailto:|tel:|data:|javascript:|blob:|#)/i;
 
 function decode(value) {
   return value.replace(/&amp;/g, '&').replace(/&#38;/g, '&').trim();
+}
+
+/** One named attribute from a tag, independent of attribute order and quote style. */
+function attribute(tag, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = tag.match(new RegExp(`\\s${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, 'i'));
+  return match ? (match[1] ?? match[2] ?? match[3] ?? '') : undefined;
+}
+
+/** Metadata URL values that are not covered by a generic `href` or `src` contract. */
+function metadataUrls(html) {
+  const values = [];
+  for (const match of html.matchAll(HEAD_TAG)) {
+    const tag = match[0];
+    const kind = match[1]?.toLowerCase();
+    if (kind === 'meta') {
+      const key = (attribute(tag, 'property') ?? attribute(tag, 'name'))?.toLowerCase();
+      if (key === 'og:image' || key === 'twitter:image') {
+        const content = attribute(tag, 'content');
+        if (content !== undefined) values.push(content);
+      }
+      continue;
+    }
+
+    const rel = attribute(tag, 'rel')?.toLowerCase().split(/\s+/) ?? [];
+    const canonical = rel.includes('canonical');
+    const hreflangAlternate = rel.includes('alternate') && attribute(tag, 'hreflang') !== undefined;
+    if (canonical || hreflangAlternate) {
+      const href = attribute(tag, 'href');
+      if (href !== undefined) values.push(href);
+    }
+  }
+  return values;
 }
 
 /**
@@ -62,7 +97,7 @@ function internalPath(raw, pageUrl, base) {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
   // An absolute URL counts only when it points back at this site; another host is not ours.
-  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && url.origin !== new URL(base).origin) return undefined;
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(value) && url.origin !== new URL(base).origin) return undefined;
   return url.pathname;
 }
 
@@ -100,8 +135,11 @@ for (const page of pages) {
   const pageUrl = new URL(`/${page.replace(/index\.html$/, '')}`, base);
   const seen = new Set();
 
-  for (const match of html.matchAll(ATTR)) {
-    const raw = match[1] ?? match[2] ?? match[3] ?? '';
+  const values = [
+    ...[...html.matchAll(ATTR)].map((match) => match[1] ?? match[2] ?? match[3] ?? ''),
+    ...metadataUrls(html),
+  ];
+  for (const raw of values) {
     const pathname = internalPath(raw, pageUrl, base);
     if (!pathname || seen.has(pathname)) continue;
     seen.add(pathname);

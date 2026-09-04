@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolveTheme, nextTheme, readThemePref, writeThemePref } from '@/lib/theme';
+import { applyThemePreference, nextTheme, readThemePref, resolveTheme, writeThemePref } from '@/lib/theme';
+import { KEYS } from '@/lib/prefs';
 
 describe('resolveTheme', () => {
   it('follows system when pref is system or missing', () => {
@@ -24,14 +25,32 @@ describe('nextTheme', () => {
 });
 
 describe('prefs storage', () => {
-  it('round-trips through a Storage-like object', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('round-trips through the guarded preference API and preserves other fields', () => {
     const store = new Map<string, string>();
-    const storage = {
+    vi.stubGlobal('localStorage', {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => void store.set(k, v),
-    };
-    writeThemePref('dark', storage);
-    expect(readThemePref(storage)).toBe('dark');
-    expect(JSON.parse(store.get('cw:v1:prefs')!)).toEqual({ theme: 'dark' });
+    });
+    localStorage.setItem(KEYS.prefs, JSON.stringify({ depth: 'quick' }));
+    writeThemePref('dark');
+    expect(readThemePref()).toBe('dark');
+    expect(JSON.parse(store.get(KEYS.prefs)!)).toMatchObject({ theme: 'dark', depth: 'quick' });
+  });
+
+  it('applies the theme even when persistence throws', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('storage blocked');
+      },
+    });
+    const attributes = new Map<string, string>();
+    const root = { setAttribute: (name: string, value: string) => void attributes.set(name, value) };
+
+    expect(() => applyThemePreference('dark', false, root)).not.toThrow();
+    expect(attributes.get('data-theme')).toBe('dark');
+    expect(attributes.get('data-theme-pref')).toBe('dark');
   });
 });

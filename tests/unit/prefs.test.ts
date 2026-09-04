@@ -4,10 +4,11 @@ import {
   getContinue,
   readStore,
   writeStoreDebounced,
+  DEFAULT_PREFS,
   KEYS,
+  type Prefs,
   type Recents,
 } from '@/lib/prefs';
-import { PREFS_KEY } from '@/lib/theme';
 
 /** Minimal in-memory `Storage`, so the browser-guarded helpers have something to talk to. */
 function fakeStorage(): Storage {
@@ -51,10 +52,30 @@ describe('prefs helpers', () => {
       ),
     ).toBe(1);
   });
+});
 
-  // The pre-paint theme bootstrap cannot import this module, so it keeps its own copy of the key.
-  it('agrees with the theme bootstrap on the prefs key', () => {
-    expect(KEYS.prefs).toBe(PREFS_KEY);
+describe('guarded preference reads', () => {
+  beforeEach(() => vi.stubGlobal('localStorage', fakeStorage()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ['null', 'null'],
+    ['array', '[]'],
+    ['theme: purple value', JSON.stringify({ theme: 'purple' })],
+  ])('returns defaults for a stored %s', (_label, raw) => {
+    localStorage.setItem(KEYS.prefs, raw);
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual(DEFAULT_PREFS);
+  });
+
+  it('replaces invalid preference fields with their defaults', () => {
+    localStorage.setItem(
+      KEYS.prefs,
+      JSON.stringify({ theme: 'purple', depth: 'quick', bilingual: 'sideways', fontSize: 'huge' }),
+    );
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual({
+      ...DEFAULT_PREFS,
+      depth: 'quick',
+    });
   });
 });
 

@@ -5,13 +5,13 @@
  * This module runs in Node during `astro build`, never in the browser, so:
  *  - it reads the topic frontmatter straight off disk instead of `astro:content`, which keeps
  *    `ogPaths()` unit-testable and makes the endpoint's `getStaticPaths` a pure function;
- *  - it is the one file besides `tokens.css` allowed to spell colours as raw hex — satori has
- *    no cascade to read custom properties from, so the light palette is inlined here and must
- *    be kept in step with `src/styles/tokens.css`.
+ *  - satori has no CSS cascade, so the light palette is parsed from `tokens.css` once at module
+ *    load and passed in as ordinary color values.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
+import { parse as parseYaml } from 'yaml';
 import { Resvg } from '@resvg/resvg-js';
 import satori from 'satori';
 import { fetchFonts, FONTS } from '../../scripts/fetch-fonts.mjs';
@@ -27,15 +27,49 @@ const HEIGHT = 630;
 const PAD_X = 96;
 const CONTENT_W = WIDTH - PAD_X * 2;
 
-/** Light palette, mirroring the `:root` block of tokens.css. */
+/**
+ * `astro build` and `vitest` both run from the project root, and cwd is the only anchor that
+ * survives Vite bundling this module into the SSR chunk — `import.meta.url` there points at
+ * the throwaway build directory, which would send the font cache somewhere Astro deletes.
+ */
+const ROOT = process.cwd();
+const TOKENS_FILE = path.join(ROOT, 'src', 'styles', 'tokens.css');
+const TOPICS_DIR = path.join(ROOT, 'src', 'content', 'topics');
+const GLOSSARY_DIR = path.join(ROOT, 'src', 'content', 'glossary');
+const FONT_DIR = path.join(ROOT, '.cache', 'fonts');
+
+const OG_TOKEN_NAMES = ['bg', 'line', 'ink', 'ink2', 'ink3', 'acc', 'acc-soft'] as const;
+type OgTokenName = (typeof OG_TOKEN_NAMES)[number];
+
+/** Reads the light theme's declarations from the first `:root` block in `tokens.css`. */
+export function parseLightPalette(source: string): Record<OgTokenName, string> {
+  const root = source.match(/(?:^|\n)\s*:root\s*\{([\s\S]*?)\}/)?.[1];
+  if (!root) throw new Error('[og] tokens.css has no light :root block');
+
+  const declarations = new Map(
+    [...root.matchAll(/--([a-z0-9-]+)\s*:\s*([^;]+);/gi)].map((match) => [match[1], match[2]!.trim()]),
+  );
+  const missing = OG_TOKEN_NAMES.filter((name) => !declarations.has(name));
+  if (missing.length > 0)
+    throw new Error(`[og] tokens.css is missing: ${missing.map((name) => `--${name}`).join(', ')}`);
+
+  return Object.fromEntries(OG_TOKEN_NAMES.map((name) => [name, declarations.get(name)!])) as Record<
+    OgTokenName,
+    string
+  >;
+}
+
+const light = parseLightPalette(readFileSync(TOKENS_FILE, 'utf8'));
+
+/** Light palette sourced from the site's canonical CSS tokens. */
 const C = {
-  bg: '#f6f7f9',
-  line: '#e2e5eb',
-  ink: '#15181e',
-  ink2: '#4b5160',
-  ink3: '#7b8190',
-  acc: '#3451d1',
-  accSoft: '#e9ecfa',
+  bg: light.bg,
+  line: light.line,
+  ink: light.ink,
+  ink2: light.ink2,
+  ink3: light.ink3,
+  acc: light.acc,
+  accSoft: light['acc-soft'],
 } as const;
 
 /** The Nav logo mark, inlined as a data URI because satori draws images, not SVG children. */
@@ -67,16 +101,8 @@ export interface OgEntry extends OgCard {
   path: string;
 }
 
-/**
- * `astro build` and `vitest` both run from the project root, and cwd is the only anchor that
- * survives Vite bundling this module into the SSR chunk — `import.meta.url` there points at
- * the throwaway build directory, which would send the font cache somewhere Astro deletes.
- */
-const ROOT = process.cwd();
-const TOPICS_DIR = path.join(ROOT, 'src', 'content', 'topics');
-const FONT_DIR = path.join(ROOT, '.cache', 'fonts');
-
 type TopicRow = { track: string; slug: string; lang: Locale; title: string; description: string };
+type GlossaryRow = { id: string; title: Record<Locale, string>; description: Record<Locale, string> };
 
 /**
  * Published topics, straight from the MDX frontmatter. Only `reviewed` entries get a card:
@@ -98,6 +124,25 @@ function readTopics(): TopicRow[] {
   return rows;
 }
 
+/** Glossary copy used by both localized term pages, read from the data collection's YAML files. */
+function readGlossary(): GlossaryRow[] {
+  return readdirSync(GLOSSARY_DIR, { encoding: 'utf8' })
+    .filter((file) => file.endsWith('.yaml'))
+    .sort()
+    .map((file) => {
+      const data = parseYaml(readFileSync(path.join(GLOSSARY_DIR, file), 'utf8')) as {
+        en: string;
+        zh: string;
+        short: Record<Locale, string>;
+      };
+      return {
+        id: file.replace(/\.yaml$/, ''),
+        title: { en: String(data.en), zh: String(data.zh) },
+        description: { en: String(data.short.en), zh: String(data.short.zh) },
+      };
+    });
+}
+
 /** Prefix for a locale's cards: English at the root, Chinese under `zh/`, as `seo.ts` expects. */
 const prefix = (locale: Locale) => (locale === 'zh' ? 'zh/' : '');
 
@@ -105,17 +150,27 @@ const prefix = (locale: Locale) => (locale === 'zh' ? 'zh/' : '');
 let entries: OgEntry[] | undefined;
 
 /**
- * Every card the build renders: one per published topic, one per track hub and one per home
- * page, in both locales. The paths mirror `ogImageUrl()` in `seo.ts` exactly — a page whose
- * `og:image` has no file here would 404 in every social preview.
+ * Every card the build renders: published topics, track hubs and every generic page that calls
+ * `buildHead()`, in both locales. The paths mirror `ogImageUrl()` in `seo.ts` exactly — a page
+ * whose `og:image` has no file here would 404 in every social preview.
  */
 export function ogEntries(): OgEntry[] {
   if (entries) return entries;
   const topics = readTopics();
+  const glossary = readGlossary();
   const out: OgEntry[] = [];
+
+  const pages = [
+    { path: 'glossary', title: 'glossary.title', description: 'glossary.sub' },
+    { path: 'tracks', title: 'tracks.title', description: 'tracks.sub' },
+    { path: 'search', title: 'search.title', description: 'search.sub' },
+    { path: 'settings', title: 'settings.title', description: 'settings.sub' },
+    { path: '404', title: 'notFound.title', description: 'notFound.body' },
+  ] as const;
 
   for (const locale of LOCALES) {
     const p = prefix(locale);
+    const localeGlyph = locale === 'zh' ? '中文' : 'EN';
 
     out.push({
       path: `${p}home`,
@@ -125,6 +180,28 @@ export function ogEntries(): OgEntry[] {
       track: t(locale, 'home.eyebrow'),
       glyph: 'cw',
     });
+
+    for (const page of pages) {
+      out.push({
+        path: `${p}${page.path}`,
+        locale,
+        title: t(locale, page.title),
+        subtitle: t(locale, page.description),
+        track: SITE.name,
+        glyph: localeGlyph,
+      });
+    }
+
+    for (const term of glossary) {
+      out.push({
+        path: `${p}glossary/${term.id}`,
+        locale,
+        title: term.title[locale],
+        subtitle: term.description[locale],
+        track: SITE.name,
+        glyph: localeGlyph,
+      });
+    }
 
     for (const track of TRACKS) {
       out.push({

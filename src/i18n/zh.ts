@@ -1,6 +1,5 @@
-// Chinese UI strings. Same keys as `en.ts` — the `satisfies` type makes a missing or extra key a compile error.
-// Values are English placeholders prefixed with `[zh] `; they are replaced with real Chinese copy
-// by the translation pass described in `prompts/translate-ui.md`.
+// Chinese UI strings. Same keys as `en.ts` — the `satisfies` type makes a missing or extra key a
+// compile error. Product names, language glyphs and conventional keyboard labels stay unchanged.
 
 import en from './en';
 
@@ -31,6 +30,8 @@ export default {
   'home.verified': '当前验证版本',
   'home.tracks': '学习方向',
   'home.allTracks': '全部方向',
+  'home.tagTerm': '术语',
+  'home.tagQuiz': '测验',
   'home.palette.query': '闭包',
   'home.palette.move': '移动',
   'home.palette.open': '打开',
@@ -121,6 +122,7 @@ export default {
   'callout.warning': '警告',
   'callout.ai': 'AI 提示',
   'checkpoint.soon': '检查点将在「练习」板块上线',
+  'checkpoint.label': '检查点',
   'code.copy': '复制',
   'code.copied': '已复制',
   'code.copyFailed': '复制失败',
