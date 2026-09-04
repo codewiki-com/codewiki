@@ -157,6 +157,12 @@ describe('authoring patterns', () => {
     }
   });
 
+  it('accepts angle brackets inside a quoted attribute value', () => {
+    expect(blocks('<Checkpoint label="a > b" />\n')[0].kind).toBe('component');
+    expect(blocks('<Checkpoint label="a < b" />\n')[0].kind).toBe('component');
+    expect(blocks("<Depth level='deep' when={a > b}>\n")[0].kind).toBe('component');
+  });
+
   it('treats a line that only opens with an inline component as a paragraph', () => {
     const en = '<Term id="event-loop">event loop</Term> coordinates JavaScript execution.\n';
     const zh = '<Term id="event-loop">事件循环</Term>负责协调 JavaScript 的执行。\n';
@@ -202,6 +208,21 @@ describe('indented code blocks', () => {
   it('does not read a list continuation as code', () => {
     const parsed = blocks('- item\n\n    a continuation of the item\n');
     expect(parsed.map((block) => block.kind)).toEqual(['list', 'paragraph']);
+  });
+
+  it('keeps every indented paragraph of a component body as prose', () => {
+    const shape = (one: string, two: string): string =>
+      `<TLDRCell label="what">\n\n    ${one}\n\n    ${two}\n\n</TLDRCell>\n`;
+    const en = blocks(shape('A closure keeps its birthplace.', 'It outlives the call.'));
+    const zh = blocks(shape('闭包会带走它的出生地。', '它比那次调用活得更久。'));
+    expect(en.map((block) => block.kind)).toEqual(['component', 'paragraph', 'paragraph', 'component']);
+    expect(alignBlocks(en, zh).aligned).toBe(true);
+  });
+
+  it('reads an indented chunk after a closed component as code again', () => {
+    const parsed = blocks('<Depth level="deep">\n\n    a()\n\n</Depth>\n\n    b()\n');
+    expect(parsed.map((block) => block.kind)).toEqual(['component', 'paragraph', 'component', 'code']);
+    expect(parsed[3].codeHash).toBe(hashCode('b()', ''));
   });
 
   it('does not read an indented component body as code', () => {

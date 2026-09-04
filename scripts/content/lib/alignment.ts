@@ -51,7 +51,10 @@ const THEMATIC_BREAK = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 // A block-level component tag owns its whole line: `<Depth level="deep">`, `<Checkpoint />`
 // or `</Depth>`. A line that merely opens with an inline component and continues with prose
 // — `<Term id="x">event loop</Term> coordinates …` — is a paragraph, not a component.
-const COMPONENT_OPEN = /^<[A-Z][\w.]*(?:\s[^<>]*?)?\/?>$/;
+// Attributes are matched properly rather than as "anything without angle brackets", so a
+// quoted value may contain `<` or `>`: `<Checkpoint label="a > b" />` is still a component.
+const ATTRIBUTE = String.raw`\s+[\w:-]+(?:=(?:"[^"]*"|'[^']*'|\{[^}]*\}|[^\s"'>]+))?`;
+const COMPONENT_OPEN = new RegExp(String.raw`^<[A-Z][\w.]*(?:${ATTRIBUTE})*\s*(\/?)>$`);
 const COMPONENT_CLOSE = /^<\/[A-Za-z][\w.]*\s*>$/;
 const MDX_STATEMENT = /^(?:import|export)\s/;
 const INDENTED_CODE = /^(?: {4}|\t)/;
@@ -99,6 +102,8 @@ function bodyStart(lines: string[]): number {
 export function blocks(md: string): Block[] {
   const lines = md.split('\n');
   const out: Block[] = [];
+  // Depth of the JSX components currently open around this point in the document.
+  let openComponents = 0;
   let i = bodyStart(lines);
   while (i < lines.length) {
     if (lines[i].trim() === '') {
@@ -120,7 +125,7 @@ export function blocks(md: string): Block[] {
       out.push({ kind: 'code', codeHash: hashCode(code.join('\n'), lang), line: start + 1 });
       continue;
     }
-    if (startsIndentedCode(lines[i], out.at(-1)?.kind)) {
+    if (startsIndentedCode(lines[i], out.at(-1)?.kind, openComponents)) {
       const start = i;
       const code: string[] = [];
       let end = i;
@@ -147,22 +152,36 @@ export function blocks(md: string): Block[] {
       i += 1;
     }
     out.push(classify(group, start + 1));
+    openComponents = Math.max(0, openComponents + componentDelta(group));
   }
   return out;
+}
+
+/** How many components a block's lines open minus how many they close. */
+function componentDelta(group: string[]): number {
+  let delta = 0;
+  for (const line of group) {
+    const tag = line.trim();
+    if (COMPONENT_CLOSE.test(tag)) delta -= 1;
+    else if (COMPONENT_OPEN.test(tag) && !COMPONENT_OPEN.exec(tag)?.[1]) delta += 1;
+  }
+  return delta;
 }
 
 /**
  * True when an indented chunk at a block boundary is a CommonMark indented code block.
  *
- * Indentation only means "code" at the top level. Under a list it is the continuation of
- * an item, and inside a JSX component it is ordinary MDX content that happens to be
- * pretty-printed — `<TLDRCell>` bodies are indented in every polished topic. Both would
- * otherwise be hashed as code, and their prose differs between the two languages by
- * design, so the pair would never align.
+ * Indentation only means "code" at the top level. Directly under a list it is the
+ * continuation of an item, and anywhere inside an open JSX component it is ordinary MDX
+ * content that happens to be pretty-printed — every `<TLDRCell>` body is indented, and a
+ * cell may hold several blank-line-separated paragraphs, so the nesting has to be tracked
+ * rather than inferred from the previous block alone. Both would otherwise be hashed as
+ * code, and that prose differs between the two languages by design, so the pair could
+ * never align.
  */
-function startsIndentedCode(line: string, previous: BlockKind | undefined): boolean {
+function startsIndentedCode(line: string, previous: BlockKind | undefined, openComponents: number): boolean {
   if (!INDENTED_CODE.test(line)) return false;
-  return previous !== 'list' && previous !== 'component';
+  return previous !== 'list' && openComponents === 0;
 }
 
 /** Decide what a group of non-blank, non-fence lines is. */
