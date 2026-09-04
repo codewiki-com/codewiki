@@ -50,6 +50,7 @@ const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
 const THEMATIC_BREAK = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const COMPONENT = /^<(?:[A-Z]|\/)/;
 const MDX_STATEMENT = /^(?:import|export)\s/;
+const INDENTED_CODE = /^(?: {4}|\t)/;
 
 interface OpenFence {
   indent: number;
@@ -87,8 +88,9 @@ function bodyStart(lines: string[]): number {
  * Split a document into top-level blocks.
  *
  * Blocks are separated by blank lines, which is how the polished corpus is written; a
- * fenced code block is always one block, blank lines inside it included. Frontmatter is
- * skipped, but line numbers still count from the top of the file.
+ * fenced code block is always one block, blank lines inside it included, and so is a
+ * CommonMark indented code block. Frontmatter is skipped, but line numbers still count
+ * from the top of the file.
  */
 export function blocks(md: string): Block[] {
   const lines = md.split('\n');
@@ -114,6 +116,26 @@ export function blocks(md: string): Block[] {
       out.push({ kind: 'code', codeHash: hashCode(code.join('\n'), lang), line: start + 1 });
       continue;
     }
+    if (startsIndentedCode(lines[i], out.at(-1)?.kind)) {
+      const start = i;
+      const code: string[] = [];
+      let end = i;
+      // Blank lines belong to the chunk only when another indented line follows them,
+      // so `end` tracks the last indented line and the trailing blanks are given back.
+      for (let j = i; j < lines.length; j += 1) {
+        if (lines[j].trim() === '') {
+          code.push('');
+          continue;
+        }
+        if (!INDENTED_CODE.test(lines[j])) break;
+        code.push(lines[j].replace(INDENTED_CODE, '').trimEnd());
+        end = j;
+      }
+      i = end + 1;
+      const chunk = code.slice(0, end - start + 1).join('\n');
+      out.push({ kind: 'code', codeHash: hashCode(chunk, ''), line: start + 1 });
+      continue;
+    }
     const start = i;
     const group: string[] = [];
     while (i < lines.length && lines[i].trim() !== '' && !openFence(lines[i])) {
@@ -123,6 +145,20 @@ export function blocks(md: string): Block[] {
     out.push(classify(group, start + 1));
   }
   return out;
+}
+
+/**
+ * True when an indented chunk at a block boundary is a CommonMark indented code block.
+ *
+ * Indentation only means "code" at the top level. Under a list it is the continuation of
+ * an item, and inside a JSX component it is ordinary MDX content that happens to be
+ * pretty-printed — `<TLDRCell>` bodies are indented in every polished topic. Both would
+ * otherwise be hashed as code, and their prose differs between the two languages by
+ * design, so the pair would never align.
+ */
+function startsIndentedCode(line: string, previous: BlockKind | undefined): boolean {
+  if (!INDENTED_CODE.test(line)) return false;
+  return previous !== 'list' && previous !== 'component';
 }
 
 /** Decide what a group of non-blank, non-fence lines is. */

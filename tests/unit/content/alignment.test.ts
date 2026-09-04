@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { alignBlocks, blocks, setAligned } from '../../../scripts/content/lib/alignment';
+import { alignBlocks, blocks, hashCode, setAligned } from '../../../scripts/content/lib/alignment';
 
 const FIXTURES = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../fixtures');
 
@@ -113,18 +113,91 @@ describe('alignBlocks', () => {
     expect(result.mismatches[0].reason).toMatch(/2.*3|3.*2/);
   });
 
-  it('aligns the two polished sample pairs', () => {
-    for (const [track, slug] of [
-      ['python', 'closures'],
-      ['javascript', 'event-loop'],
-    ]) {
-      const result = alignBlocks(
-        blocks(read('aligned', track, `${slug}.en.mdx`)),
-        blocks(read('aligned', track, `${slug}.zh.mdx`)),
-      );
-      expect(result.mismatches).toEqual([]);
-      expect(result.aligned).toBe(true);
-    }
+  it('aligns the polished python/closures pair', () => {
+    const result = alignBlocks(
+      blocks(read('aligned', 'python', 'closures.en.mdx')),
+      blocks(read('aligned', 'python', 'closures.zh.mdx')),
+    );
+    expect(result.mismatches).toEqual([]);
+    expect(result.aligned).toBe(true);
+  });
+
+  // The polished javascript/event-loop pair really is misaligned: its zh side opens a
+  // paragraph with an inline `<Term>` at line start, which the ruling classifies as a
+  // component. The pair is frozen here so the checker keeps naming that one block.
+  it('reports the one real mismatch in the javascript/event-loop pair', () => {
+    const result = alignBlocks(
+      blocks(read('alignment', 'event-loop.en.mdx')),
+      blocks(read('alignment', 'event-loop.zh.mdx')),
+    );
+    expect(result.aligned).toBe(false);
+    expect(result.mismatches).toHaveLength(1);
+    expect(result.mismatches[0]).toMatchObject({ index: 2, reason: 'kind: en=paragraph zh=component' });
+    expect(result.similarity).toBeGreaterThan(0.9);
+  });
+});
+
+describe('authoring patterns', () => {
+  it('decomposes a <Depth> wrapper into its own blocks', () => {
+    const md = '<Depth level="deep">\n\n## Heading\n\nA paragraph.\n\n</Depth>\n';
+    expect(blocks(md)).toEqual([
+      { kind: 'component', line: 1 },
+      { kind: 'heading', depth: 2, line: 3 },
+      { kind: 'paragraph', line: 5 },
+      { kind: 'component', line: 7 },
+    ]);
+  });
+
+  it('aligns a <Depth> wrapper against its translation', () => {
+    const en = '<Depth level="deep">\n\n## Heading\n\nA paragraph.\n\n</Depth>\n';
+    const zh = '<Depth level="deep">\n\n## 标题\n\n一段话。\n\n</Depth>\n';
+    expect(alignBlocks(blocks(en), blocks(zh)).aligned).toBe(true);
+  });
+
+  it('decomposes an indented <TLDR> with inner blank lines the same way on both sides', () => {
+    const shape = (what: string, trap: string): string =>
+      `<TLDR>\n  <TLDRCell label="what">\n    ${what}\n  </TLDRCell>\n\n  <TLDRCell label="trap">\n    ${trap}\n  </TLDRCell>\n</TLDR>\n`;
+    const en = blocks(shape('A closure keeps its birthplace.', 'Late binding catches everybody.'));
+    const zh = blocks(shape('闭包会带走它的出生地。', '延迟绑定会坑到每个人。'));
+    // The indented cell bodies must stay prose: hashing them as code would compare English
+    // against Chinese and the pair could never align.
+    expect(en.map((block) => block.kind)).toEqual(['component', 'component']);
+    expect(zh.map((block) => block.kind)).toEqual(en.map((block) => block.kind));
+    expect(alignBlocks(en, zh).aligned).toBe(true);
+  });
+});
+
+describe('indented code blocks', () => {
+  it('classifies a top-level indented chunk as code, hashing the dedented content', () => {
+    const parsed = blocks('Intro.\n\n    print(1)\n    print(2)\n\nAfter.\n');
+    expect(parsed.map((block) => block.kind)).toEqual(['paragraph', 'code', 'paragraph']);
+    expect(parsed[1].line).toBe(3);
+    expect(parsed[1].codeHash).toBe(hashCode('print(1)\nprint(2)', ''));
+  });
+
+  it('treats tabs like four spaces and keeps blank lines inside the chunk', () => {
+    const spaces = blocks('Intro.\n\n    a()\n\n    b()\n\nAfter.\n');
+    const tabs = blocks('Intro.\n\n\ta()\n\n\tb()\n\nAfter.\n');
+    expect(spaces.map((block) => block.kind)).toEqual(['paragraph', 'code', 'paragraph']);
+    expect(tabs[1].codeHash).toBe(spaces[1].codeHash);
+    expect(spaces[2].line).toBe(7);
+  });
+
+  it('leaves fenced code untouched', () => {
+    const fenced = blocks('```python\n# note\nprint(1)\n```\n');
+    expect(fenced).toEqual([{ kind: 'code', codeHash: hashCode('print(1)', 'python'), line: 1 }]);
+  });
+
+  it('does not read a list continuation as code', () => {
+    const parsed = blocks('- item\n\n    a continuation of the item\n');
+    expect(parsed.map((block) => block.kind)).toEqual(['list', 'paragraph']);
+  });
+
+  it('does not read an indented component body as code', () => {
+    const en = blocks('<TLDRCell label="what">\n\n    A closure keeps its birthplace.\n\n</TLDRCell>\n');
+    const zh = blocks('<TLDRCell label="what">\n\n    闭包会带走它的出生地。\n\n</TLDRCell>\n');
+    expect(en.map((block) => block.kind)).toEqual(['component', 'paragraph', 'component']);
+    expect(alignBlocks(en, zh).aligned).toBe(true);
   });
 });
 
