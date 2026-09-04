@@ -31,7 +31,7 @@ export interface HeadModel {
   og: Record<string, string>;
   twitter: Record<string, string>;
   jsonLd: object[];
-  /** Only set when the page opts out of indexing. */
+  /** Only set when the page opts out of indexing. Such a page also has no `alternates`. */
   robots?: string;
 }
 
@@ -95,11 +95,16 @@ export function buildHead(input: HeadInput): HeadModel {
     title,
     description,
     canonical,
-    alternates: [
-      { hreflang: 'en', href: absolute(alt.en) },
-      { hreflang: 'zh-Hans', href: absolute(alt.zh) },
-      { hreflang: 'x-default', href: absolute(alt.en) },
-    ],
+    // hreflang describes a set of pages that are alternatives of each other in search results.
+    // A noindex page is in no such set, and Google ignores (and warns about) alternates that
+    // point at, or come from, an unindexable URL — so an opted-out page emits none.
+    alternates: noindex
+      ? []
+      : [
+          { hreflang: 'en', href: absolute(alt.en) },
+          { hreflang: 'zh-Hans', href: absolute(alt.zh) },
+          { hreflang: 'x-default', href: absolute(alt.en) },
+        ],
     og,
     twitter,
     jsonLd: [...(kind === 'home' ? [websiteLd(locale)] : []), ...jsonLd],

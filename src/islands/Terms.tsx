@@ -16,6 +16,8 @@ export interface TermsProps {
     /** Link out of the card, e.g. "Glossary". */
     open: string;
   };
+  /** Where the card's link points before a term has been opened: the glossary index. */
+  glossaryUrl: string;
 }
 
 /** How long the card survives the pointer leaving, so it can be moved onto and its link clicked. */
@@ -39,7 +41,7 @@ const GAP = 8;
  * the article wraps a term in; the tab order therefore skips it, and the reader who wants the
  * term page reaches it from the rail or from the card's own link with the pointer.
  */
-export default function Terms({ labels }: TermsProps) {
+export default function Terms({ labels, glossaryUrl }: TermsProps) {
   useEffect(() => {
     const script = document.getElementById('cw-terms');
     const terms = [...document.querySelectorAll<HTMLElement>('.term[data-term]')];
@@ -81,6 +83,9 @@ export default function Terms({ labels }: TermsProps) {
     const link = document.createElement('a');
     link.className = 'term-tip-link';
     link.textContent = `${labels.open} →`;
+    // `show()` repoints this at the term being read. It starts on the glossary index rather than
+    // bare, because an <a> with no href is not a link: it is unfocusable and crawlers flag it.
+    link.href = glossaryUrl;
 
     tip.append(head, short, link);
     document.body.append(tip);
@@ -170,7 +175,7 @@ export default function Terms({ labels }: TermsProps) {
       open?.removeAttribute('aria-describedby');
       tip.remove();
     };
-  }, [labels]);
+  }, [labels, glossaryUrl]);
 
   return null;
 }

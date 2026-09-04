@@ -21,7 +21,11 @@ test('⌘K opens the palette and finds an English topic', async ({ page }) => {
   await expect(dialog.getByRole('combobox')).toBeFocused();
   await dialog.getByRole('combobox').fill('closure');
 
-  const result = dialog.getByRole('option').filter({ hasText: 'Closures' });
+  // `hasText` is a case-insensitive substring match over the whole row, and every glossary
+  // excerpt for this query contains the word, so the row is picked by its title alone.
+  const result = dialog
+    .getByRole('option')
+    .filter({ has: page.locator('.palette-title', { hasText: 'Closures' }) });
   await expect(result).toHaveAttribute('href', '/python/closures/');
   // The pill is the track's glyph; the meta line spells the track and section out.
   await expect(result.locator('.tag')).toHaveText('py');
@@ -128,7 +132,9 @@ test('/search/?q= renders results without opening the palette', async ({ page })
   await page.goto('/search/?q=closure');
 
   // The page's rows are ordinary links: only the palette has a roving cursor to describe.
-  const result = page.locator('.search-results a.row').filter({ hasText: 'Closures' });
+  const result = page
+    .locator('.search-results a.row')
+    .filter({ has: page.locator('.palette-title', { hasText: 'Closures' }) });
   await expect(result).toHaveAttribute('href', '/python/closures/');
   await expect(page.locator('[data-search-form] input[name="q"]')).toHaveValue('closure');
 });

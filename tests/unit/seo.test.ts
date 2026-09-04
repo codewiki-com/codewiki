@@ -153,6 +153,9 @@ describe('buildHead', () => {
       noindex: true,
     });
     expect(hidden.robots).toBe('noindex, nofollow');
+    // An unindexable page is not an alternative of anything, so it advertises no hreflang set.
+    expect(plain.alternates).toHaveLength(3);
+    expect(hidden.alternates).toEqual([]);
   });
 
   it('attaches websiteLd on the home page only, then caller-supplied blocks', () => {
