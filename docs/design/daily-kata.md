@@ -50,6 +50,8 @@ Single column: eyebrow, title, task, hook, code peek (max 6 lines), actions. Pad
 
 ## Copy (English; Chinese written by the implementer)
 
+The Chinese name of the feature is **「每日一练」** (user decision, 2026-09-05): use it for `daily.eyebrow` and wherever the UI names the daily kata in Chinese (the practice hub's "today" strip included). Keep "kata" in English.
+
 - `daily.eyebrow`: "Daily kata"
 - `daily.hook`: "{issues} issues hide in {lines} lines. Find them before you would ship it."
 - `daily.hookOne`: "1 issue hides in {lines} lines. Find it before you would ship it."
