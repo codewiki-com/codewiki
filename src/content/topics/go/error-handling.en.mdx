@@ -1,0 +1,406 @@
+---
+title: Error handling
+description: How Go treats errors as values, preserves causes through wrapping, and exposes stable failure contracts without string matching.
+track: go
+section: basics
+difficulty: intermediate
+tags: [errors, wrapping, errors-is, errors-as]
+prerequisites: [go/fundamentals]
+related: [go/error-wrapping, go/defer-panic-recover, go/testing, go/context]
+terms: [sentinel-error, error-chain, typed-nil]
+verified: { version: 'Go 1.27', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: go/error-handling
+sources:
+  - { title: 'Package errors', url: 'https://pkg.go.dev/errors' }
+  - { title: 'Package fmt: Errorf', url: 'https://pkg.go.dev/fmt#Errorf' }
+  - { title: 'Working with Errors in Go 1.13', url: 'https://go.dev/blog/go1.13-errors' }
+  - { title: 'Go 1.27 Release Notes', url: 'https://go.dev/doc/go1.27' }
+origin: old/src/content/docs/go/error-handling.en.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Go functions return errors as ordinary values, usually alongside a result. Callers check, wrap, classify, or handle those values explicitly.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    An error message is for people, not program logic. Comparing strings, dropping a wrapped cause, or returning a typed nil makes correct-looking code misclassify failures.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Define the error properties callers may rely on, add context with `%w`, and inspect chains with `errors.Is` or `errors.As`.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Go treats a failure as a value that a function returns. The usual signature pairs a useful result with an `error`, such as `(Order, error)`. By convention, `nil` means success and a non-nil error means the operation failed.
+
+The built-in interface is deliberately small: an error needs only an `Error() string` method. A string created by `errors.New`, a structured application type, and a wrapper produced by `fmt.Errorf` can all satisfy the same interface. Callers can handle them through `error` without knowing every concrete implementation.
+
+Explicit returns keep expected failures in normal control flow. Invalid input, a missing record, cancellation, and a network timeout do not need stack unwinding. The function signature tells you that failure is possible, and the call site shows what happens next.
+
+You meet this pattern in nearly every Go package. File operations, parsing functions, database calls, HTTP clients, and concurrent workers return errors. The hard part is rarely writing `if err != nil`; it is preserving enough meaning for the layer that can make a decision.
+
+An error is also part of an API contract. A package may promise only success or failure, expose a stable <Term id="sentinel-error">sentinel error</Term>, return a documented concrete type, or support a predicate. Callers should depend only on the properties the package documents.
+
+Choose the smallest contract that supports a real caller decision:
+
+| Caller need | Contract to expose |
+| --- | --- |
+| Stop on any failure | A non-nil error |
+| Recognize one stable category | A sentinel plus `errors.Is` |
+| Read structured details | A custom type plus `errors.As` |
+| Hide the representation | A package predicate |
+
+## How it works
+
+The predeclared `error` interface has one method: `Error() string`. Formatting an error calls that method, but the string does not define the error's identity. Two unrelated values may produce the same message, and a wrapper may change the message while preserving the underlying cause.
+
+A function that returns `(T, error)` normally returns the zero value of `T` when it fails. The caller checks the error before using the result. This is a convention rather than a type-system rule, so the function's documentation must say whether any partial result remains useful.
+
+Most call sites follow a short guard-clause sequence:
+
+1. Call the operation and receive its result and error.
+2. If the error is non-nil, handle it or return it with useful context.
+3. Continue with the result only on the success path.
+
+The layer that detects a failure knows the immediate fact. A parser knows which token was invalid; a storage adapter knows which file or query failed. Higher layers know the attempted business operation. Wrapping lets each layer add its context without erasing the earlier fact.
+
+`fmt.Errorf("load account %q: %w", id, err)` creates a new error that wraps `err`. Repeating that operation forms an <Term id="error-chain">error chain</Term>. Each wrapper contributes a message, while `errors.Is` and `errors.As` can still inspect errors deeper in the chain.
+
+Use `errors.Is(err, target)` when the decision depends on a particular error value or on a type's custom matching rule. It checks the whole chain, so it still finds a sentinel after one or more `%w` wrappers. Direct `==` comparison sees only the outer value and therefore fails after wrapping.
+
+Use `errors.As(err, &target)` when you need a particular error type and its structured fields. The target must be a non-nil pointer to a type that implements `error`, or a pointer to an interface type. On success, `As` assigns the matching value to the target.
+
+`errors.Join` combines several non-nil errors into one value. The result exposes all of them through `Unwrap() []error`, and `errors.Is` or `errors.As` traverses every branch. If every input is nil, `Join` returns nil.
+
+Handling belongs at the layer that can act. A library usually returns an error. An HTTP boundary may translate it to a status, a command may print it once and exit, and a retry loop may inspect it before trying again. Logging at every intermediate return site usually produces duplicate records for one failure.
+
+## Examples
+
+### Return and check an error
+
+This first example parses a quantity. `parseQuantity` adds the input to conversion failures, and `main` keeps the success and failure paths separate.
+
+<Depth level="quick">
+
+```go
+package main
+
+import (
+	"fmt"
+	"strconv"
+)
+
+func parseQuantity(input string) (int, error) {
+	quantity, err := strconv.Atoi(input)
+	if err != nil {
+		return 0, fmt.Errorf("parse quantity %q: %w", input, err)
+	}
+	if quantity <= 0 {
+		return 0, fmt.Errorf("quantity must be positive: %d", quantity)
+	}
+	return quantity, nil
+}
+
+func main() {
+	for _, input := range []string{"3", "many"} {
+		quantity, err := parseQuantity(input)
+		if err != nil {
+			fmt.Printf("%s -> error: %v\n", input, err)
+			continue
+		}
+		fmt.Printf("%s -> quantity: %d\n", input, quantity)
+	}
+}
+```
+
+```text
+3 -> quantity: 3
+many -> error: parse quantity "many": strconv.Atoi: parsing "many": invalid syntax
+```
+
+</Depth>
+
+The failure returns `0` because no valid quantity exists. The caller does not use that zero as data; it checks `err` first. `%w` retains the `strconv` error for code that needs to inspect it later.
+
+### Match a wrapped sentinel
+
+A sentinel is useful when callers need a stable category but no extra fields. Exported sentinels conventionally begin with `Err`, and their documentation should say which operations may return or wrap them.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrProductNotFound = errors.New("product not found")
+
+func productPrice(sku string) (int, error) {
+	prices := map[string]int{"PEN-1": 250}
+	price, ok := prices[sku]
+	if !ok {
+		return 0, fmt.Errorf("lookup %q: %w", sku, ErrProductNotFound)
+	}
+	return price, nil
+}
+
+func quote(sku string, quantity int) (int, error) {
+	price, err := productPrice(sku)
+	if err != nil {
+		return 0, fmt.Errorf("quote %q: %w", sku, err)
+	}
+	return price * quantity, nil
+}
+
+func main() {
+	_, err := quote("PEN-9", 2)
+	fmt.Println("error:", err)
+	fmt.Println("not found:", errors.Is(err, ErrProductNotFound))
+}
+```
+
+```text
+error: quote "PEN-9": lookup "PEN-9": product not found
+not found: true
+```
+
+The message gains context at both layers, but `ErrProductNotFound` remains discoverable. A direct comparison such as `err == ErrProductNotFound` would be false because `err` is the outer wrapper. `errors.Is` asks the semantic question the caller actually cares about.
+
+### Extract a structured error
+
+Use a custom type when a caller needs fields rather than just a category. This `FieldError` identifies the rejected field and value while wrapping a sentinel that represents the broader class.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var ErrInvalidField = errors.New("invalid field")
+
+type FieldError struct {
+	Field string
+	Value string
+	Err   error
+}
+
+func (e *FieldError) Error() string {
+	return fmt.Sprintf("%s=%q: %v", e.Field, e.Value, e.Err)
+}
+
+func (e *FieldError) Unwrap() error { return e.Err }
+
+func validateEmail(email string) error {
+	if !strings.Contains(email, "@") {
+		return &FieldError{"email", email, ErrInvalidField}
+	}
+	return nil
+}
+
+func main() {
+	err := validateEmail("alex.example.com")
+	var fieldErr *FieldError
+	fmt.Println("invalid:", errors.Is(err, ErrInvalidField))
+	if errors.As(err, &fieldErr) {
+		fmt.Printf("field: %s, value: %s\n", fieldErr.Field, fieldErr.Value)
+	}
+}
+```
+
+```text
+invalid: true
+field: email, value: alex.example.com
+```
+
+`Unwrap` makes the custom error part of the chain. `errors.Is` sees the category, while `errors.As` assigns the matching `*FieldError` so the caller can use its fields. This is safer than parsing `Error()` output.
+
+### Preserve several validation failures
+
+Independent checks can all run before the caller needs to respond. `errors.Join` preserves each failure instead of forcing the validator to choose one or invent a bespoke slice type.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var (
+	ErrNameRequired = errors.New("name is required")
+	ErrEmailInvalid = errors.New("email is invalid")
+)
+
+func validateCheckout(name, email string) error {
+	var failures []error
+	if strings.TrimSpace(name) == "" {
+		failures = append(failures, ErrNameRequired)
+	}
+	if !strings.Contains(email, "@") {
+		failures = append(failures, ErrEmailInvalid)
+	}
+	return errors.Join(failures...)
+}
+
+func main() {
+	err := validateCheckout("", "alex.example.com")
+	fmt.Println(err)
+	fmt.Println("name required:", errors.Is(err, ErrNameRequired))
+	fmt.Println("email invalid:", errors.Is(err, ErrEmailInvalid))
+}
+```
+
+```text
+name is required
+email is invalid
+name required: true
+email invalid: true
+```
+
+The joined message uses one line per child, but callers should not parse those lines. They can match either sentinel through the joined value. Valid input produces an empty slice, and `errors.Join(failures...)` then returns nil.
+
+## Pitfalls
+
+### Discarding or delaying the check
+
+> [!PITFALL]
+> Assigning an error to `_`, or overwriting it before checking, converts an explicit failure into bad data or a misleading later error.
+
+Check an error next to the call that produced it. Ignore one only when the operation's contract makes the failure irrelevant, and leave a short reason when that choice would surprise a reviewer. Static analysis can catch some discarded results, but it cannot decide whether the remaining behavior is safe.
+
+### Matching the message
+
+> [!PITFALL]
+> Code that compares `err.Error()` or searches it for a substring depends on prose that may change between package versions, operating systems, or wrapper layers.
+
+Use `errors.Is` for a documented value and `errors.As` for a documented type. If a dependency exposes only text, translate the failure at your adapter boundary into an error contract your own package controls. Do not make callers repeat the text parsing.
+
+### Exposing an implementation by wrapping it
+
+> [!PITFALL]
+> Wrapping every dependency error with `%w` can accidentally make that dependency's sentinels and types part of your public API.
+
+Wrap a cause when callers are meant to inspect it. Otherwise, translate it to a package-owned error and retain the original details in boundary-level diagnostics where appropriate. Changing a database driver should not silently break callers that were encouraged to match the old driver's errors.
+
+### Returning a typed nil
+
+> [!PITFALL]
+> An `error` interface is non-nil when it contains a concrete type even if the concrete pointer stored inside it is nil.
+
+Return a literal `nil` on success. Avoid assigning a nil `*MyError` to an `error` result, and include a success-path test that asserts `err == nil`. If an `Error` method dereferences the receiver, formatting the bad interface value may panic as well.
+
+### Logging and returning the same failure
+
+> [!PITFALL]
+> A function that logs an error and returns it asks every caller to report the same event again, often without a shared request identifier or redaction policy.
+
+Add context and return the error from reusable code. Log once at the process, request, or worker boundary that owns the outcome. That boundary can attach stable metadata and keep credentials, payloads, and personal data out of the message.
+
+### Panicking on an expected failure
+
+> [!PITFALL]
+> Generated and hand-written helpers sometimes panic for invalid input, missing files, or network failures that their callers could handle normally.
+
+Return an error for expected operational failures. Reserve panic for broken invariants or explicitly named `Must` helpers whose contract says they panic. Recovery is a boundary mechanism, not a substitute for ordinary error flow; the dedicated `go/defer-panic-recover` topic covers it in detail.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Generated Go often uses `fmt.Errorf("operation failed: %v", err)`, which preserves the text but breaks the chain. Other common failures are branching on `err.Error()`, comparing a wrapped sentinel with `==`, returning a nil concrete pointer as `error`, and logging the same failure at every stack frame. Models also reach for `panic` to avoid threading an error through a generated signature, or expose a database driver's error by wrapping it without deciding whether that is part of the package contract.
+
+**Ask your AI to check**
+
+- List every returned error and state whether callers may rely on a sentinel, a concrete type, a predicate, or only non-nil failure.
+- Trace each wrapper and prove that `%w`, `errors.Is`, and `errors.As` preserve the intended cause across package boundaries.
+- Find typed-nil returns, string matching, duplicate logging, leaked secrets, and panic paths for expected failures.
+
+**Review checklist**
+
+- Run one success case and each documented failure case, including a wrapped cause and a nil custom-error pointer.
+- Verify that decisions use stable error identity or type, never message wording or joined-error order.
+- Confirm that one owning boundary reports the failure and that its log fields contain no credentials or sensitive payloads.
+
+**Prompt vocabulary**
+
+Use `error contract`, `sentinel error`, `custom error type`, `error chain`, `wrap with %w`, `errors.Is`, `errors.As`, `errors.Join`, `typed nil`, and `reporting boundary`. Ask the model to separate human-readable context from machine-inspectable classification.
+
+<Depth level="deep">
+
+## Error contracts outlive implementations
+
+Returning an error does not automatically promise that callers can classify it. The weakest useful contract says only that success returns nil and failure returns non-nil. That leaves the implementation free to change messages, concrete types, and dependencies without breaking correct callers.
+
+A sentinel adds stable identity. It works well for a small category such as `ErrNotFound`, but every exported sentinel becomes another value callers may branch on. Adding categories can couple a package to control flow outside its ownership, so expose only distinctions callers can act on.
+
+A custom type is appropriate when the decision needs structured data. Fields may identify an invalid parameter, retry delay, offset, or operation. Exported fields and methods then become API, so keep incidental dependency objects private unless callers genuinely need them.
+
+Wrapping is also an API decision. If a package documents that an operation wraps `fs.ErrNotExist`, a caller may reasonably use `errors.Is` to detect it. Replacing the filesystem implementation later must preserve that behavior or count as a contract change.
+
+This is why adding `%w` is not merely better formatting. `%v` hides the cause from traversal; `%w` makes it observable. Choose between them according to the abstraction you intend to expose, while ensuring the visible message still says what operation failed.
+
+### Chains can branch
+
+The simplest wrapper has one `Unwrap() error` result, so its chain looks linear. `errors.Join` and custom aggregate types may instead implement `Unwrap() []error`. The resulting structure is a tree even though developers commonly call it a chain.
+
+`errors.Is` and `errors.As` traverse that structure in pre-order, depth-first order. A custom `Is(error) bool` method can define shallow semantic matching, and a custom `As(any) bool` method can define assignment behavior. Such methods should not recursively call `Unwrap`; traversal belongs to the standard library.
+
+Do not use traversal order as business priority. If several joined errors match the same target type, `errors.As` returns the first match it encounters. When ordering matters to a user interface, keep an explicit ordered validation result rather than treating the error tree as a presentation model.
+
+`errors.Unwrap` calls only the single-error `Unwrap() error` form. It does not return the children of a joined error. Normal classification code should prefer `errors.Is` and `errors.As`; diagnostic code that must enumerate a tree can handle both unwrap interfaces deliberately.
+
+## Testing error contracts
+
+Tests should assert the behavior a caller is allowed to use. If a function documents that it wraps `ErrNotFound`, use `errors.Is` in the test. Exact message comparison is appropriate only when the text itself is a promised output, such as a command-line diagnostic covered by a golden test.
+
+Exercise the success path as carefully as the failures. Check both the result and `err == nil`; this catches typed nils and stale partial results. For failure cases, check that unusable result values are not accidentally consumed.
+
+Table-driven tests work well when one function has several error classes. Each case can carry an expected sentinel, target type, and selected fields. This keeps classification assertions next to the input that triggers them.
+
+Test through at least one wrapper layer. A leaf-only test may pass even after an intermediate function changes `%w` to `%v`. The package boundary is where you learn whether callers can still discover the documented cause.
+
+For custom types, use `errors.As` and then assert only documented fields. Comparing an entire struct can couple the test to internal diagnostic data. It can also fail when harmless context is added.
+
+For joined errors, check membership rather than the formatted line order. If order is part of a user-facing validation response, test a separate ordered representation. The aggregate error should remain a classification mechanism.
+
+## Cancellation and partial work
+
+Cancellation is an ordinary error path in code that accepts a `context.Context`. Returning or wrapping `context.Canceled` and `context.DeadlineExceeded` lets the owner distinguish an abandoned operation from another failure. Replacing them with a fresh text-only error destroys that distinction.
+
+A loop or batch may have completed some work before cancellation. Its contract should say whether it returns a partial result, rolls work back, or returns no usable result. The `(T, error)` shape alone cannot answer that question.
+
+Do not retry merely because an error is non-nil. First classify whether the operation was canceled, whether the failure is documented as temporary, and whether repeating the operation is safe. Error handling cannot supply idempotency that the operation does not have.
+
+Concurrent workers also need one owner for their errors. That owner decides whether the first error cancels siblings, whether several errors are joined, and when the function may return. A goroutine that only logs its error has removed the decision from its caller.
+
+## Typed nils inside interfaces
+
+An interface value has a dynamic type and a dynamic value. The interface equals nil only when both are absent. If a nil `*FieldError` is converted to `error`, the interface has a dynamic type, so `err != nil` is true even though the pointer is nil.
+
+This often appears when a helper declares a pointer accumulator, leaves it nil on success, and returns it through an `error` result. The source looks plausible because the concrete pointer is nil. At the call site, however, the non-nil interface sends execution down the failure path.
+
+The clean fix is at the return point: write `return nil` when no failure occurred. If the function needs a concrete error pointer while building details, branch before converting it to the interface. A test should exercise the no-error path, because failure-only tests will not expose the problem.
+
+Reflection is not the normal solution. A caller should not probe every error for a nil pointer because the producer violated the convention. Keep the rule local and simple: public operations return a genuinely nil `error` on success.
+
+Typed nils also affect custom `Error`, `Is`, and `As` methods. A method with a pointer receiver may be invoked on a nil receiver stored in an interface. Unless nil has an intentional documented meaning, avoid producing that value rather than adding defensive nil behavior throughout the error type.
+
+</Depth>
+
+<Checkpoint id="go/error-handling" />
+
+## Further reading
+
+- [Package `errors`](https://pkg.go.dev/errors)
+- [Package `fmt`: `Errorf`](https://pkg.go.dev/fmt#Errorf)
+- [Go blog: Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors)
+- [Go 1.27 release notes](https://go.dev/doc/go1.27)

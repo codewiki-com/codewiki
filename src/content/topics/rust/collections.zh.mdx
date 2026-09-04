@@ -1,0 +1,403 @@
+---
+title: Rust 集合
+description: 根据顺序、唯一性、键查找与范围查询选择 Rust 标准集合，并正确处理所有权、Entry API 和迭代顺序。
+track: rust
+section: basics
+difficulty: intermediate
+tags: [collections, vec, hashmap, btreemap, vecdeque]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/iterators, rust/strings, rust/from-into, rust/closures]
+terms: [hash-table, b-tree, entry-api]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/collections
+sources:
+  - { title: 'Rust standard library - Collections', url: 'https://doc.rust-lang.org/1.98.0/std/collections/index.html' }
+  - { title: 'Rust standard library - Vec', url: 'https://doc.rust-lang.org/1.98.0/std/vec/struct.Vec.html' }
+  - { title: 'Rust standard library - Entry', url: 'https://doc.rust-lang.org/1.98.0/std/collections/hash_map/enum.Entry.html' }
+  - { title: 'Rust standard library - BTreeMap', url: 'https://doc.rust-lang.org/1.98.0/std/collections/struct.BTreeMap.html' }
+  - { title: 'Rust standard library - VecDeque', url: 'https://doc.rust-lang.org/1.98.0/std/collections/struct.VecDeque.html' }
+origin: old/src/content/docs/rust/collections.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Rust 的标准集合分别表达连续序列、双端队列、唯一值和键值映射；选择时先确定是否需要顺序、唯一性或范围查询。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `HashMap` 与 `HashSet` 不承诺迭代顺序，`Vec` 的索引访问会在越界时 panic，集合修改还会与现有借用发生冲突。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    对不可信索引使用 `get`，更新映射使用 `entry`，对外输出需要稳定顺序时选用 B 树集合或在边界处显式排序。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+集合（collection）把数量在运行时才能确定的同类值组织起来。
+数组把长度写进类型，元组可以容纳不同类型；标准集合则为增长、删除、按键查找或排队等操作提供拥有型容器。
+它们管理自己的元素，并在容器离开作用域时释放这些元素。
+
+集合类型表达的不只是存储方式，也表达调用方依赖的语义。
+`Vec<T>` 保留插入顺序并提供整数索引，`HashSet<T>` 表达唯一成员，`HashMap<K, V>` 表达从键到值的关系。
+如果键顺序或范围查询属于契约，应选择 `BTreeSet<T>` 或 `BTreeMap<K, V>`；队列通常使用 `VecDeque<T>`。
+
+`String` 也拥有可增长的缓冲区，但它维护 UTF-8 不变量，不属于 `std::collections` 模块。
+文本索引与切片规则应单独学习，相关主题见 `rust/strings`。
+`BinaryHeap<T>` 用于按优先级取出元素，本页只把它放进选择表，不展开其堆操作。
+
+你会在解析输入、按标识符查找记录、去重、调度任务和构造响应时遇到集合。
+先把所需语义说清楚，再选类型；仅仅因为 `HashMap` 看起来通用就默认使用它，往往会把顺序要求藏到输出阶段。
+
+| 需求 | 首选类型 | 类型表达的保证 |
+|---|---|---|
+| 保留顺序的序列 | `Vec<T>` | 元素按序排列，可用索引或切片访问 |
+| 从两端进出 | `VecDeque<T>` | 具有逻辑上的队首与队尾 |
+| 唯一成员 | `HashSet<T>` | 每个相等值最多出现一次 |
+| 按键取得值 | `HashMap<K, V>` | 每个相等键最多关联一个值 |
+| 有序键或键范围 | `BTreeMap<K, V>` / `BTreeSet<T>` | 按 `Ord` 顺序迭代并支持范围 |
+| 每次取最高优先级 | `BinaryHeap<T>` | 堆顶是当前最大元素 |
+
+## 工作原理
+
+`Vec<T>` 拥有一段连续的元素缓冲区，并分别记录长度与容量。
+长度是已经初始化的元素数，容量是当前分配在重新分配前至少可以容纳的元素数。
+`push` 增加长度；空间不足时，向量可以申请更大的缓冲区并搬移元素。
+
+映射与集合围绕键的相等关系工作。
+`HashMap` 与 `HashSet` 使用<Term id="hash-table">哈希表（hash table）</Term>，键要实现 `Eq` 和 `Hash`，而且相等的键必须产生相同哈希值。
+`BTreeMap` 与 `BTreeSet` 使用<Term id="b-tree">B 树（B-tree）</Term>组织有序键，所以键要实现 `Ord`。
+
+哈希集合不提供稳定的遍历顺序。
+相同输入在另一次运行、换一个集合实例或发生修改后，都不应假定得到相同顺序。
+B 树集合按键的 `Ord` 顺序遍历，因此更适合范围查询和必须可重复的键序列。
+
+集合拥有插入其中的值。
+把 `String` 插入 `Vec<String>` 会移动这个 `String`，除非代码插入的是克隆值；调用 `iter()` 则借用元素，调用 `into_iter()` 会消费容器并产出拥有型元素。
+具体产出类型还取决于接收者是 `T`、`&T` 还是 `&mut T`。
+
+从迭代器构造集合时，`collect()` 需要知道目标类型。
+有时赋值左侧已经提供类型，有时要写 `collect::<HashSet<_>>()`。
+这个类型信息决定重复项是否保留、键值对如何组织，以及结果是否保留顺序。
+
+`HashMap::entry` 把“键已存在”和“键不存在”表示成同一个<Term id="entry-api">条目 API（Entry API）</Term>入口。
+`or_insert`、`or_default` 与 `and_modify` 都在这项状态判断之上工作，并返回或操作映射中的值。
+因此，计数和分组不必先调用 `contains_key` 再做第二次查找。
+
+## 示例
+
+### 用 `Vec` 完成一条数据流水线
+
+第一个例子丢弃无效读数，再把摄氏度转换成十分之一华氏度。
+`into_iter()` 消费原向量，`collect()` 的目标类型由 `Vec<i32>` 标注确定。
+
+<Depth level="quick">
+
+```rust title="normalize_readings.rs"
+fn main() {
+    let readings = vec![20, -99, 24, 18];
+
+    let normalized: Vec<i32> = readings
+        .into_iter()
+        .filter(|value| *value >= 0)
+        .map(|celsius| celsius * 18 + 320)
+        .collect();
+
+    println!("tenths Fahrenheit: {normalized:?}");
+
+    let second = normalized.get(1).copied();
+    println!("second: {second:?}");
+}
+```
+
+```text
+tenths Fahrenheit: [680, 752, 644]
+second: Some(752)
+```
+
+</Depth>
+
+`filter` 的闭包接收对候选元素的引用，所以条件中解引用了 `value`。
+`map` 随后取得通过筛选的 `i32`，结果仍按输入中有效读数的相对顺序排列。
+
+`get(1)` 返回 `Option<&i32>`，不会因索引越界而 panic。
+这里的元素实现 `Copy`，所以 `copied()` 把结果变成 `Option<i32>`；对 `String` 等非 `Copy` 类型，应根据需要保留借用或显式克隆。
+
+### 用 `HashMap::entry` 计数
+
+事件名作为借用的 `&str` 插入映射，因为它们都来自程序内的静态字符串。
+每次 `entry` 调用只描述一次键，并直接取得对应计数器的可变引用。
+
+```rust title="count_events.rs"
+use std::collections::HashMap;
+
+fn main() {
+    let events = ["view", "click", "view", "view", "click"];
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+
+    for event in events {
+        *counts.entry(event).or_insert(0) += 1;
+    }
+
+    // HashMap 不承诺顺序；输出前显式排序。
+    let mut summary: Vec<_> = counts.into_iter().collect();
+    summary.sort_by_key(|(event, _)| *event);
+
+    for (event, count) in summary {
+        println!("{event}: {count}");
+    }
+}
+```
+
+```text
+click: 2
+view: 3
+```
+
+`or_insert(0)` 在键缺失时插入 `0`，随后无论原来是否存在，都返回 `&mut usize`。
+解引用这个引用后，`+= 1` 更新的是映射里的值，而不是临时副本。
+
+排序发生在输出边界，而不是假装 `HashMap` 自带顺序。
+如果整个程序都依赖键顺序，下一例中的 `BTreeMap` 通常能更直接地表达契约。
+
+### 用 `BTreeMap` 查询键范围
+
+`BTreeMap` 的迭代器按键排序，`range` 接受 Rust 的范围边界。
+下面只读取编号 `20` 到 `30` 的作业，并展示 `insert` 返回被替换的旧值。
+
+```rust title="job_ranges.rs"
+use std::collections::BTreeMap;
+
+fn main() {
+    let mut jobs = BTreeMap::from([
+        (30, "running"),
+        (10, "done"),
+        (20, "queued"),
+        (40, "blocked"),
+    ]);
+
+    for (id, state) in jobs.range(20..=30) {
+        println!("job {id}: {state}");
+    }
+
+    let previous = jobs.insert(20, "running");
+    println!("replaced: {previous:?}");
+}
+```
+
+```text
+job 20: queued
+job 30: running
+replaced: Some("queued")
+```
+
+输出次序来自键的 `Ord` 实现，不依赖插入次序。
+范围的开始与结束都包含在内，所以编号 `20` 和 `30` 都会出现。
+
+`insert` 会移动新值并返回 `Option<V>`。
+调用方可以区分首次插入与覆盖已有值；忽略返回值则表示业务逻辑不关心被替换的内容。
+
+### 用 `VecDeque` 表达队列
+
+队列从尾部接收任务，从头部取出任务。
+`VecDeque` 直接提供这两个方向的操作，不需要把 `Vec` 的首元素反复删除。
+
+```rust title="task_queue.rs"
+use std::collections::VecDeque;
+
+fn main() {
+    let mut queue = VecDeque::from(["parse", "index", "publish"]);
+
+    if let Some(task) = queue.pop_front() {
+        println!("running: {task}");
+    }
+
+    queue.push_back("notify");
+
+    while let Some(task) = queue.pop_front() {
+        println!("next: {task}");
+    }
+
+    println!("empty: {}", queue.is_empty());
+}
+```
+
+```text
+running: parse
+next: index
+next: publish
+next: notify
+empty: true
+```
+
+`pop_front()` 返回 `Option<T>`，同时把元素所有权移出队列。
+`while let` 在队列变空时自然结束，不需要先检查长度再弹出。
+
+队列的逻辑顺序不意味着底层内存始终是一段连续切片。
+需要把内容交给要求连续切片的 API 时，应使用 `make_contiguous()`，而不是依赖内部布局。
+
+## 陷阱
+
+> [!PITFALL]
+> 对来自外部输入的索引使用 `values[index]`，会在越界时 panic。
+> 即使输入通常合法，一条损坏记录也可能把可恢复的数据错误变成进程级失败。
+
+**修复方法：** 使用 `get` 或 `get_mut`，并在 `None` 分支返回领域错误或跳过记录。
+只有程序不变量已经证明索引有效，而且违反不变量确实应当终止当前执行时，才使用直接索引。
+
+> [!PITFALL]
+> 测试或序列化代码直接遍历 `HashMap` 与 `HashSet`，然后把当前观察到的顺序写进断言或外部格式。
+> 这种顺序不属于类型契约，代码在本机连续运行成功也不能证明它稳定。
+
+**修复方法：** 若顺序贯穿整个业务逻辑，使用 B 树集合；若只在边界需要稳定输出，则先收集并按明确键排序。
+测试映射本身时，可以比较键值关系，不要比较偶然的调试字符串。
+
+> [!PITFALL]
+> 为消除借用错误，生成代码常把每个键和元素都 `.clone()` 后再查找。
+> 这可能掩盖所有权设计问题，也会让读者误以为查找 `HashMap<String, V>` 必须先分配新的 `String`。
+
+**修复方法：** 只读遍历使用 `iter()`，消费容器才使用 `into_iter()`；字符串键通常可以直接用 `&str` 查找。
+确实需要让新容器长期拥有独立数据时再克隆，并在类型签名中表达这个所有权边界。
+
+> [!PITFALL]
+> 先调用 `contains_key`，再调用 `get_mut` 或 `insert`，会把一次“存在或插入”的决策拆成两个可能分歧的步骤。
+> 代码变长后，两个步骤之间还容易加入提前返回或对同一映射的其他修改。
+
+**修复方法：** 使用 `entry(key)`，在 `Occupied` 与 `Vacant` 状态上完成一次更新。
+简单计数使用 `or_insert`，分组容器常可使用 `or_default`，存在时修改则可组合 `and_modify`。
+
+> [!PITFALL]
+> `or_insert(build_value())` 会在调用 `or_insert` 前先求值，所以即使键已经存在，`build_value()` 仍会运行。
+> 当默认值构造带有日志、I/O 或其他副作用时，这不只是多做工作，还会改变程序行为。
+
+**修复方法：** 延迟构造使用 `or_insert_with(build_value)`，默认值就是 `Default::default()` 时使用 `or_default()`。
+审查时要区分“传入一个已经算好的值”和“传入一个只在缺失时调用的闭包”。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+生成代码经常把 `HashMap` 的调试输出当成稳定结果，或者用 `HashSet` 去重后声称保留了输入顺序。
+它也容易在借用检查器报错后到处添加 `.clone()`，把本可借用的 `String` 键重新分配；另一种常见写法是 `contains_key` 后再索引映射，并用直接索引处理不可信键或向量位置。
+对于默认值，模型还会把昂贵或有副作用的构造器放进 `or_insert(...)`，没有意识到实参会提前求值。
+
+**让 AI 检查**
+
+- 列出每个集合必须保留的语义：输入顺序、键顺序、唯一性、范围查询和从哪一端取出元素。
+- 标出每次 `.clone()` 前后的所有权路径，并说明能否改为 `get`、`iter` 或借用形式的键查找。
+- 为每次 `entry` 更新检查键存在与缺失两条路径，并确认默认值构造是否必须延迟。
+
+**审查清单**
+
+- 用空集合、重复键、缺失键和越界索引运行测试，确认每条失败路径都符合函数契约。
+- 检查任何对外输出、快照和测试断言是否依赖哈希集合的偶然迭代顺序。
+- 对照参数与返回类型，确认代码何处借用、何处移动，以及克隆是否真的是所需的所有权转换。
+
+**提示词词汇**
+
+提示中应使用准确术语：`iteration order`（迭代顺序）、`insertion order`（插入顺序）、`key order`（键顺序）、`borrowed lookup`（借用查找）、`Entry API`（条目 API）、`occupied entry`（已占用条目）、`vacant entry`（空缺条目）、`capacity`（容量）和 `reallocation`（重新分配）。
+不要只说“选最快的集合”；应说明是否需要稳定输出、范围查询、唯一性，以及函数要借用还是取得元素所有权。
+
+<Depth level="deep">
+
+## 分配与引用失效
+
+空 `Vec<T>` 不必为元素分配内存，`Vec::with_capacity(n)` 则请求至少能容纳 `n` 个元素的空间。
+容量可能大于请求值，扩容策略也不是调用方可以依赖的接口保证。
+因此，不应把某次运行观察到的容量序列写成业务逻辑。
+
+当 `len() < capacity()` 时，继续 `push` 不会因容量不足而重新分配。
+但借用检查依据的是程序必须始终安全的条件，不会因为一次测试“刚好没有搬移”就允许在 `push` 后继续使用元素引用。
+需要修改集合时，应结束旧借用，并在修改后重新取得引用。
+
+重新分配不是唯一的身份问题。
+`Vec::insert`、`remove` 和 `swap_remove` 会改变部分元素的索引；保存索引虽然避开悬垂引用，却不能保证该索引仍代表同一业务实体。
+若身份由记录编号决定，应保存编号并重新查找，不能把当前位置当成永久身份。
+
+`reserve` 用于提前保证附加容量，`reserve_exact` 只表达“不刻意多预留”的请求，并不承诺分配器返回精确字节数。
+预留容量应来自已知的输入上限或格式长度，不能用未经验证的外部数量直接驱动巨大分配。
+
+## 键的约束
+
+`HashMap` 要求 `k1 == k2` 时 `hash(k1) == hash(k2)`。
+自定义键若让 `Eq` 与 `Hash` 使用不同字段，相等键可能落入不一致的哈希路径；这属于逻辑错误。
+通常应让同一次 `derive` 同时生成 `PartialEq`、`Eq` 和 `Hash`，或逐字段审查手写实现。
+
+`BTreeMap` 依赖 `Ord` 给出全序。
+如果 `cmp` 判断两个键相等，`Eq` 也应把它们视为相等；在键存入集合后改变参与比较或哈希的内容，同样会破坏集合的逻辑。
+安全 Rust 会限制常见的直接修改路径，但内部可变性仍可能制造这类错误。
+
+拥有型字符串键不要求每次查询都创建拥有型字符串。
+标准映射的查找方法支持借用形式：`HashMap<String, V>` 通常可用 `&str` 调用 `get`，`BTreeMap<String, V>` 也可按兼容的借用键查询。
+这能让存储保持拥有型，而读取接口接收轻量借用。
+
+### 不要丢掉修改结果
+
+许多集合修改方法会返回业务上有用的信息。
+`HashSet::insert` 返回布尔值，说明值是否原本不存在；`HashMap::insert` 返回被替换的 `Option<V>`，而 `remove` 返回被移出的值。
+
+这些返回值能区分新增、重复与替换，无需提前再查一次集合。
+如果调用方确实不关心结果，可以显式忽略；但审查生成代码时，应先确认被丢掉的信息不属于业务规则。
+
+采用返回值还能让状态转换留在一次方法调用附近。
+与“先检查、再修改”相比，这种写法更容易看出重复输入、缺失键和覆盖旧值分别走哪条路径。
+
+## 有序与无序边界
+
+“无序”不等于随机打乱，也不等于每次一定变化。
+它表示 API 没有承诺观察顺序，所以调用方不能据此赋予第一个或最后一个元素业务含义。
+这一区别对测试很重要：偶然稳定仍然不是保证。
+
+`BTreeMap::range` 根据键顺序返回指定边界内的条目。
+半开范围、闭区间和无界端点使用标准范围语法或 `Bound` 表示；边界若本身不合法，某些组合会 panic，所以动态构造边界时也要验证顺序。
+
+只在展示层需要稳定顺序时，把哈希映射条目收集进 `Vec` 再排序，通常比让整个内部模型承担顺序语义更清楚。
+反过来，如果调用方频繁询问键范围或最小键，`BTreeMap` 能直接表达这些操作。
+选择依据是契约，不是没有基准数据支撑的速度判断。
+
+## `Entry` 是一次状态分支
+
+`entry(key)` 会取得映射的可变借用，并返回 `Occupied` 或 `Vacant`。
+已占用条目可以读取、修改或移除当前值，空缺条目可以插入值；两种状态都持有完成相应操作所需的上下文。
+这就是 `entry` 能在一次状态分支中完成更新的原因。
+
+`and_modify(f).or_insert(v)` 先在键存在时运行 `f`，否则插入 `v`。
+不过，`v` 仍是普通实参，会在调用前求值；需要惰性初始化时应改用 `or_insert_with`。
+如果插入值的构造依赖条目自己的键，可使用提供键引用的相应惰性方法。
+
+`Entry` 只解决单个普通映射借用期间的状态分支，不会让跨线程更新自动变成原子操作。
+共享可变映射仍需要互斥锁、分片并发容器或其他同步设计；检查与更新的原子边界由外层同步机制决定。
+
+## `VecDeque` 的逻辑连续性
+
+`VecDeque` 对调用方呈现一个连续的逻辑顺序，但环形缓冲区可能在物理内存中分成前后两段。
+`as_slices()` 因而返回两个切片，它们按逻辑顺序拼接后才是完整内容。
+代码不能假定第二个切片总为空。
+
+`make_contiguous()` 会重新排列内容，使当前元素可作为单个可变切片访问。
+只有确实要调用切片 API、原地排序或传递连续区域时才需要这样做；普通队列操作直接使用 `push_back` 与 `pop_front` 即可。
+
+## `collect` 的目标决定语义
+
+迭代器只描述如何逐项产生值，不决定最终容器。
+同一串项目收集到 `Vec` 时保留每一项和产出顺序，收集到 `HashSet` 时相等项会合并且不承诺迭代顺序，收集到 `BTreeSet` 时相等项会合并并按 `Ord` 排列。
+
+编译器无法从后续使用推断出唯一容器时，会要求更多类型信息。
+可以在变量上写完整类型，也可以使用 `collect::<Vec<_>>()` 形式；下划线只让编译器推断元素类型，不会省略容器选择。
+
+这也是审查生成代码时容易漏掉的语义变化。
+把 `collect::<Vec<_>>()` 改成 `collect::<HashSet<_>>()`，会同时改变存储方式、重复项处理与顺序契约。
+
+</Depth>
+
+<Checkpoint id="rust/collections" />
+
+## 延伸阅读
+
+- [Rust 标准库：集合](https://doc.rust-lang.org/1.98.0/std/collections/index.html)
+- [Rust 标准库：`Vec`](https://doc.rust-lang.org/1.98.0/std/vec/struct.Vec.html)
+- [Rust 标准库：`Entry`](https://doc.rust-lang.org/1.98.0/std/collections/hash_map/enum.Entry.html)
+- [Rust 标准库：`BTreeMap`](https://doc.rust-lang.org/1.98.0/std/collections/struct.BTreeMap.html)
+- [Rust 标准库：`VecDeque`](https://doc.rust-lang.org/1.98.0/std/collections/struct.VecDeque.html)
