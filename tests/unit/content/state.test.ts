@@ -21,6 +21,12 @@ const TIERS: TierLists = {
   '3': ['go/channels'],
 };
 
+const INTERLEAVED_TIERS: TierLists = {
+  '1': ['a/a1', 'a/a2', 'a/a3', 'b/b1', 'b/b2', 'c/c1'],
+  '2': [],
+  '3': [],
+};
+
 /** A state carrying one entry per id, built from terse tuples. */
 function state(...entries: [id: string, step: Step, attempts?: number][]): PipelineState {
   const topics: PipelineState['topics'] = {};
@@ -92,6 +98,36 @@ describe('markStep', () => {
 });
 
 describe('nextTopics', () => {
+  it('interleaves eligible topics round-robin across tracks', () => {
+    expect(nextTopics(INTERLEAVED_TIERS, emptyState(), 10, 'polished')).toEqual([
+      'a/a1',
+      'b/b1',
+      'c/c1',
+      'a/a2',
+      'b/b2',
+      'a/a3',
+    ]);
+  });
+
+  it('skips finished and thrice-failed topics before interleaving', () => {
+    const current = state(['a/a1', 'polished'], ['b/b1', 'linted', 3]);
+    expect(nextTopics(INTERLEAVED_TIERS, current, 10, 'polished')).toEqual(['a/a2', 'b/b2', 'c/c1', 'a/a3']);
+  });
+
+  it('applies the maximum after interleaving', () => {
+    expect(nextTopics(INTERLEAVED_TIERS, emptyState(), 4, 'polished')).toEqual([
+      'a/a1',
+      'b/b1',
+      'c/c1',
+      'a/a2',
+    ]);
+  });
+
+  it('preserves the order of an explicit id list', () => {
+    const only = ['c/c1', 'a/a3', 'b/b1'];
+    expect(nextTopics(INTERLEAVED_TIERS, emptyState(), 10, 'polished', { only })).toEqual(only);
+  });
+
   it('returns ids in tier order and skips topics already at the target step', () => {
     const current = state(['python/closures', 'polished'], ['javascript/event-loop', 'linted']);
     expect(nextTopics(TIERS, current, 10, 'polished')).toEqual([
@@ -131,12 +167,9 @@ describe('nextTopics', () => {
     expect(nextTopics(TIERS, emptyState(), 10, 'polished', { tier: 2 })).toEqual(['python/decorators']);
   });
 
-  it('restricts to an explicit id list, keeping tier order', () => {
+  it('restricts to an explicit id list', () => {
     const only = ['go/channels', 'python/closures'];
-    expect(nextTopics(TIERS, emptyState(), 10, 'polished', { only })).toEqual([
-      'python/closures',
-      'go/channels',
-    ]);
+    expect(nextTopics(TIERS, emptyState(), 10, 'polished', { only })).toEqual(only);
   });
 });
 

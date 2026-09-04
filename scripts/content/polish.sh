@@ -13,6 +13,7 @@
 # Usage:
 #   pnpm content:polish [--tier 1|2|3] [--n 4] [--only {track}/{slug} ...]
 #                       [--max 20] [--dry-run] [--no-links]
+# The selection interleaves tracks so parallel sessions do not share an interview bank file.
 #
 # Environment: CODEX_BIN, CODEX_MODEL, CODEX_TIMEOUT (seconds), COMMIT_EVERY,
 # MARK_RETRY_SLEEP (seconds), KILL_GRACE (seconds).
@@ -64,7 +65,7 @@ usage: pnpm content:polish [--tier 1|2|3] [--n 4] [--only {track}/{slug} ...]
 
   --tier N    consider one tier only
   --n N       topics polished in parallel (default 4)
-  --only ...  consider only these topic ids, in tier order
+  --only ...  consider only these topic ids, keeping their given order
   --max N     stop after selecting this many topics (default 20)
   --dry-run   render and print the brief for the first selected topic, run nothing
   --no-links  skip the network link checks in the gate

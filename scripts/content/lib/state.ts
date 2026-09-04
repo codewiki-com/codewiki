@@ -54,7 +54,7 @@ export type TierLists = Record<string, readonly string[]>;
 export interface NextOptions {
   /** Consider one tier only. */
   tier?: 1 | 2 | 3;
-  /** Consider only these ids, keeping tier order. */
+  /** Consider only these ids, keeping the caller's order. */
   only?: readonly string[];
 }
 
@@ -140,8 +140,9 @@ export function markStep(
 
 /**
  * The next `n` topics to work on: those that have not reached `targetStep` yet and have
- * not been set aside after {@link MAX_ATTEMPTS} failures, in tier order (tier 1 first,
- * then the order the tier list itself gives).
+ * not been set aside after {@link MAX_ATTEMPTS} failures. Eligible topics are collected
+ * in tier order, then interleaved round-robin by track in first-appearance order before
+ * `n` is applied. An explicit `only` list keeps the caller's order instead.
  */
 export function nextTopics(
   tiers: TierLists,
@@ -153,10 +154,9 @@ export function nextTopics(
   const allowed = options.only ? new Set(options.only) : null;
   const wanted = options.tier ? [String(options.tier)] : ['1', '2', '3'];
   const target = stepIndex(targetStep);
-  const out: string[] = [];
+  const candidates: string[] = [];
   for (const tier of wanted) {
     for (const id of tiers[tier] ?? []) {
-      if (out.length >= n) return out;
       if (allowed && !allowed.has(id)) continue;
       const entry = state.topics[id];
       if (entry) {
@@ -165,8 +165,29 @@ export function nextTopics(
         // has attempted something and completed nothing.
         if (entry.finishedAt && stepIndex(entry.step) >= target) continue;
       }
-      out.push(id);
+      candidates.push(id);
     }
   }
-  return out;
+
+  if (options.only) {
+    const remaining = new Set(candidates);
+    return options.only.filter((id) => remaining.delete(id)).slice(0, n);
+  }
+
+  const tracks = new Map<string, string[]>();
+  for (const id of candidates) {
+    const track = id.split('/', 1)[0];
+    const topics = tracks.get(track) ?? [];
+    topics.push(id);
+    tracks.set(track, topics);
+  }
+
+  const interleaved: string[] = [];
+  for (let index = 0; interleaved.length < candidates.length; index += 1) {
+    for (const topics of tracks.values()) {
+      const id = topics[index];
+      if (id !== undefined) interleaved.push(id);
+    }
+  }
+  return interleaved.slice(0, n);
 }

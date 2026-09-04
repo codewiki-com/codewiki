@@ -25,10 +25,18 @@ describe('topic fixtures', () => {
 
   it('ships both languages of every sample topic', () => {
     expect(mdx).toEqual([
+      'ai/langchain.en.mdx',
+      'ai/langchain.zh.mdx',
+      'architecture/cap-theorem.en.mdx',
+      'architecture/cap-theorem.zh.mdx',
       'backend/jwt-authentication.en.mdx',
       'backend/jwt-authentication.zh.mdx',
+      'cpp/move-semantics.en.mdx',
+      'cpp/move-semantics.zh.mdx',
       'javascript/event-loop.en.mdx',
       'javascript/event-loop.zh.mdx',
+      'python/asyncio.en.mdx',
+      'python/asyncio.zh.mdx',
       'python/closures.en.mdx',
       'python/closures.zh.mdx',
     ]);

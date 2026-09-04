@@ -5,13 +5,13 @@ Five topics spanning the audit's quality classes, run through `pnpm content:poli
 
 ## Runs
 
-| Topic | Class (audit) | Wall time | Codex tokens | Lines en/zh | Quiz items | Interview items | Glossary terms | Gate |
-|---|---|---|---|---|---|---|---|---|
-| `backend/jwt-authentication` | good pair | 11 m 44 s | 158,008 | 404 / 404 | 4 (1 predict, 2 mcq, 1 review) | 3 | 5 | OK first try |
-| `cpp/move-semantics` | good, en title in Chinese | 13 m 43 s | 212,983 | 402 / 402 | see bank | see bank | 4 | OK first try |
-| `python/asyncio` | stale | 11 m 12 s | 144,975 | 455 / 439 | see bank | see bank | 4 | OK first try |
-| `ai/langchain` | needs rewrite | 16 m 40 s | 205,504 | 401 / 401 | see bank | see bank | 3 | OK first try |
-| `architecture/cap-theorem` | bloated, zh machine-translated | 13 m 48 s | 174,017 | 406 / 406 | see bank | see bank | 6 | OK first try |
+| Topic                        | Class (audit)                  | Wall time | Codex tokens | Lines en/zh | Quiz items                     | Interview items | Glossary terms | Gate         |
+| ---------------------------- | ------------------------------ | --------- | ------------ | ----------- | ------------------------------ | --------------- | -------------- | ------------ |
+| `backend/jwt-authentication` | good pair                      | 11 m 44 s | 158,008      | 404 / 404   | 4 (1 predict, 2 mcq, 1 review) | 3               | 5              | OK first try |
+| `cpp/move-semantics`         | good, en title in Chinese      | 13 m 43 s | 212,983      | 402 / 402   | see bank                       | see bank        | 4              | OK first try |
+| `python/asyncio`             | stale                          | 11 m 12 s | 144,975      | 455 / 439   | see bank                       | see bank        | 4              | OK first try |
+| `ai/langchain`               | needs rewrite                  | 16 m 40 s | 205,504      | 401 / 401   | see bank                       | see bank        | 3              | OK first try |
+| `architecture/cap-theorem`   | bloated, zh machine-translated | 13 m 48 s | 174,017      | 406 / 406   | see bank                       | see bank        | 6              | OK first try |
 
 ## Review notes
 
