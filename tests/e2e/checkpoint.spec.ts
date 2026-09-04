@@ -78,9 +78,14 @@ test('finishing every checkpoint item shows the result, miss explanations, and a
   await expect(result.getByRole('link', { name: 'Back to the track' })).toHaveAttribute('href', '/python/');
 
   await result.locator('[data-add-misses]').click();
+  // Reaching the checkpoint also enrolls the topic's term cards; this action itself adds two
+  // missed-quiz cards, so assert that source rather than the whole mixed deck.
   await expect
     .poll(() =>
-      page.evaluate(() => JSON.parse(localStorage.getItem('cw:v1:flashcards') ?? '{}').cards?.length),
+      page.evaluate(() => {
+        const cards = JSON.parse(localStorage.getItem('cw:v1:flashcards') ?? '{}').cards ?? [];
+        return cards.filter((card: { source?: string }) => card.source === 'quiz').length;
+      }),
     )
     .toBe(2);
 });

@@ -15,6 +15,39 @@ test('the Chinese hub lists the same topics in Chinese', async ({ page }) => {
   await expect(page.locator('.topic[data-topic-id="python/closures"] .t')).toHaveText('闭包');
 });
 
+test('the Python hub links only the related pages that now exist', async ({ page }) => {
+  await page.goto('/python/');
+
+  await expect(page.locator('.shortcuts a.quick', { hasText: 'Cheatsheet' })).toHaveAttribute(
+    'href',
+    '/cheatsheets/python/',
+  );
+  await expect(page.locator('.shortcuts a.quick', { hasText: 'Interview bank' })).toHaveAttribute(
+    'href',
+    '/practice/interview/python/',
+  );
+  await expect(page.locator('.shortcuts .quick[aria-disabled="true"]', { hasText: 'Compare' })).toBeVisible();
+  await expect(
+    page.locator('.shortcuts .quick[aria-disabled="true"]', { hasText: 'Playground' }),
+  ).toBeVisible();
+
+  const also = page.locator('.also');
+  await expect(also.getByRole('link', { name: 'Python cheatsheet' })).toHaveAttribute(
+    'href',
+    '/cheatsheets/python/',
+  );
+  await expect(also.getByRole('link', { name: 'Interview bank: Python' })).toHaveAttribute(
+    'href',
+    '/practice/interview/python/',
+  );
+  await expect(also.getByRole('link', { name: 'Glossary: Python terms' })).toHaveAttribute(
+    'href',
+    '/glossary/',
+  );
+  await expect(also.locator('.also-soon', { hasText: 'Python compared with other languages' })).toBeVisible();
+  await expect(page.locator('.path-map')).toHaveAttribute('href', '/paths/python-from-zero/');
+});
+
 test('both hubs carry hreflang links to each other', async ({ page }) => {
   await page.goto('/python/');
   await expect(page.locator('link[rel="alternate"][hreflang="en"]')).toHaveAttribute(

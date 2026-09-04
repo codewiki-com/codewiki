@@ -40,6 +40,39 @@ test('the English home page renders its headline', async ({ page }) => {
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://codewiki.com/');
 });
 
+test('the P2a navigation and path call to action point at public routes', async ({ page }) => {
+  await page.goto('/');
+
+  const desktop = page.locator('.links');
+  await expect(desktop.getByRole('link', { name: 'Paths', exact: true })).toHaveAttribute('href', '/paths/');
+  await expect(desktop.getByRole('link', { name: 'Practice', exact: true })).toHaveAttribute(
+    'href',
+    '/practice/',
+  );
+  await expect(desktop.getByRole('link', { name: 'Cheatsheets', exact: true })).toHaveAttribute(
+    'href',
+    '/cheatsheets/',
+  );
+  await expect(desktop.getByRole('link', { name: 'Compare', exact: true })).toHaveCount(0);
+  await expect(desktop.getByRole('link', { name: 'Playground', exact: true })).toHaveCount(0);
+
+  const mobile = page.locator('.menu-links');
+  await expect(mobile.locator('a[href="/paths/"]')).toHaveText('Paths');
+  await expect(mobile.locator('a[href="/practice/"]')).toHaveText('Practice');
+  await expect(mobile.locator('a[href="/cheatsheets/"]')).toHaveText('Cheatsheets');
+
+  await expect(page.getByRole('link', { name: 'Start a path' })).toHaveAttribute('href', '/paths/');
+});
+
+test('the personal strip receives the build-time kata of the day', async ({ page }) => {
+  await page.goto('/');
+  const kata = page.locator('[data-personal-kata]');
+  await expect(kata).toBeVisible();
+  await expect(kata).toHaveAttribute('href', /^\/practice\//);
+  await expect(kata).toContainText('kata today');
+  await expect(kata).toContainText(/\d+ min/);
+});
+
 test('the Chinese home page renders the same headline in Chinese', async ({ page }) => {
   await page.goto('/zh/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');

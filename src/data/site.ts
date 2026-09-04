@@ -11,12 +11,14 @@ export const SITE = {
   repo: 'https://github.com/codewiki-dev/codewiki',
 } as const;
 
-/**
- * Whether the P2 learning-layer pages — Paths, Practice, Cheatsheets, Compare, Playground — are
- * built. While it is false the navigation, the home hero and the track hubs leave them out
- * instead of linking into the void; flip it when those pages exist.
- */
-export const P2_NAV = false;
+/** Paths, Practice and Cheatsheets are public after the P2a learning-layer wave. */
+export const P2_NAV = true;
+
+/** Task 13 exposes the Playground after its static page and runtimes land. */
+export const P2B_NAV = false;
+
+/** Compare belongs to P3 and remains hidden until its routes exist. */
+export const P3_NAV = false;
 
 /** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
 export const P2_RULES = false;

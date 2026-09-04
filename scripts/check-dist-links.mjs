@@ -20,8 +20,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
 
-// Task 9 removes the flashcard entries when that review page lands; Task 13 removes Playground.
-const KNOWN_LATER = ['/practice/flashcards/', '/zh/practice/flashcards/', '/playground/'];
+// Task 13 removes this final exception when the Playground route lands.
+const KNOWN_LATER = ['/playground/'];
 
 /** The canonical origin, read from src/data/site.ts so the two never drift. */
 async function siteOrigin() {
