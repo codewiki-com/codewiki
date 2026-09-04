@@ -1,0 +1,407 @@
+---
+title: Java Interfaces
+description: Java interfaces define replaceable behavior contracts; learn member rules, default-method conflicts, functional interfaces, and safe API evolution.
+track: java
+section: oop-generics
+difficulty: intermediate
+tags: [interfaces, default-methods, functional-interfaces, polymorphism]
+prerequisites: [java/fundamentals, java/oop]
+related: [java/generics, java/lambdas, java/sealed-classes, java/annotations]
+terms: [nominal-typing, subtype-polymorphism, default-method, functional-interface, interface-segregation-principle, sam-conversion]
+verified: { version: 'Java 25 LTS', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: java/interfaces
+sources:
+  - { title: 'Java Language Specification 25 - Interface Members', url: 'https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.2' }
+  - { title: 'Java Language Specification 25 - Inheriting Methods with Override-Equivalent Signatures', url: 'https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.4.1.3' }
+  - { title: 'Java Language Specification 25 - Functional Interfaces', url: 'https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.8' }
+  - { title: 'Java Language Specification 25 - Interface Method Evolution', url: 'https://docs.oracle.com/javase/specs/jls/se25/html/jls-13.html#jls-13.5.7' }
+  - { title: 'Dev.java - Defining Interfaces', url: 'https://dev.java/learn/interfaces/defining-interfaces/' }
+origin: old/src/content/docs/java/interfaces.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    An interface is a reference type that describes public behavior. A class uses `implements` to promise that behavior, letting callers depend on the interface instead of one implementation.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    `default` is not a blanket compatibility guarantee. A new default method can conflict with another interface or silently change an existing implementation's behavior.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Keep interfaces small and explicit, document input, failure, and concurrency contracts, and test every change with a clean rebuild and substitute implementations.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A Java interface is a reference type that cannot be instantiated directly. It names a set of operations without requiring every implementation to share a superclass or object layout. A class can implement several interfaces, and an interface can extend several interfaces, so behavior contracts do not have to follow the single-inheritance class hierarchy.
+
+Java uses <Term id="nominal-typing">nominal typing</Term>. A class does not implement an interface merely because it happens to have methods with matching names; source code must establish the relationship through `implements` or inheritance. Callers therefore need not guess whether a matching signature is accidental or intended to fulfill the contract.
+
+An interface type enables <Term id="subtype-polymorphism">subtype polymorphism</Term>. A constructor that accepts `ShippingRule`, for example, can receive a flat-rate rule, a weight-based rule, or a test double without knowing their classes. Instance calls still dispatch on the actual object at runtime; an interface reference is not a new wrapper around that object.
+
+You meet interfaces in collections, comparators, listeners, service boundaries, and dependency injection. They work best for a capability that callers genuinely depend on, especially when unrelated classes can fulfill the same contract. When the design mainly needs shared instance state, a construction sequence, or protected helper code, an abstract class is usually more direct.
+
+Method signatures leave important behavior unstated. Null rules, parameter units, return meanings, exceptions, thread-safety requirements, and side effects all belong to the contract. At a cross-team or public-library boundary, put those constraints in documentation and contract tests.
+
+## How it works
+
+A class uses `implements` for an interface; an interface uses `extends` to combine other interfaces. A non-abstract class must implement the abstract instance methods it inherits unless a more specific default method already satisfies them. An interface variable can refer to any compatible instance, but it directly exposes only the members of its static type.
+
+Interfaces have no constructors or instance fields. A field declaration is implicitly `public static final`, so it stores an interface-level constant reference; if that reference points to a mutable collection, the collection can still change. Putting a mutable object in an interface field creates public global state. The `final` reference does not make it safe.
+
+| Member form | Has a body | Inherited by implementations | Typical use |
+| --- | --- | --- | --- |
+| Abstract instance method | No | Yes | Define behavior every implementation supplies |
+| `default` method | Yes | Yes | Supply common instance behavior from the existing contract |
+| `static` method | Yes | No | Factory or helper operation tied to the interface concept |
+| `private` method | Yes | No | Reuse code within default or static interface methods |
+| Field | Initializer expression | Accessed through a qualified name | A true constant, not mutable state |
+
+Abstract and default methods are implicitly `public`; they cannot be `protected` or package-private. Static methods may be `public` or `private`, while private instance methods are callable only by the interface's own instance methods. An implementation cannot reduce the visibility of a method it implements.
+
+A <Term id="default-method">default method</Term> has an instance method body and may call other instance methods or private instance helpers. It has no instance fields of its own, so its behavior can depend only on parameters, constants, and state the receiver exposes through the contract. Defaults fit convenience operations derived from existing primitives, not hidden new state requirements.
+
+When several candidate instance methods meet, the compiler uses these rules to decide whether an explicit override is needed:
+
+1. A concrete instance method in a class or superclass wins over an interface default.
+2. When one interface is more specific than another, the subinterface declaration wins.
+3. When unrelated interfaces provide conflicting defaults, the implementing class must override; its body may select a direct superinterface implementation with `InterfaceName.super.method()`.
+
+Static interface methods do not participate because subclasses and implementing classes do not inherit them. Call one through its declaring interface, such as `Rule.parse()`, and do not assume `ConcreteRule.parse()` exists. Private methods are likewise not inherited or callable from an implementation.
+
+A <Term id="functional-interface">functional interface</Term> has one abstract method contract, also called a single abstract method (SAM) interface. Default, static, and private methods do not add to that count, and methods corresponding to public instance methods of `Object` have a special exclusion. `@FunctionalInterface` is optional, but it makes the compiler reject a declaration as soon as the contract no longer qualifies.
+
+Lambda expressions and method references need a target type; the target functional interface determines their parameter and return types. This adaptation of a function value to a SAM interface instance is often called <Term id="sam-conversion">SAM conversion</Term>. The lambda implements only the function method, while the interface's default methods remain available.
+
+## Examples
+
+These three programs start with substitute implementations, resolve default-method conflicts, and then compose a functional interface. Their output was produced locally with OpenJDK 21.0.12 using `javac --release 21 -Xlint:all`; the syntax and interface rules used here remain valid in the target Java 25.
+
+### Isolating callers from implementations
+
+The quoting function accepts only `ShippingRule`. Two record classes hold different data and implement the same operation, while a default method derives a diagnostic name from the actual class.
+
+<Depth level="quick">
+
+```java title="ShippingQuote.java"
+import java.util.List;
+
+public class ShippingQuote {
+    interface ShippingRule {
+        int feeInCents(int weightGrams);
+
+        default String label() {
+            return getClass().getSimpleName();
+        }
+    }
+
+    record FlatRate(int fee) implements ShippingRule {
+        @Override
+        public int feeInCents(int weightGrams) {
+            requirePositive(weightGrams);
+            return fee;
+        }
+    }
+
+    record WeightRate(int centsPerKilogram) implements ShippingRule {
+        @Override
+        public int feeInCents(int weightGrams) {
+            requirePositive(weightGrams);
+            int kilograms = (weightGrams + 999) / 1_000;
+            return kilograms * centsPerKilogram;
+        }
+    }
+
+    static void requirePositive(int weightGrams) {
+        if (weightGrams <= 0) {
+            throw new IllegalArgumentException("weight must be positive");
+        }
+    }
+
+    public static void main(String[] args) {
+        var rules = List.<ShippingRule>of(new FlatRate(499), new WeightRate(300));
+        for (ShippingRule rule : rules) {
+            System.out.println(rule.label() + ": " + rule.feeInCents(1_200));
+        }
+    }
+}
+```
+
+```text
+FlatRate: 499
+WeightRate: 600
+```
+
+<TryToBreak items={['Change the weight to 0', 'Test the 1,000-gram and 1,001-gram boundary', 'Pass a negative rate to a record']} />
+
+</Depth>
+
+`List.<ShippingRule>of(...)` explicitly views the two different records as one interface type. Calls in the loop still reach each record's `feeInCents()` implementation, while `label()` reuses the interface default. The caller does not need an `instanceof` branch for each pricing class.
+
+This interface does not yet constrain rates to be nonnegative, and the third experiment exposes that gap. The domain contract must decide whether the record constructor or the rule method owns that check. Hiding an implementation behind an interface does not validate object state by itself.
+
+### Resolving default precedence and conflicts
+
+`Child` inherits both a superclass method and an interface default, so the class method wins. `Transfer` implements two unrelated interfaces and must override their conflicting method explicitly.
+
+```java title="DispatchRules.java"
+public class DispatchRules {
+    static class Parent {
+        public String source() {
+            return "class";
+        }
+    }
+
+    interface Named {
+        default String source() {
+            return "interface";
+        }
+    }
+
+    static final class Child extends Parent implements Named {}
+
+    interface Fast {
+        default String mode() {
+            return "fast";
+        }
+    }
+
+    interface Safe {
+        default String mode() {
+            return "safe";
+        }
+    }
+
+    static final class Transfer implements Fast, Safe {
+        @Override
+        public String mode() {
+            return Fast.super.mode() + "+" + Safe.super.mode();
+        }
+    }
+
+    public static void main(String[] args) {
+        System.out.println(new Child().source());
+        System.out.println(new Transfer().mode());
+    }
+}
+```
+
+```text
+class
+fast+safe
+```
+
+Deleting `Transfer.mode()` causes a compile-time error instead of an arbitrary runtime choice. `Fast.super.mode()` can name only an allowed direct superinterface; it does not make an arbitrary ancestor interface callable like a static utility class.
+
+`Child` does not override `source()`, but the concrete superclass method already satisfies the `Named` contract. The superclass does not even have to declare `implements Named`. The subclass declaration establishes the interface relationship as long as the inherited method has the right signature and visibility.
+
+### Composing a functional interface
+
+`Rule<T>` has only one abstract method, `test()`, so a lambda can implement it. The default `and()` method returns another `Rule<T>`, while a static method supplies a named base rule.
+
+```java title="ValidationPipeline.java"
+import java.util.Objects;
+
+public class ValidationPipeline {
+    @FunctionalInterface
+    interface Rule<T> {
+        boolean test(T value);
+
+        default Rule<T> and(Rule<? super T> other) {
+            Objects.requireNonNull(other);
+            return value -> test(value) && other.test(value);
+        }
+
+        static Rule<String> notBlank() {
+            return value -> value != null && !value.isBlank();
+        }
+    }
+
+    public static void main(String[] args) {
+        Rule<String> accountName = Rule.<String>notBlank()
+                .and(value -> value.startsWith("acct-"));
+
+        System.out.println(accountName.test("acct-alice"));
+        System.out.println(accountName.test("   "));
+        System.out.println(accountName.test("guest"));
+    }
+}
+```
+
+```text
+true
+false
+false
+```
+
+`and()` short-circuits. A blank string fails the first rule, so `startsWith()` never runs; `null` also stays out of the second rule. That behavior is part of the combinator's contract and deserves tests just as much as its parameter types.
+
+Adding a second, non-equivalent abstract method to `Rule` breaks both the `@FunctionalInterface` declaration and every lambda target. Adding a default or static method preserves the function descriptor, though a new default can still clash with another interface.
+
+### Keeping a static factory and private helper in the interface
+
+A static factory can hide a small implementation behind the interface, while a default method can reuse private helper logic. Neither method adds to a functional interface's abstract-method count.
+
+```java title="InterfaceHelpers.java"
+import java.util.Locale;
+import java.util.Objects;
+
+public class InterfaceHelpers {
+    @FunctionalInterface
+    interface AccountId {
+        String raw();
+
+        default String normalized() {
+            return normalize(raw());
+        }
+
+        static AccountId of(String raw) {
+            Objects.requireNonNull(raw);
+            return () -> raw;
+        }
+
+        private static String normalize(String raw) {
+            return raw.strip().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    public static void main(String[] args) {
+        AccountId account = AccountId.of(" ACCT-42 ");
+        System.out.println(account.normalized());
+        System.out.println(AccountId.of(" JOB-7 ").raw().strip());
+    }
+}
+```
+
+```text
+acct-42
+JOB-7
+```
+
+`of()` must be called through `AccountId` because implementations do not inherit static interface methods. `normalize()` is callable only inside the interface, so defaults can share implementation without expanding the API visible to implementing classes or callers.
+
+## Pitfalls
+
+### Treating a mutable object as an interface constant
+
+> [!PITFALL]
+> Interface fields are implicitly `public static final`, but `final` prevents reassignment only. `List<String> EVENTS = new ArrayList<>()` is still a public global list that every implementation and caller can mutate.
+
+**Fix:** expose only genuinely immutable values from an interface, and pass configuration and state into implementation constructors. If a constant exists only for interface implementation code, keep it behind a private static method or a separate internal class instead of expanding the public API.
+
+### Designing a large interface callers cannot fulfill
+
+> [!PITFALL]
+> An interface that requires reads, writes, deletion, bulk export, and event subscriptions forces a read-only implementation to throw `UnsupportedOperationException`. The type says an operation is available, but runtime behavior refuses it, so substitutability is already broken.
+
+**Fix:** split capabilities around what callers need and apply the <Term id="interface-segregation-principle">interface segregation principle</Term>. Depend on the smallest interface in method parameters; when a caller genuinely needs a capability group, compose it with a subinterface.
+
+### Hiding failure policy in a default method
+
+> [!PITFALL]
+> Generated code often catches `Exception` in a default method and returns `null`, an empty collection, or a success status. Every implementation gets shared code, but it also gets a retry, logging, or fallback policy that may be wrong for its context.
+
+**Fix:** use defaults to combine existing operations while preserving their failure semantics. The calling layer that owns the context should decide network retries, authorization failure, and transaction rollback. Give ordinary absence an explicit result type instead of swallowing unexpected exceptions.
+
+### Assuming a default method is automatically backward compatible
+
+> [!PITFALL]
+> Adding a default often lets old implementations run without an immediate rebuild, but it can turn a same-signature class method into an override or collide with a method from another interface. Binary, source, and behavioral compatibility are separate questions.
+
+**Fix:** run compatibility tests with old implementation binaries, then cleanly rebuild every implementation and caller. Check same-name methods, return types, exceptions, and side effects. A public interface change needs release notes and a migration path.
+
+### Treating a static method as inherited
+
+> [!PITFALL]
+> If `Parser.create()` is declared in an interface, `JsonParser.create()` does not become available merely because `JsonParser implements Parser`. Looking for the method through the implementation type fails to compile and obscures which API owns it.
+
+**Fix:** qualify a static method with its declaring interface. If construction must vary by implementation type, use a separate factory interface, constructors, or a registry instead of trying to simulate polymorphic dispatch with static methods.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models add a second abstract method to `@FunctionalInterface` to make a lambda "more complete," breaking every lambda call site. They also generate `default boolean equals(Object other)` or `default String toString()`, although an interface cannot use a default to override those public instance methods of `Object`. Other patches call a static interface factory as if implementations inherited it, or assert that adding a `default` is always compatible without checking same-signature methods in implementation classes and other superinterfaces.
+
+**Ask your AI to check**
+
+- List the declaration site and abstract/default status of every same-signature instance method in the interface graph, then derive the winner using class precedence and the most-specific-interface rule.
+- Cleanly compile every implementation and lambda call site with `javac -Xlint:all -Werror`, then separately run compatibility tests that pair old implementation binaries with the new interface.
+- List every interface field, default-method side effect, and exception translation, and state the owner, concurrency boundary, and lifetime of the resulting state.
+
+**Review checklist**
+
+- Run the same contract tests against at least two real implementations and one test double without branching on concrete classes in the tests.
+- Check for new abstract methods, conflicting defaults, mutable fields, and default declarations that conflict with `Object` methods.
+- Record separate source, binary, and behavioral compatibility conclusions for a public interface change; reject a bare claim of "backward compatible."
+
+**Prompt vocabulary**
+
+Use precise terms: `interface contract`, `nominal subtyping`, `default method`, `most-specific interface`, `class-wins rule`, `functional interface`, `single abstract method`, `SAM conversion`, `source compatibility`, and `binary compatibility`. Ask for a method-candidate table and a complete compiler command; "check polymorphism" is too vague to expose a conflict.
+
+<Depth level="deep">
+
+## Designing a stable contract boundary
+
+Start an interface from a caller's needs, not by copying every public method from an existing class. If a caller needs only `quote()`, do not also expose cache eviction, connection closing, and diagnostic state. Smaller interfaces make it easier for substitutes to fulfill the whole contract and reduce pressure to add methods later.
+
+Some code does not need an interface. An internal helper with one implementation, no substitution boundary, and no cross-module use may be clearer as a concrete class. Mechanically creating an interface for every class "for testing" often moves construction detail to another layer without creating a stable contract.
+
+Interfaces and abstract classes address different constraints:
+
+| Design constraint | Interface | Abstract class |
+| --- | --- | --- |
+| One class has several unrelated capabilities | Can implement several | Can extend only one class |
+| Share per-instance fields and construction | Not supported | Supported |
+| Provide a common method derived from the contract | Use `default` | Use a concrete instance method |
+| Restrict the implementation set | May use a `sealed` interface | May use a `sealed` abstract class |
+| Act as a lambda target | A functional interface can | Cannot |
+
+A default should build on abstract operations the interface already promises. `Collection.isEmpty()`, for example, can derive its result from `size()` without knowing implementation fields. If a default needs new state, a lock, a network client, or a database transaction, it has outgrown the context an interface owns and usually belongs in an implementation or coordinating service.
+
+The behavioral contract must cover valid input and failure boundaries. If implementations permit `null`, blocking calls, repeated execution, or concurrent calls, the interface should say so. Contract tests can form a suite that every implementation must pass, verifying substitution instead of merely confirming that each class compiles.
+
+Interface types may also have type parameters, as `Comparator<T>` and `Repository<T>` do. Those parameters should express real relationships between inputs and outputs; wildcard and erasure mechanics belong to the generics topic. The relevant point here is that substitutes must preserve the same semantics for one parameterized contract.
+
+## Interface member boundary rules
+
+Member classes and member interfaces nested in an interface are implicitly `public static`. They do not carry an interface instance, and they cannot access supposed interface instance fields because no such fields exist. Publishing a helper type as a nested interface member can accidentally expand the API when it is merely implementation detail.
+
+An interface may redeclare `equals(Object)`, `hashCode()`, or `toString()` as abstract to express documentation intent, but it cannot provide a `default` implementation override-equivalent to a non-private instance method of `Object`. This restriction keeps an interface default from displacing the class-method semantics every object already has.
+
+Counting a functional interface's abstract methods is not a matter of counting semicolons. Override-equivalent inherited methods may collapse into one function descriptor, while declarations corresponding to public `Object` methods do not add another abstract method. `@FunctionalInterface` delegates these rules to the compiler and is more reliable than manual counting.
+
+Default conflicts do not arise only when two direct interfaces spell the same method. A subinterface can override a parent default, and an abstract declaration can make the inheritance relationship require an implementation again. A review must gather override-equivalent signatures along the entire interface graph, not just search the implementing class's `implements` line.
+
+`InterfaceName.super.method()` is conflict-resolution syntax, not a general supertype reflection facility. The qualifier must name an allowed direct superinterface, and the call occurs inside an instance method of the implementing class. After selecting a default implementation, the override still has to preserve the final public contract.
+
+## Evolving a published interface
+
+A published interface faces source callers, already compiled implementations, and mixed versions at runtime. A change can preserve binary linkage but fail on source recompilation, or pass both and still alter results. Review the three dimensions separately for every interface change.
+
+Adding an abstract method leaves existing implementation source without an implementation at its next compilation. The Java Language Specification defines some such changes as binary compatible with existing binaries, yet an old implementation may still fail if execution reaches the new abstract method. "It links" is not a substitute for an end-to-end runtime test.
+
+Adding a default usually lets an old implementation continue because the interface supplies a body. The new method may still conflict with another interface; the Java Language Specification explicitly describes mixed binaries that throw `IncompatibleClassChangeError` when the method is invoked. A clean rebuild also finds source ambiguities that running an old binary cannot reveal.
+
+Adding a private or static method does not ask implementations for a body and is usually less risky than expanding the instance contract. A public static method still enlarges the API, however, and callers can depend on its name and behavior. Deleting a member, changing a signature, narrowing access, or changing exceptions and side effects needs its own compatibility analysis.
+
+Interface field constants introduce compile-time inlining. When callers use a compile-time constant, an old binary may retain the old value even while loading the updated interface at runtime. Do not publish changing configuration, protocol versions, or feature switches as interface constants and expect replacing one class file to update every caller.
+
+Functional interfaces are especially sensitive to evolution. A new abstract method removes the SAM property, so lambdas and method references no longer recompile. A new default preserves the abstract-method count but still needs conflict and behavior checks. Keeping `@FunctionalInterface` turns the first breakage into a direct error at the interface declaration.
+
+A public interface change needs at least two verification sets: a clean rebuild of all source against the new interface, and old implementation binaries running beside it. Contract tests must then compare behavior, exceptions, and side effects. Unit tests for the current module alone cannot cover external implementors or mixed deployments.
+
+</Depth>
+
+<Checkpoint id="java/interfaces" />
+
+## Further reading
+
+- [Java Language Specification 25: Interface Members](https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.2)
+- [Java Language Specification 25: Inheriting Methods with Override-Equivalent Signatures](https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.4.1.3)
+- [Java Language Specification 25: Functional Interfaces](https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.8)
+- [Java Language Specification 25: Interface Method Evolution](https://docs.oracle.com/javase/specs/jls/se25/html/jls-13.html#jls-13.5.7)
+- [Dev.java: Defining Interfaces](https://dev.java/learn/interfaces/defining-interfaces/)
