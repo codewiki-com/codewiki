@@ -151,3 +151,53 @@ test('the page describes itself as a TechArticle', async ({ page }) => {
   expect(article.inLanguage).toBe('en');
   expect(article.dateModified).toBe('2026-09-03');
 });
+
+test('every section offers to hand itself to an assistant', async ({ page }) => {
+  await openTopic(page);
+
+  // The button the markdown pipeline writes after each h2, carrying that heading's id.
+  const first = page.locator('#article h2').first();
+  const ask = page.locator('#article .sec-ask').first();
+  await expect(ask).toBeVisible();
+  await expect(ask).toHaveAttribute('data-section', (await first.getAttribute('id')) ?? '');
+
+  await ask.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // Scoped to that section, and quoting it: the panel names the heading it was opened from.
+  await expect(dialog.locator('.lbl')).toContainText(await first.innerText());
+});
+
+test('the action row opens the six Ask-AI presets for the page', async ({ page }) => {
+  await openTopic(page);
+
+  const trigger = page.locator('[data-ask-ai]');
+  await expect(trigger).toHaveAttribute('data-ready', 'true');
+  await trigger.click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.ask-row')).toHaveCount(6);
+  await expect(dialog.getByText('Explain it simpler')).toBeVisible();
+  await expect(dialog.getByText('Grade my explanation')).toBeVisible();
+
+  // Each preset offers both assistants, and the deep link carries the page in its query.
+  const claude = dialog.locator('.ask-row').first().getByRole('link').first();
+  const href = (await claude.getAttribute('href')) ?? '';
+  expect(href.startsWith('https://claude.ai/new?q=')).toBe(true);
+  expect(decodeURIComponent(href)).toContain('"Closures"');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
+test('the Markdown twin serves the page as plain Markdown', async ({ page }) => {
+  const response = await page.request.get('/python/closures.md');
+  expect(response.status()).toBe(200);
+  expect(response.headers()['content-type']).toContain('text/markdown');
+
+  const body = await response.text();
+  expect(body.startsWith('# Closures')).toBe(true);
+  expect(body).toContain('Source: https://codewiki.com/python/closures/');
+  expect(body).not.toContain('<TLDR>');
+});

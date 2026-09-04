@@ -9,6 +9,7 @@ import { remarkCallouts } from '@/markdown/remark-callouts';
 import { remarkDepth } from '@/markdown/remark-depth';
 import { rehypeCodebox } from '@/markdown/rehype-codebox';
 import { rehypeDepthHeadings } from '@/markdown/rehype-depth-headings';
+import { rehypeSectionActions } from '@/markdown/rehype-section-actions';
 import { parseFenceMeta } from '@/markdown/shiki-meta';
 
 describe('parseFenceMeta', () => {
@@ -298,5 +299,63 @@ describe('rehypeDepthHeadings', () => {
     // Only h2/h3 reach the table of contents, so nothing else is marked.
     expect(other.properties['data-depth']).toBeUndefined();
     expect((tree.children[2] as Element).properties['data-depth']).toBeUndefined();
+  });
+});
+
+describe('rehypeSectionActions', () => {
+  /** A heading as `rehypeHeadingIds` leaves it: text, and the id the anchors use. */
+  const h2 = (id?: string): Element => ({
+    type: 'element',
+    tagName: 'h2',
+    properties: id ? { id } : {},
+    children: [{ type: 'text', value: 'Late binding' }],
+  });
+
+  it('puts an ask button after every h2, as its sibling', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { 'data-depth': 'standard' },
+          children: [h2('late-binding'), { type: 'element', tagName: 'p', properties: {}, children: [] }],
+        },
+      ],
+    };
+    rehypeSectionActions()(tree);
+
+    const [heading, button, paragraph] = (tree.children[0] as Element).children as Element[];
+    expect(heading!.tagName).toBe('h2');
+    // The heading keeps its own children: the table of contents reads them.
+    expect(heading!.children).toHaveLength(1);
+    expect(button!.tagName).toBe('button');
+    expect(button!.properties).toEqual({
+      type: 'button',
+      className: ['sec-ask'],
+      'data-section': 'late-binding',
+      'data-i18n': 'ai.section',
+      'aria-label': 'Ask AI about this section',
+    });
+    expect(paragraph!.tagName).toBe('p');
+  });
+
+  it('leaves the deep teaser and unidentified headings alone', () => {
+    const tree: HastRoot = {
+      type: 'root',
+      children: [
+        {
+          type: 'element',
+          tagName: 'div',
+          properties: { className: ['depth-teaser'] },
+          children: [h2('teased')],
+        },
+        h2(),
+      ],
+    };
+    rehypeSectionActions()(tree);
+
+    expect((tree.children[0] as Element).children).toHaveLength(1);
+    expect(tree.children).toHaveLength(2);
   });
 });

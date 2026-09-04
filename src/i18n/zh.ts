@@ -202,4 +202,13 @@ export default {
   'ai.openClaude': '在 Claude 中打开',
   'ai.openChatGPT': '在 ChatGPT 中打开',
   'ai.copy': '复制提示词',
+  // Task 16
+  'ai.title': '问问你的 AI',
+  'ai.section': '让 AI 讲讲这一节',
+  'ai.feynman': '给我的复述打分',
+  'ai.scopePage': '关于本页',
+  'ai.scopeSection': '关于「{section}」',
+  'ai.copied': '已复制提示词',
+  'ai.copyFailed': '复制失败',
+  'ai.close': '关闭',
 } satisfies Record<keyof typeof en, string>;
