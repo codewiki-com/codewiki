@@ -1,6 +1,6 @@
 # codewiki — P2 Learning Layer Sub-spec
 
-Status: **draft for user review** (2026-09-04). Parent: `2026-09-03-codewiki-design.md` (master spec; §5.4–5.6, §6, §6.1 rows marked P2, §12). Mockups: `docs/design/mockups/p2/` and the P1 `Path.dc.html` / `Playground.dc.html`; canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137.
+Status: **approved 2026-09-04** (user delegated the open decisions to the design lead; see §7). Parent: `2026-09-03-codewiki-design.md` (master spec; §5.4–5.6, §6, §6.1 rows marked P2, §12). Mockups: `docs/design/mockups/p2/` and the P1 `Path.dc.html` / `Playground.dc.html`; canvas https://claude.ai/code/artifact/23900b82-1533-43f2-b3fc-eeb05070c137.
 
 This document turns the master spec's one-line P2 rows into behaviour precise enough to plan from. Where it is silent, the master spec and the mockups decide. Nothing here changes P1.
 
@@ -102,10 +102,10 @@ Astro: `PathMap`, `Sheet`/`Row`, `PracticeCard`, `InterviewQuestion`, `KataShell
 
 Unit: `srs.ts` (every rating path, clamps), `score.ts`, `bilingual.ts` (pairing, mismatch handling), `lz.ts` round trip, rules-pack generator (one topic → expected rules). E2E (Playwright): predict flow with flashcard enqueue; spotbug reveal; review kata four steps; checkpoint pass unlocks the map node; path map states from seeded localStorage; flashcards review with keyboard; interview reveal + FAQPage JSON-LD; cheatsheet print stylesheet (emulate `print`); bilingual toggle inserts N blocks = JSON length; playground runs Python and SQL, share link round-trips; prompt builder output contains the `.md` link and vocabulary. A11y: axe on each new page type in both themes. Budgets: topic pages unchanged (the new islands are lazy); practice and playground pages get their own Lighthouse URLs with the same ≥ 0.95 targets and a 300 kB script budget for the playground (CodeMirror).
 
-## 7. Open decisions (for the user)
+## 7. Decisions (taken 2026-09-04; the user delegated the call)
 
-1. Flashcards: four ratings (Again / Hard / Good / Easy, as mocked) or two (Again / Good) for simplicity.
-2. Cheatsheet print: two columns A4/Letter as mocked, or one column with larger type.
-3. Bilingual default layout: paired (mocked, default) with side-by-side only ≥ 1440 px, or side-by-side default on desktop.
-4. Review kata input: mark lines + optional comments (mocked) or mark lines only for launch.
-5. Playground editor: CodeMirror 6 (≈ 150 kB, lazy) or a plain `<textarea>` with the existing runners for launch and CodeMirror later.
+1. **Flashcards: four ratings** (Again / Hard / Good / Easy, keys 1–4). SM-2 needs the ease signal that two buttons cannot give, and the mockup already shows the intervals so the choice is informed.
+2. **Cheatsheet print: two columns** on A4 and Letter, 9.5 pt monospace for code, links as footnotes. Density is the point of a cheatsheet.
+3. **Bilingual: paired by default** (the other language under each block). Side by side is an option only at ≥ 1440 px, remembered in `prefs.bilingualLayout`.
+4. **Review kata: mark lines plus an optional one-line comment per marked line**, kept in memory only. Writing the comment is the skill being trained; the cost is one input per marked line.
+5. **Playground editor: CodeMirror 6, lazy-loaded on first focus**, with a `<textarea>` rendered first so the page works without it. The playground page carries its own script budget (300 kB); topic pages stay unchanged.
