@@ -236,4 +236,12 @@ export default {
   'ai.openClaude': 'Open in Claude',
   'ai.openChatGPT': 'Open in ChatGPT',
   'ai.copy': 'Copy prompt',
+  // Task 14
+  'glossary.sub': 'Every term the topics lean on, defined once in both languages.',
+  'glossary.count': '{count} terms',
+  'glossary.aliases': 'Also known as',
+  'glossary.usedIn': 'Used in',
+  'glossary.open': 'Glossary',
+  'glossary.prevTerm': 'Previous term',
+  'glossary.nextTerm': 'Next term',
 } as const;
