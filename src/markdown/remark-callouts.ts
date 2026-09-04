@@ -15,7 +15,7 @@ import type { Blockquote, Paragraph, Root } from 'mdast';
 import { visit } from 'unist-util-visit';
 
 /** Callout types and their English labels. Keys match the `callout.*` i18n keys. */
-const LABELS: Record<string, string> = {
+export const LABELS: Record<string, string> = {
   pitfall: 'Pitfall',
   note: 'Note',
   tip: 'Tip',
@@ -24,7 +24,7 @@ const LABELS: Record<string, string> = {
 };
 
 /** `[!TYPE]` on its own at the start of the blockquote's first paragraph. */
-const MARKER = /^\[!([A-Za-z]+)\][ \t]*\r?\n?/;
+export const MARKER = /^\[!([A-Za-z]+)\][ \t]*\r?\n?/;
 
 /** The label line rendered above the callout body. */
 function labelParagraph(type: string): Paragraph {

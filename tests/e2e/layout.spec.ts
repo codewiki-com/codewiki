@@ -29,6 +29,8 @@ const PATHS = [
   '/settings/',
   '/paths/python-from-zero/',
   '/zh/paths/python-from-zero/',
+  '/ai/prompt-builder/',
+  '/zh/ai/prompt-builder/',
 ];
 
 for (const viewport of VIEWPORTS) {

@@ -41,6 +41,33 @@ test('a concept card carries both languages of one pair', async ({ request }) =>
   expect(card.title.zh).toBe('闭包');
   expect(card.md.zh).toBe('https://codewiki.com/zh/python/closures.md');
   expect(card.terms.map((term: { id: string }) => term.id)).toContain('late-binding');
+  expect(card.pitfalls.length).toBeGreaterThanOrEqual(1);
+});
+
+test('Python rules are published as agent-readable Markdown', async ({ request }) => {
+  const response = await request.get('/rules/python/CLAUDE.md');
+  expect(response.ok()).toBe(true);
+  expect(response.headers()['content-type']).toContain('text/markdown');
+  const body = await response.text();
+  expect(body).toMatch(/^# Python rules/);
+  expect(body).toMatch(/^-[ ]\S/m);
+});
+
+test('the Python functions context pack contains the closures twin', async ({ request }) => {
+  const response = await request.get('/packs/python/functions-deeper.md');
+  expect(response.ok()).toBe(true);
+  const body = await response.text();
+  expect(body).toContain('[Closures](https://codewiki.com/python/closures/)');
+  expect(body).toContain('# Closures');
+  expect(body).toContain('Source: https://codewiki.com/python/closures/');
+});
+
+test('llms.txt lists the generated rules and context packs', async ({ request }) => {
+  const body = await (await request.get('/llms.txt')).text();
+  expect(body).toContain('## Rules packs');
+  expect(body).toContain('/rules/python/CLAUDE.md');
+  expect(body).toContain('## Context packs');
+  expect(body).toContain('/packs/python/functions-deeper.md');
 });
 
 test('the glossary and paths APIs are readable JSON', async ({ request }) => {

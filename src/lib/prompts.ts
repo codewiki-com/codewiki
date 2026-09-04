@@ -62,7 +62,7 @@ const LINK_LIMIT = 6_000;
  * character but a Chinese one to nine (three UTF-8 bytes, percent-escaped), so a prompt inside the
  * source bound can still be a 36 KB query — which a server is entitled to answer with 414.
  */
-const QUERY_LIMIT = 8_000;
+export const QUERY_LIMIT = 8_000;
 
 /** What a truncated prompt ends with, so the reader can see that it was cut. */
 const CUT_MARKER = ' […]';
@@ -88,7 +88,7 @@ export function buildPrompt(context: PromptContext): string {
 }
 
 /** How long this text is once it is in a query string. */
-const encodedLength = (text: string): number => encodeURIComponent(text).length;
+export const encodedLength = (text: string): number => encodeURIComponent(text).length;
 
 /**
  * A prefix of `text`, never splitting a surrogate pair: `encodeURIComponent` throws a URIError on
@@ -117,7 +117,7 @@ function boundary(text: string): number {
 }
 
 /** The prompt cut to what a URL can carry, under both bounds. */
-function forLink(prompt: string): string {
+export function forLink(prompt: string): string {
   if (prompt.length <= LINK_LIMIT && encodedLength(prompt) <= QUERY_LIMIT) return prompt;
 
   let cut = sliceSafely(prompt, Math.min(prompt.length, LINK_LIMIT));

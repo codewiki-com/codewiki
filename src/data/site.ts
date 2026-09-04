@@ -22,3 +22,7 @@ export const P3_NAV = false;
 
 /** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
 export const P2_RULES = false;
+
+// Task 14
+/** Append-only feature switch used by Task 14 surfaces. */
+export const P2_RULES_TASK_14 = true;

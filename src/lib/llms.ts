@@ -36,6 +36,13 @@ export interface LlmsEntry {
   body: string;
 }
 
+/** One generated file in the rules/context-pack sections of `/llms.txt`. */
+export interface LlmsGeneratedFile {
+  label: string;
+  url: string;
+  description: string;
+}
+
 /** What the site is, in the two sentences a model reads before the links. */
 const SUMMARY =
   'A bilingual (English and Chinese) programming reference and course. ' +
@@ -91,6 +98,8 @@ export function buildLlmsIndex(
   glossaryCount: number,
   pathsCount: number,
   cheatsheets: LlmsCheatsheet[] = [],
+  rulesPacks: LlmsGeneratedFile[] = [],
+  contextPacks: LlmsGeneratedFile[] = [],
 ): string {
   const english = byTrack(topics, 'en', (track) => track.name.en);
   const chinese = byTrack(topics, 'zh', (track) => track.name.zh);
@@ -108,6 +117,18 @@ export function buildLlmsIndex(
     chinese.length > 0 ? ['## Chinese', ...chinese].join('\n\n') : '',
     cheatsheets.length > 0
       ? ['## Cheatsheets', cheatsheets.map(cheatsheetBullet).join('\n')].join('\n\n')
+      : '',
+    rulesPacks.length > 0
+      ? [
+          '## Rules packs',
+          rulesPacks.map((file) => `- [${file.label}](${file.url}): ${file.description}`).join('\n'),
+        ].join('\n\n')
+      : '',
+    contextPacks.length > 0
+      ? [
+          '## Context packs',
+          contextPacks.map((file) => `- [${file.label}](${file.url}): ${file.description}`).join('\n'),
+        ].join('\n\n')
       : '',
     ['## Optional', optional].join('\n\n'),
   ]);
