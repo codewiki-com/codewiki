@@ -1,5 +1,5 @@
 import { defineConfig } from 'astro/config';
-import { unified } from '@astrojs/markdown-remark';
+import { rehypeHeadingIds, unified } from '@astrojs/markdown-remark';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import preact from '@astrojs/preact';
@@ -9,6 +9,7 @@ import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
 import { rehypeDepthHeadings } from './src/markdown/rehype-depth-headings.ts';
 import { remarkCallouts } from './src/markdown/remark-callouts.ts';
 import { remarkDepth } from './src/markdown/remark-depth.ts';
+import { rehypeSectionActions } from './src/markdown/rehype-section-actions.ts';
 import { shikiMetaTransformer } from './src/markdown/shiki-meta.ts';
 
 export default defineConfig({
@@ -30,7 +31,10 @@ export default defineConfig({
   markdown: {
     processor: unified({
       remarkPlugins: [remarkCallouts, remarkDepth],
-      rehypePlugins: [rehypeCodebox, rehypeDepthHeadings],
+      // `rehypeHeadingIds` is Astro's own; it normally runs after the configured plugins, so
+      // `rehype-section-actions` would not see the ids it needs. Running it here first is the
+      // documented way round that, and its later pass leaves the ids it already wrote alone.
+      rehypePlugins: [rehypeHeadingIds, rehypeCodebox, rehypeDepthHeadings, rehypeSectionActions],
     }),
     // `css-variables` maps every token to a `--astro-code-*` custom property, which global.css
     // points at the palette tokens, so code colours follow the theme without a second stylesheet.

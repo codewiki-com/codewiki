@@ -227,4 +227,13 @@ export default {
   'settings.replace': '覆盖',
   'settings.chooseFile': '选择备份文件',
   'settings.importFailed': '这个文件不是 codewiki 的备份文件。',
+  // Task 16
+  'ai.title': '问问你的 AI',
+  'ai.section': '让 AI 讲讲这一节',
+  'ai.feynman': '给我的复述打分',
+  'ai.scopePage': '关于本页',
+  'ai.scopeSection': '关于「{section}」',
+  'ai.copied': '已复制提示词',
+  'ai.copyFailed': '复制失败',
+  'ai.close': '关闭',
 } satisfies Record<keyof typeof en, string>;

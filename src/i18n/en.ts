@@ -262,4 +262,13 @@ export default {
   'settings.replace': 'Replace',
   'settings.chooseFile': 'Choose a backup file',
   'settings.importFailed': 'That file is not a codewiki backup.',
+  // Task 16
+  'ai.title': 'Ask your AI',
+  'ai.section': 'Ask AI about this section',
+  'ai.feynman': 'Grade my explanation',
+  'ai.scopePage': 'about this page',
+  'ai.scopeSection': 'about "{section}"',
+  'ai.copied': 'Prompt copied',
+  'ai.copyFailed': 'Copy failed',
+  'ai.close': 'Close',
 } as const;
