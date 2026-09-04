@@ -79,8 +79,20 @@ export interface Flashcards {
   cards: Flashcard[];
 }
 
+/**
+ * One page the command palette opened. Spec §6.2 writes `recents` as `{ pages: string[] }`; a URL
+ * alone cannot be listed again without re-reading the index, so an entry carries the title it was
+ * opened under and the time it was opened. `src/lib/search.ts` owns the read and write.
+ */
+export interface RecentPage {
+  url: string;
+  title: string;
+  /** ISO timestamp, so an entry can be aged out later without a second key. */
+  at: string;
+}
+
 export interface Recents {
-  pages: string[];
+  pages: RecentPage[];
 }
 
 export const DEFAULT_PREFS: Prefs = {

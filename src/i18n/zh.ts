@@ -236,4 +236,16 @@ export default {
   'ai.copied': '已复制提示词',
   'ai.copyFailed': '复制失败',
   'ai.close': '关闭',
+
+  // Task 15 — the command palette and the /search/ page.
+  'search.sub': '所有主题、术语和路径。索引随站点发布，完全在你的浏览器中运行。',
+  'search.recent': '最近浏览',
+  'search.other': '更多',
+  'search.results': '搜索结果',
+  'search.searching': '搜索中…',
+  'search.langFilter': '结果语言',
+  'search.closeLabel': '关闭搜索',
+  'search.hintClose': '关闭',
+  'search.unavailable': '此处无法搜索：索引由 pnpm build 生成。',
+  'search.openPage': '打开搜索页',
 } satisfies Record<keyof typeof en, string>;
