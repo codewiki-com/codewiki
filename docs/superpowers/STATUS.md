@@ -30,11 +30,12 @@ Read this first in any new session. Update it at every milestone and before star
 | P2 plan | `docs/superpowers/plans/2026-09-04-p2-learning-layer.md` written (17 tasks; P2a = 1–11, P2b = 12–17). Execution starts on branch `p2-learning-layer` from `main` after the P1 merge |
 | Content | 4 sample topics + 7 glossary terms + 1 quiz; 918 staged pairs; tiers 257/423/238 after the calibration pins |
 
-## Active work (updated 2026-09-04 06:30)
-- **P1**: Task 19 review to dispatch (package `faabc37..a734c3e` in the P1 ledger dir); sweep review running (report → `.worktrees/p1-visual-sweep/.superpowers/sdd/2026-09-03-p1-site-foundation/sweep-v1-report.md`, review package `review-faabc37..9080d23.diff`). Ledger: `.worktrees/p1-site-foundation/.superpowers/sdd/2026-09-03-p1-site-foundation/progress.md`.
-- **P0**: Task 12 in progress (controller-run Codex). If the background run was interrupted, re-run the same command: the journal skips finished topics and marks interrupted ones for retry. Ledger: `.worktrees/p0-content-pipeline/.superpowers/sdd/2026-09-03-p0-content-pipeline/progress.md`.
-- **P2**: plan ready; not started. First step when resuming after the P1 merge: `git worktree add .worktrees/p2-learning-layer -b p2-learning-layer main`, then superpowers:subagent-driven-development on the P2 plan (Task 1 first).
-- Resume rule: for every branch above, `git log --oneline -3` shows whether the implementer committed; if a `task-N-report.md` exists but no review entry is in the ledger, dispatch the task review before merging.
+## Active work (updated 2026-09-04 11:45 local)
+- **Routing (user, 2026-09-04):** to save Claude tokens, implementation and routine reviews go to Codex via `scripts/dev/codex-task.sh <worktree> <brief> <log>`; Fable plans, designs, rules and reviews the results. Opus subagents only as fallback.
+- **P1**: Task 19 review → Needs fixes; fix round 1 running on Codex in `.worktrees/p1-site-foundation` (brief `task-19-fix1-codex.md`, log scratchpad `codex-task19-fix1.log`). Sweep V1 complete on `p1-visual-sweep` (878f5c7) — merge into `p1-site-foundation` after the fix lands. Task 20 (Mermaid inline SVG) running on Codex in `.worktrees/p1-t20-mermaid` (brief `task-20-codex.md`, log `codex-task20.log`) — review, then merge. Then: contrast token pass (Fable), final whole-branch review, merge to `main`.
+- **P0**: Task 12 calibration — jwt done and reviewed (see `reports/polish/calibration.md`), prompt v2 landed (ced47d1); batch 2 (`cpp/move-semantics python/asyncio ai/langchain architecture/cap-theorem`, `--n 4`) running (log scratchpad `polish/batch2.log`, journal `reports/polish/state.json`). Next: Fable reviews the four pairs, finishes calibration.md, then Task 14 wave 1.
+- **P2**: plan ready (`docs/superpowers/plans/2026-09-04-p2-learning-layer.md`); starts after the P1 merge on branch `p2-learning-layer`, tasks dispatched to Codex one at a time with Fable review.
+- Resume rule: `git log --oneline -3` per branch; a `task-N-report.md` without a review entry in the ledger means "review pending"; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`.
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
