@@ -65,7 +65,9 @@ export function rehypeCodebox() {
     visit(tree, 'element', (node, index, parent) => {
       if (node.tagName !== 'pre' || !parent || index === undefined) return;
 
-      const lang = text(node, 'data-lang') ?? text(node, 'dataLanguage');
+      // Astro's own Shiki transformer writes the language as `dataLanguage`; a rehype plugin
+      // upstream of us may have written the dashed form instead.
+      const lang = text(node, 'data-lang') ?? text(node, 'dataLanguage') ?? text(node, 'data-language');
       if (!lang) return;
 
       const title = text(node, 'data-title');

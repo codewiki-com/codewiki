@@ -158,6 +158,20 @@ describe('remarkDepth', () => {
     expect(group.data.hProperties).toEqual({ 'data-depth': 'standard' });
     expect(group.children).toHaveLength(2);
   });
+
+  it('leaves the checkpoint unwrapped so no depth mode can hide it', () => {
+    const { tree, frontmatter } = runDepth(
+      ['alpha beta', '', '<Checkpoint id="python/closures" />', '', 'gamma'].join('\n'),
+    );
+
+    expect(tree.children.map((child) => child.type)).toEqual([
+      'depthGroup',
+      'mdxJsxFlowElement',
+      'depthGroup',
+    ]);
+    // Unwrapped, but still part of the Standard reading estimate.
+    expect(frontmatter.words).toEqual({ quick: 0, standard: 3, deep: 0 });
+  });
 });
 
 /** Minimal hast fixture: the `<pre>` Shiki hands to `rehype-codebox`, with the meta already applied. */

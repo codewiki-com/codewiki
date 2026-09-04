@@ -139,6 +139,7 @@ export default {
 
   'code.copy': 'Copy',
   'code.copied': 'Copied',
+  'code.copyFailed': 'Copy failed',
   'code.run': 'Run',
   'code.running': 'Running…',
   'code.reset': 'Reset',

@@ -60,6 +60,13 @@ function levelOf(node: RootContent): DepthLevel {
   return level === 'quick' || level === 'deep' ? level : 'standard';
 }
 
+/**
+ * Components that stay top-level instead of joining a `standard` group. `<Depth>` and `<TLDR>`
+ * declare their own `data-depth`; `<Checkpoint>` declares none on purpose, because the checkpoint
+ * has to stay on the page at every depth. Its words still count towards Standard.
+ */
+const UNWRAPPED = new Set(['Depth', 'TLDR', 'Checkpoint']);
+
 /** Nodes that carry no reading weight: raw HTML, imports and expressions. */
 const SKIPPED = new Set(['html', 'mdxjsEsm', 'mdxFlowExpression', 'mdxTextExpression']);
 
@@ -101,8 +108,7 @@ export function remarkDepth() {
     for (const node of tree.children) {
       const level = levelOf(node);
       words[level] += countNodeWords(node as AnyNode, locale);
-      // `<Depth>` and `<TLDR>` already carry a `data-depth`, so they stay top-level.
-      if (isJsx(node) && (node.name === 'Depth' || node.name === 'TLDR')) {
+      if (isJsx(node) && UNWRAPPED.has(node.name ?? '')) {
         flush();
         grouped.push(node);
       } else {

@@ -117,6 +117,7 @@ export default {
   'checkpoint.soon': '检查点将在「练习」板块上线',
   'code.copy': '复制',
   'code.copied': '已复制',
+  'code.copyFailed': '复制失败',
   'code.run': '运行',
   'code.running': '运行中…',
   'code.reset': '重置',
