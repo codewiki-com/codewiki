@@ -72,10 +72,17 @@ function resolveTarget(pathname) {
   const relative = clean.replace(/^\/+/, '');
   const direct = path.join(DIST, relative);
   // Keep the check inside dist/: a `../` escape is a dead link, not a file to serve.
-  if (!direct.startsWith(DIST)) return undefined;
+  if (direct !== DIST && !direct.startsWith(DIST + path.sep)) return undefined;
 
-  const hasExtension = path.extname(clean) !== '' && !clean.endsWith('/');
-  if (hasExtension) return existsSync(direct) && statSync(direct).isFile() ? direct : undefined;
+  // A path that names a file is that file.
+  if (path.extname(clean) !== '' && !clean.endsWith('/')) {
+    return existsSync(direct) && statSync(direct).isFile() ? direct : undefined;
+  }
+
+  /* Everything else is a directory URL, and `trailingSlash: 'always'` serves those at one URL
+     only: `/tracks/` is `dist/tracks/index.html` and `/tracks` is a 404, whatever sits on disk.
+     So an extensionless path without the slash is a miss even when the directory exists. */
+  if (!clean.endsWith('/')) return undefined;
 
   const index = path.join(direct, 'index.html');
   return existsSync(index) && statSync(index).isFile() ? index : undefined;
