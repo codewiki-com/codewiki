@@ -1,4 +1,5 @@
 import {
+  cardSources,
   dueFlashcards,
   flushStore,
   getContinue,
@@ -70,12 +71,42 @@ describe('guarded preference reads', () => {
   it('replaces invalid preference fields with their defaults', () => {
     localStorage.setItem(
       KEYS.prefs,
-      JSON.stringify({ theme: 'purple', depth: 'quick', bilingual: 'sideways', fontSize: 'huge' }),
+      JSON.stringify({
+        theme: 'purple',
+        depth: 'quick',
+        bilingual: 'sideways',
+        fontSize: 'huge',
+        plan: 45,
+        bilingualLayout: 'columns',
+        interviewReveal: 'sometimes',
+      }),
     );
     expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual({
       ...DEFAULT_PREFS,
       depth: 'quick',
     });
+  });
+
+  it('preserves valid learning-layer preferences', () => {
+    const stored: Prefs = {
+      ...DEFAULT_PREFS,
+      plan: 60,
+      bilingualLayout: 'side',
+      interviewReveal: 'all',
+      cardSources: { terms: false, quiz: true, manual: false },
+    };
+    localStorage.setItem(KEYS.prefs, JSON.stringify(stored));
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual(stored);
+  });
+
+  it('defaults invalid flashcard source fields to on', () => {
+    localStorage.setItem(
+      KEYS.prefs,
+      JSON.stringify({ ...DEFAULT_PREFS, cardSources: { terms: false, quiz: 'yes' } }),
+    );
+    const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
+    expect(cardSources(prefs)).toEqual({ terms: false, quiz: true, manual: true });
+    expect(cardSources(DEFAULT_PREFS)).toEqual({ terms: true, quiz: true, manual: true });
   });
 });
 

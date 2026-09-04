@@ -25,6 +25,9 @@ export type Theme = 'system' | 'light' | 'dark';
 export type Depth = 'quick' | 'standard' | 'deep';
 export type BilingualMode = 'off' | 'en-zh' | 'zh-en';
 export type FontSize = 's' | 'm' | 'l';
+export type Plan = 15 | 30 | 60;
+export type BilingualLayout = 'paired' | 'side';
+export type RevealMode = 'one' | 'all';
 
 export interface Prefs {
   theme: Theme;
@@ -33,6 +36,12 @@ export interface Prefs {
   fontSize: FontSize;
   /** Last language the visitor chose, used to offer the other locale. */
   lang?: Locale;
+  /** Minutes a day the reader plans to spend; drives the "about N weeks" line on paths. */
+  plan?: Plan;
+  bilingualLayout?: BilingualLayout;
+  interviewReveal?: RevealMode;
+  /** Flashcard sources; every source defaults to on when the key is absent. */
+  cardSources?: { terms: boolean; quiz: boolean; manual: boolean };
 }
 
 /** One entry per topic read, keyed by `${track}/${slug}`. */
@@ -40,6 +49,7 @@ export interface TopicProgress {
   readPct: number;
   completedAt?: string;
   lastAt: string;
+  termsAdded?: boolean;
 }
 
 export interface QuizProgress {
@@ -67,12 +77,16 @@ export interface Progress {
 export interface Flashcard {
   id: string;
   kind: 'term' | 'quiz';
+  /** `glossary:{term}` or `quiz:{track}/{slug}#{item}` — what the card is about. */
   ref: string;
   /** ISO date the card comes back, compared against "now" as a date. */
   due: string;
   interval: number;
   ease: number;
   reps: number;
+  suspended?: boolean;
+  /** Where the card came from, for the source toggles. */
+  source?: 'terms' | 'quiz' | 'manual';
 }
 
 export interface Flashcards {
@@ -100,6 +114,9 @@ export const DEFAULT_PREFS: Prefs = {
   depth: 'standard',
   bilingual: 'off',
   fontSize: 'm',
+  plan: 30,
+  bilingualLayout: 'paired',
+  interviewReveal: 'one',
 };
 
 export const EMPTY_PROGRESS: Progress = { topics: {}, quizzes: {}, paths: {} };
@@ -128,13 +145,31 @@ function oneOf<T extends string>(value: unknown, choices: readonly T[], fallback
 /** Validates each preference independently, so one corrupt field cannot poison the others. */
 export function sanitizePrefs(value: Record<string, unknown>): Prefs {
   const lang = oneOf(value.lang, ['en', 'zh'] as const, '' as Locale | '');
+  const sources = isRecord(value.cardSources)
+    ? {
+        terms: typeof value.cardSources.terms === 'boolean' ? value.cardSources.terms : true,
+        quiz: typeof value.cardSources.quiz === 'boolean' ? value.cardSources.quiz : true,
+        manual: typeof value.cardSources.manual === 'boolean' ? value.cardSources.manual : true,
+      }
+    : undefined;
   return {
     theme: oneOf(value.theme, ['system', 'light', 'dark'] as const, DEFAULT_PREFS.theme),
     depth: oneOf(value.depth, ['quick', 'standard', 'deep'] as const, DEFAULT_PREFS.depth),
     bilingual: oneOf(value.bilingual, ['off', 'en-zh', 'zh-en'] as const, DEFAULT_PREFS.bilingual),
     fontSize: oneOf(value.fontSize, ['s', 'm', 'l'] as const, DEFAULT_PREFS.fontSize),
+    plan:
+      typeof value.plan === 'number' && ([15, 30, 60] as const).includes(value.plan as Plan)
+        ? (value.plan as Plan)
+        : 30,
+    bilingualLayout: oneOf(value.bilingualLayout, ['paired', 'side'] as const, 'paired'),
+    interviewReveal: oneOf(value.interviewReveal, ['one', 'all'] as const, 'one'),
     ...(lang ? { lang } : {}),
+    ...(sources ? { cardSources: sources } : {}),
   };
+}
+
+export function cardSources(p: Prefs) {
+  return p.cardSources ?? { terms: true, quiz: true, manual: true };
 }
 
 /** Reads one key, returning `fallback` for a missing, unreadable or malformed value. */
