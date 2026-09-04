@@ -12,6 +12,7 @@ const NAMES = [
   'check',
   'play',
   'copy',
+  'doc',
   'chevron-down',
   'arrow-right',
   'warning',

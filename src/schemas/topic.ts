@@ -6,6 +6,8 @@ const trackSlugs = TRACKS.map((t) => t.slug) as [string, ...string[]];
 
 export const difficulty = z.enum(['beginner', 'intermediate', 'advanced']);
 
+export type Difficulty = z.infer<typeof difficulty>;
+
 /** Frontmatter of a topic article (one file per language). Spec §4. */
 export const topicSchema = z
   .object({
