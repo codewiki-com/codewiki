@@ -573,4 +573,13 @@ export default {
   'search.hintClose': '关闭',
   'search.unavailable': '此处无法搜索：索引由 pnpm build 生成。',
   'search.openPage': '打开搜索页',
+
+  // Task 15
+  'ask.explainCode': '逐行讲解这段代码',
+  'ask.port': '移植到另一种语言',
+  'ask.tests': '为这段代码编写测试',
+  'ask.checkPitfall': '检查我的代码是否有这个陷阱',
+  'ask.block': '让 AI 讲讲这个代码块',
+  'nudge.title': '试着找出漏洞',
+  'nudge.try': '试一试',
 } satisfies Record<keyof typeof en, string>;

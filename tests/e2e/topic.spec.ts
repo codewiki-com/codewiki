@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
+import LZString from 'lz-string';
 import { unified } from 'unified';
 import rehypeStringify from 'rehype-stringify';
 import remarkParse from 'remark-parse';
@@ -255,6 +256,49 @@ test('every section offers to hand itself to an assistant', async ({ page }) => 
   await expect(dialog).toBeVisible();
   // Scoped to that section, and quoting it: the panel names the heading it was opened from.
   await expect(dialog.locator('.lbl')).toContainText(await first.innerText());
+});
+
+test('a code block opens its three focused Ask-AI presets', async ({ page }) => {
+  await openTopic(page);
+  await expect(page.locator('[data-ask-ai]')).toHaveAttribute('data-ready', 'true');
+
+  const ask = page.locator('#article figure.codebox + .ask-block').first();
+  await expect(ask).toHaveAttribute('data-preset', 'explain-code|port|tests');
+  await ask.click();
+
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.ask-row')).toHaveCount(3);
+  await expect(dialog.getByText('Explain this code line by line')).toBeVisible();
+  await expect(dialog.getByText('Write tests for this code')).toBeVisible();
+
+  const language = dialog.locator('select.ask-language');
+  await expect(language.locator('option')).toHaveCount(11);
+  await language.selectOption('Rust');
+
+  const portHref = await dialog.locator('.ask-row').nth(1).getByRole('link').first().getAttribute('href');
+  expect(decodeURIComponent(portHref ?? '')).toContain('Port this code block to Rust.');
+  expect(decodeURIComponent(portHref ?? '')).toContain('def make_counter():');
+});
+
+test('a pitfall asks for reader code and a nudge opens the challenged example', async ({ page }) => {
+  await openTopic(page);
+  await expect(page.locator('[data-ask-ai]')).toHaveAttribute('data-ready', 'true');
+
+  const pitfallAsk = page.locator('#article .callout-pitfall + .ask-block').first();
+  await pitfallAsk.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.ask-row')).toHaveCount(1);
+  const code = 'readers.append(lambda: index)';
+  await dialog.locator('textarea.ask-code').fill(code);
+  const href = await dialog.getByRole('link').first().getAttribute('href');
+  expect(decodeURIComponent(href ?? '')).toContain(code);
+
+  await page.keyboard.press('Escape');
+  const nudge = page.locator('#article .nudge').first();
+  await expect(nudge.locator('li')).toHaveCount(2);
+  const playground = await nudge.getByRole('link').first().getAttribute('href');
+  const encoded = new URL(playground ?? '', 'http://localhost').searchParams.get('code');
+  expect(LZString.decompressFromEncodedURIComponent(encoded ?? '')).toContain('# try: an empty list');
 });
 
 test('the action row opens the six Ask-AI presets for the page', async ({ page }) => {

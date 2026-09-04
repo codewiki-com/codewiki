@@ -603,4 +603,13 @@ export default {
   'search.hintClose': 'close',
   'search.unavailable': 'Search is unavailable here: the index is built by pnpm build.',
   'search.openPage': 'Open the search page',
+
+  // Task 15
+  'ask.explainCode': 'Explain this code line by line',
+  'ask.port': 'Port to another language',
+  'ask.tests': 'Write tests for this code',
+  'ask.checkPitfall': 'Check my code for this pitfall',
+  'ask.block': 'Ask AI about this block',
+  'nudge.title': 'Try to break it',
+  'nudge.try': 'Try it',
 } as const;
