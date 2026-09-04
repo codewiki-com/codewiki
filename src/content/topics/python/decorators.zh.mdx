@@ -1,0 +1,450 @@
+---
+title: Python 装饰器
+description: 装饰器在定义时替换函数或类的绑定；掌握包装、堆叠、元数据、类型与异步边界，才能保持被装饰对象的契约。
+track: python
+section: functions-deeper
+difficulty: intermediate
+tags: [decorators, wrapper, functools, callable]
+prerequisites: [python/functions, python/args-kwargs, python/closures]
+related: [python/functools, python/lru-cache, python/descriptors, python/type-hints]
+terms: [decorator, decorator-factory, first-class-function, function-signature, closure]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: python/decorators
+sources:
+  - { title: 'Python glossary - Decorator', url: 'https://docs.python.org/3.14/glossary.html#term-decorator' }
+  - { title: 'Python language reference - Function definitions', url: 'https://docs.python.org/3.14/reference/compound_stmts.html#function-definitions' }
+  - { title: 'Python functools - wraps', url: 'https://docs.python.org/3.14/library/functools.html#functools.wraps' }
+  - { title: 'Python inspect - signature', url: 'https://docs.python.org/3.14/library/inspect.html#inspect.signature' }
+  - { title: 'Python typing - ParamSpec', url: 'https://docs.python.org/3.14/library/typing.html#typing.ParamSpec' }
+  - { title: 'Python descriptor guide - Functions and methods', url: 'https://docs.python.org/3.14/howto/descriptor.html#functions-and-methods' }
+origin: old/src/content/docs/python/decorators.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    <Term id="decorator">装饰器（decorator）</Term>是在函数或类定义完成后接收该对象，并把返回值重新绑定到原名称的可调用对象。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    装饰发生在定义时，调用发生在之后；忽略这两个阶段，容易弄错堆叠顺序、共享状态、异步行为和方法绑定。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    明确输入与返回契约，函数包装器使用 `functools.wraps()`，并分别测试装饰阶段、普通调用、异常路径和异步调用。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+Python 装饰器把一个可调用对象转换成另一个对象。最常见的函数装饰器接收函数，返回一个在调用前后加入行为的包装函数；类也可以作为输入。`@trace` 写在 `def` 上方时，名称最终绑定的是 `trace()` 的返回值，不一定还是原函数。
+
+这种机制建立在<Term id="first-class-function">一等函数（first-class function）</Term>之上：函数能作为实参传入，也能作为返回值传出。包装函数通常还是<Term id="closure">闭包（closure）</Term>，通过外层绑定找到原函数和配置。装饰器本身也可以是函数、类或其他可调用对象。
+
+装饰器适合表达多个函数都必须遵守的窄规则，例如记录调用、授权检查、重试入口或注册声明。它把规则放在一个实现中，又让被装饰函数保留自己的业务主体。规则若改变返回类型、吞掉异常或依赖隐式全局状态，`@` 语法反而会藏住重要行为，此时显式函数调用或对象组合更清楚。
+
+你会在标准库的 `@property`、`@classmethod`、`@staticmethod`、`@functools.cache` 和 `@functools.singledispatch` 中遇到装饰器。Web 路由、测试夹具和命令注册也经常采用同一语法，但各框架为返回对象规定了额外契约。理解 Python 自己的替换规则，是阅读这些框架约定的前提。
+
+装饰器不是运行函数时临时打开的开关。执行到定义语句时，Python 就会计算装饰器表达式、调用装饰器并完成名称绑定；模块导入通常会触发这一过程。包装器的函数体则要等到之后真正调用时才运行。
+
+## 工作原理
+
+执行一个带装饰器的函数定义时，Python 先在外层作用域中从上到下计算各装饰器表达式，再创建原函数对象。得到的可调用对象从内到外接收该对象。最外层装饰器的返回值最后绑定到函数名称。
+
+下面的等价关系最值得记住。若源码从上到下写成 `@outer(config)`、`@inner` 和 `def handle(...): ...`，最终绑定近似为 `handle = outer(config)(inner(handle))`；差别是原函数不会先临时绑定到 `handle`。装饰器表达式按书写顺序求值，应用则从最靠近 `def` 的一层向外进行。
+
+定义阶段和调用阶段必须分开分析。工厂 `outer(config)` 在定义阶段运行并产生真正的装饰器，`inner(handle)` 与外层应用也在该阶段完成。以后调用 `handle()` 时，控制流从最外层包装器进入，逐层到达原函数，再按相反方向返回。
+
+| 阶段 | 发生的事 | 常见意外 |
+| --- | --- | --- |
+| 执行定义 | 计算装饰器表达式并创建原函数 | 导入模块时就发生注册或 I/O |
+| 应用装饰器 | 从内到外传入并替换对象 | 工厂与包装器层级少写或多写一层 |
+| 绑定名称 | 名称指向最外层返回值 | 原函数只能通过保存的引用访问 |
+| 调用名称 | 包装链从外到内执行 | 堆叠顺序改变授权、日志或事务语义 |
+
+### 包装器必须保住契约
+
+一个透明函数装饰器至少要转发所有实参、返回原结果，并让未处理异常继续传播。`*args` 和 `**kwargs` 能转发调用形状，但它们本身没有保留<Term id="function-signature">函数签名（function signature）</Term>。包装器若故意增加参数、改变同步形式或修改返回类型，就应把变化当成新的公开 API，而不是继续声称完全透明。
+
+`functools.wraps(func)` 会把常用元数据复制到包装函数，并设置 `__wrapped__` 指回被包装对象。`inspect.signature()` 默认沿着这条链寻找原签名，文档工具和部分框架也依赖它。`wraps()` 不会修复错误的参数转发、返回值、异常策略或同步／异步边界。
+
+运行时元数据与静态类型是两套机制。类型保持型装饰器可以用 `ParamSpec` 表示原参数列表，用 `TypeVar` 表示返回类型；`@wraps` 仍然需要保留运行时检查链。类型注解不会验证调用，也不能证明包装器确实原样返回结果。
+
+### 函数、方法与类
+
+普通函数实现了描述符绑定，因此放在类属性中后，通过实例访问会自动得到绑定方法。返回普通函数的装饰器通常自然保留这一行为。若装饰器返回只有 `__call__()`、却没有合适 `__get__()` 的实例，`obj.method()` 不会自动注入 `self`。
+
+`@classmethod`、`@staticmethod` 与 `@property` 返回的是描述符对象，次序会影响外层装饰器收到什么。一个只接受普通函数并读取 `__name__` 的装饰器，未必能包装任意描述符。对每种支持的目标都应明确约束，并通过类和实例两种访问路径测试。
+
+类装饰器在类对象创建后接收它，并把返回值绑定到类名。它可以登记或修改这个类，但装饰过程不会因为之后定义了子类而自动再执行。若类装饰器返回函数来实现单例，原名称就不再是类，`isinstance()`、继承和类型工具会得到完全不同的对象。
+
+## 示例
+
+下面四个示例依次展示透明包装、带参数工厂、堆叠顺序与异步边界。输出来自本地 Python 3.12.13；示例同时按目标版本 Python 3.14 的文档核对，未使用两者之间有差异的 API。
+
+### 透明地记录一次调用
+
+`trace()` 返回的新函数负责记录入口和返回值，然后把结果交还调用方。`@wraps(func)` 让名称、文档和默认检查签名仍指向 `total()` 的公开契约。
+
+<Depth level="quick">
+
+```python run title="trace_call.py"
+from functools import wraps
+from inspect import signature
+
+
+def trace(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"call {func.__name__}: args={args!r}, kwargs={kwargs!r}")
+        result = func(*args, **kwargs)
+        print(f"return {result!r}")
+        return result
+
+    return wrapper
+
+
+@trace
+def total(price: int, quantity: int = 1) -> int:
+    """Calculate an order total."""
+    return price * quantity
+
+
+print(total(12, quantity=3))
+print(total.__name__)
+print(signature(total))
+print(total.__wrapped__(5, 2))
+```
+
+```text
+call total: args=(12,), kwargs={'quantity': 3}
+return 36
+36
+total
+(price: int, quantity: int = 1) -> int
+10
+```
+
+<TryToBreak items={['删除 @wraps(func)', '让 total() 抛出异常', '省略 quantity', '传入未知关键字实参']} />
+
+</Depth>
+
+`total` 是包装函数，但 `total.__wrapped__` 保留了通往原函数的明确链接。直接调用这个属性会绕过日志，所以它适合检查、测试或有意绕过某层行为，不应被当作普通业务入口。
+
+日志代码使用 `repr()` 展示实参只是为了得到确定输出。真实系统不应无条件记录口令、令牌或个人数据，而且打印完整返回对象可能既泄密又很昂贵。数据脱敏属于装饰器契约的一部分。
+
+### 用装饰器工厂配置重试
+
+`retry_on()` 先接收异常类型与次数，再返回接收函数的装饰器。真正的包装器只捕获声明过的异常；次数无效时，工厂在定义阶段立刻拒绝配置。
+
+```python run title="retry_factory.py"
+from functools import wraps
+
+
+def retry_on(exception_type, *, attempts):
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+
+    def decorate(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exception_type as error:
+                    print(f"attempt {attempt}: {error}")
+                    if attempt == attempts:
+                        raise
+
+        return wrapper
+
+    return decorate
+
+
+responses = iter([
+    ConnectionError("temporary outage"),
+    ConnectionError("temporary outage"),
+    "12 units",
+])
+
+
+@retry_on(ConnectionError, attempts=3)
+def fetch_inventory():
+    outcome = next(responses)
+    if isinstance(outcome, Exception):
+        raise outcome
+    return outcome
+
+
+print(fetch_inventory())
+```
+
+```text
+attempt 1: temporary outage
+attempt 2: temporary outage
+12 units
+```
+
+三层调用各有一个职责：`retry_on(...)` 配置工厂，`decorate(func)` 接收被装饰函数，`wrapper(...)` 处理每次调用。把其中两层混在一起，常会导致 `@retry_on(...)` 得到的不是装饰器，或者定义时就误调业务函数。
+
+这个示例刻意没有加入等待。生产重试还要规定退避、抖动、截止时间、取消和幂等性，而且只能重试被判定为临时故障的异常。装饰器能复用策略，却不能替业务操作决定重复执行是否安全。
+
+### 看清堆叠的两个顺序
+
+`layer()` 在定义阶段打印 `build`，返回的装饰器打印 `apply`，包装器在调用阶段打印 `enter` 与 `leave`。一份输出同时暴露表达式求值、装饰器应用和包装链调用的顺序。
+
+```python run title="stack_order.py"
+from functools import wraps
+
+
+def layer(name):
+    print(f"build {name}")
+
+    def decorate(func):
+        print(f"apply {name} to {func.__name__}")
+
+        @wraps(func)
+        def wrapper():
+            print(f"enter {name}")
+            result = func()
+            print(f"leave {name}")
+            return result
+
+        return wrapper
+
+    return decorate
+
+
+@layer("outer")
+@layer("inner")
+def render_invoice():
+    print("body")
+    return "done"
+
+
+print(render_invoice())
+```
+
+```text
+build outer
+build inner
+apply inner to render_invoice
+apply outer to render_invoice
+enter outer
+enter inner
+body
+leave inner
+leave outer
+done
+```
+
+表达式从上到下求值，所以先出现 `build outer`。应用从下到上，调用从外到内，返回再从内到外。仅说「装饰器从下到上执行」会把三个不同阶段混为一谈。
+
+顺序会改变真实语义。把审计放在授权外层，可以记录被拒绝的尝试；放在授权内层，只能看到通过的调用。事务、缓存和重试的次序也会改变哪些结果被缓存、哪次尝试属于同一事务。
+
+### 保持异步边界
+
+异步函数的透明包装器也必须是 `async def`，并在自己的 `try` 范围内 `await` 原函数。这样异常和清理发生在包装器仍控制的执行期间，调用方看到的仍是协程函数。
+
+```python run title="async_wrapper.py"
+import asyncio
+import inspect
+from collections.abc import Awaitable, Callable
+from functools import wraps
+from typing import ParamSpec, TypeVar
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def trace_async(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
+    @wraps(func)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        print(f"start {func.__name__}")
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            print(f"finish {func.__name__}")
+
+    return wrapper
+
+
+@trace_async
+async def load_order(order_id: int) -> str:
+    await asyncio.sleep(0)
+    return f"order:{order_id}"
+
+
+async def main():
+    print(inspect.iscoroutinefunction(load_order))
+    print(await load_order(42))
+
+
+asyncio.run(main())
+```
+
+```text
+True
+start load_order
+finish load_order
+order:42
+```
+
+如果普通 `def wrapper` 只返回 `func(...)`，返回的是尚未执行的协程对象。包装器里的计时、异常捕获和清理会覆盖「创建协程」而不是「运行协程」，`inspect.iscoroutinefunction()` 也会把外层视为同步函数。
+
+`finally` 会在成功、异常和取消路径上执行，但它不应吞掉异常或取消。需要同时支持同步与异步函数时，应在装饰阶段检查目标并生成两种不同包装器，而不是让一个同步包装器猜测返回值是否可等待。
+
+## 陷阱
+
+### 忘记 `functools.wraps`
+
+> [!PITFALL]
+> 没有 `@wraps(func)` 时，外部看到的是名为 `wrapper` 的宽泛函数，原文档、注解与 `__wrapped__` 链也会丢失。依赖检查签名的路由、依赖注入、测试或文档工具可能因此读错接口。
+
+**修复方法：** 在每个返回普通函数的透明包装层上使用 `@wraps(func)`，并断言 `__name__`、`inspect.signature()` 与 `__wrapped__`。若装饰器故意改签名，就明确发布新签名，不要借 `wraps()` 假装没有变化。
+
+### 丢失返回值或异常
+
+> [!PITFALL]
+> 包装器调用了 `func(*args, **kwargs)` 却没有 `return`，会把所有成功结果悄悄改成 `None`。捕获 `Exception` 后返回默认值同样会改写原契约，还可能把程序错误伪装成正常结果。
+
+**修复方法：** 透明包装器直接返回原结果，并只捕获策略明确要求处理的异常。测试一个非 `None` 返回值、一个预期异常，以及包装器自身前置或后置逻辑失败的路径。
+
+### 把定义时副作用当成调用时行为
+
+> [!PITFALL]
+> 注册、打开连接或读取可变配置若写在装饰器工厂或 `decorate()` 中，通常会在导入模块时发生。测试导入、自动重载和多进程启动可能重复这些副作用，失败还会阻止模块加载。
+
+**修复方法：** 只把稳定配置验证和必要注册留在定义阶段。资源获取应放进有明确生命周期的调用或应用启动流程，并分别测试「只导入模块」和「实际调用函数」。
+
+### 凭直觉排列多个装饰器
+
+> [!PITFALL]
+> `@cache`、`@authorize`、`@retry` 和 `@transaction` 的排列不是排版选择。缓存放在授权外层可能跨权限复用结果，重试放在事务外层或内层会改变每次尝试是否得到新事务。
+
+**修复方法：** 把堆叠展开成嵌套调用，为每层写出输入、输出和异常边界。用事件列表断言进入与退出顺序，并覆盖拒绝、缓存命中、一次失败后成功和最终失败。
+
+### 用一个实现同时包装同步与异步函数
+
+> [!PITFALL]
+> 同步包装器返回协程，或异步包装器对同步结果执行 `await`，都会破坏调用契约。只检查调用返回值是否可等待也太晚，因为包装器的类型和框架识别在调用前就可能已经错误。
+
+**修复方法：** 在装饰阶段用 `inspect.iscoroutinefunction()` 分支，生成 `def` 和 `async def` 两个包装器，或者提供两个明确装饰器。两条路径都要测试成功、异常与元数据；异步路径还要测试取消。
+
+### 让装饰器实例意外共享状态
+
+> [!PITFALL]
+> 同一个有状态装饰器实例若用于多个函数，计数器、缓存或限流窗口可能全部共享。即使每个函数各有包装器，包装器闭包捕获的仍可能是同一个装饰器对象。
+
+**修复方法：** 标明状态属于装饰器配置、被装饰函数、实例、请求还是调用。至少装饰两个函数并交错调用；共享若不是明确契约，就在每次装饰时创建独立状态，或改用更容易表达所有权的类。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常生成一个看似通用的 `def wrapper(*args, **kwargs)`，却遗漏 `@wraps` 或 `return`；结果能运行，框架检查到的签名和业务返回值却已经变化。它也会用同步包装器包住 `async def`，使日志的「完成」出现在协程真正运行之前，异常逃出包装器的 `try`。生成重试装饰器时，常见问题是捕获所有 `Exception`、用阻塞式 `time.sleep()` 卡住事件循环，并重复执行没有幂等键的写操作。
+
+**让 AI 检查**
+
+- 展开每个 `@` 为嵌套赋值，分列装饰器表达式求值、应用和调用顺序。
+- 比较装饰前后的 `inspect.signature()`、`__name__`、`__wrapped__`、返回类型和协程函数身份。
+- 列出包装器捕获或存储的全部状态，并说明它属于哪个函数、实例、请求或进程。
+
+**审查清单**
+
+- 用非 `None` 结果和代表性异常确认参数、返回值与异常没有被意外改写。
+- 对每种堆叠记录进入、退出、拒绝、重试和缓存命中的精确事件顺序。
+- 异步目标使用真正的异步包装器，并验证 `await`、取消、清理和非阻塞等待。
+
+**提示词词汇**
+
+使用准确术语：`decorator`（装饰器）、`decorator factory`（装饰器工厂）、`wrapper function`（包装函数）、`decoration time`（装饰时）、`call time`（调用时）、`decorator stacking order`（装饰器堆叠顺序）、`metadata preservation`（元数据保留）、`__wrapped__ chain`（`__wrapped__` 链）、`descriptor binding`（描述符绑定）、`ParamSpec`（参数规格变量）。要求模型给出契约差异表和事件轨迹；只说「加一个日志装饰器」无法约束这些边界。
+
+<Depth level="deep">
+
+## 包装背后的契约
+
+### 对象身份与 `__wrapped__` 链
+
+装饰以后，公开名称通常指向新对象，所以 `decorated is original` 为假。闭包中的 `func` 引用和 `wrapper.__wrapped__` 可以指回下一层对象，但它们承担不同角色：前者供实现调用，后者供检查工具沿链展开。堆叠三层时，每层都正确使用 `wraps()` 才能形成完整链。
+
+`functools.update_wrapper()` 默认复制 `__module__`、`__name__`、`__qualname__`、`__annotations__`、`__type_params__` 和 `__doc__`，还会更新包装器的 `__dict__`。`wraps()` 只是方便在包装函数定义上调用它的装饰器工厂。复制这些属性不会让两个函数变成同一个对象。
+
+有意绕过某层时，可以调用相应的 `__wrapped__`。这也说明授权、审计等安全边界不能只靠「调用者不会绕过」来成立；应控制原函数的可达性，并把真正授权放在不能从同一信任域随意跳过的边界上。
+
+| 观察项 | `wraps()` 能做什么 | 它不能保证什么 |
+| --- | --- | --- |
+| 名称与文档 | 复制常用展示元数据 | 日志文本和文档一定正确 |
+| 注解与类型参数 | 复制运行时属性 | 类型检查通过或运行时验证 |
+| `__wrapped__` | 建立到下一层的链接 | 绕过包装仍然安全 |
+| 默认检查签名 | 让 `inspect.signature()` 沿链展开 | 包装器实际接受完全相同的调用 |
+
+自定义 `__signature__` 有时可为故意改变接口的包装器提供展示签名，但 Python 文档把 `inspect.signature()` 对它的具体处理标为实现细节。只有在库的兼容性策略覆盖它时才依赖这种做法，并对支持的 Python 实现与版本执行测试。
+
+### 静态类型不会由 `wraps()` 自动保留
+
+无参数变化的同步装饰器通常写成 `Callable[P, R] -> Callable[P, R]`。`P = ParamSpec("P")` 保存参数名称、位置与关键字形状，`R = TypeVar("R")` 连接输入函数和输出包装器的返回类型。若只写 `Callable[..., Any]`，类型检查器无法把具体调用约束传到装饰后的函数。
+
+加入参数的装饰器需要 `Concatenate` 或专门的 `Protocol`，删除参数、改变同步形式或变换返回值也必须反映在注解中。不要用 `cast()` 掩盖实现与声明不一致；它只压住检查器，不会改变运行时对象。
+
+Python 3.14 的函数还可能带有 `__type_params__`，`update_wrapper()` 默认会复制它。这个运行时属性与 `ParamSpec` 注解互补，但仍不能验证包装器内部是否正确转发了参数。类型检查和执行测试缺一不可。
+
+### 方法绑定取决于返回对象
+
+函数放进类字典后是非数据描述符。通过实例访问时，它的 `__get__()` 产生绑定方法，把实例放到首个形参位置。因此，返回普通函数的 `@trace` 可以同时用于模块函数和实例方法，无需专门写 `self` 分支。
+
+可调用实例不自动拥有这种行为。类实现了 `__call__()` 只表示实例能被调用，并不表示它放进另一个类后会绑定接收者。类形式的函数装饰器若要支持方法，需要实现合适的描述符协议，或者在装饰阶段返回一个普通函数。
+
+装饰器和 `@classmethod`、`@staticmethod`、`@property` 堆叠时，内层结果可能已不再是普通函数。安全做法不是猜一个通用顺序，而是记录装饰器接受的对象类型。例如只包装实例方法，就在文档和类型中限定普通函数，并为错误目标尽早抛出清楚异常。
+
+### 类装饰器不等于元类
+
+类装饰器在类对象已经创建后运行，适合登记类、附加经过检查的属性或返回替代对象。它只处理写有该 `@decorator` 的类。子类会正常继承基类属性，但不会自动重新执行基类上那次装饰逻辑。
+
+元类和 `__init_subclass__()` 参与的是类创建协议，能对后续子类生效。需要持续约束整个继承层次时，这些机制通常比要求每个子类重复写装饰器可靠。仅想登记几个显式插件时，类装饰器则更直接。
+
+返回原类可以保留类身份；返回工厂函数、代理实例或另一个类会改变 `issubclass()`、模式匹配、序列化和类型检查的假设。装饰类前应先写明返回对象类型，而不是只描述增加了什么行为。
+
+### 异常、生成器与异步生成器
+
+异常策略必须包围真正执行原函数的表达式。同步函数的执行发生在 `func(...)` 内；协程函数的主体发生在 `await func(...)` 时；生成器函数的主体通常要到迭代返回的生成器时才运行。只包住对象创建，捕获不到之后的失败。
+
+包装生成器时，用普通函数返回原生成器可以保留惰性，却无法观察逐次迭代。使用 `yield from` 能让包装器围住迭代过程，但还要正确处理 `send()`、`throw()`、`close()` 与返回值。异步生成器则需要 `async for`、取消处理和 `aclose()` 语义。
+
+一个声称支持所有 callable 的装饰器，往往在这些执行形状上并不透明。更诚实的接口会限定同步函数、协程函数或某种生成器协议，并为该形状写完整测试。宽泛的 `*args, **kwargs` 不能解决执行模型差异。
+
+### 状态、生命周期与并发
+
+装饰器工厂的局部变量可以被包装器闭包保存。状态若在 `decorate()` 内创建，通常每个被装饰函数有一份；若在工厂实例或模块中创建，多个函数可能共享。若状态在 `wrapper()` 内创建，则每次调用重新开始。
+
+这三个位置分别对应不同生命周期，不能只凭缩进选择。缓存要回答键是否含全部语义输入、值保留多久和怎样失效；限流要回答作用域是进程、用户还是外部服务；计数器要回答并发更新是否允许丢失。进程内字典也不会自动成为多进程共享状态。
+
+装饰器不会提供线程安全或任务隔离。包装器中的检查后更新仍可能交错，闭包中的普通字典也可能让租户数据混在一起。需要请求级异步状态时，应考虑显式参数或 `contextvars`；需要跨进程一致性时，应使用有相应保证的外部协调机制。
+
+### 测试装饰器，而不只测试原函数
+
+测试应同时覆盖装饰器单位行为和装饰后的集成行为。单位测试可以把一个记录事件或按计划失败的小函数交给装饰器；集成测试则使用真实方法、协程或框架入口，确认检查工具看到的对象仍符合契约。
+
+一组实用检查包括：
+
+1. 断言位置实参、关键字实参、默认值与返回值原样通过。
+2. 断言成功、预期异常、意外异常和清理路径的事件顺序。
+3. 断言名称、文档、注解、签名与 `__wrapped__` 链。
+4. 堆叠至少两层，并测试每种有业务含义的顺序。
+5. 对方法、协程或生成器等声明支持的目标验证其执行形状。
+
+不要只调用一次返回 `None` 的无参函数。那种测试同时掩盖参数丢失、返回值丢失、状态串扰和多种异常错误。装饰两个独立函数并交错调用，通常能很快暴露错误的共享状态。
+
+</Depth>
+
+<Checkpoint id="python/decorators" />
+
+## 延伸阅读
+
+- [Python 术语表：装饰器](https://docs.python.org/3.14/glossary.html#term-decorator)
+- [Python 语言参考：函数定义与装饰器应用](https://docs.python.org/3.14/reference/compound_stmts.html#function-definitions)
+- [Python `functools.wraps()`](https://docs.python.org/3.14/library/functools.html#functools.wraps)
+- [Python `inspect.signature()`](https://docs.python.org/3.14/library/inspect.html#inspect.signature)
+- [Python `typing.ParamSpec`](https://docs.python.org/3.14/library/typing.html#typing.ParamSpec)
+- [Python 描述符指南：函数与方法](https://docs.python.org/3.14/howto/descriptor.html#functions-and-methods)

@@ -1,0 +1,404 @@
+---
+title: 泛型
+description: 用类型参数表达可复用且类型安全的 C# API，掌握约束、类型推断、变体与运行时构造泛型的真实边界。
+track: csharp
+section: types-linq
+difficulty: intermediate
+tags: [generics, type-parameters, constraints, variance, type-safety]
+prerequisites: [csharp/fundamentals, csharp/data-types]
+related: [csharp/collections, csharp/linq, csharp/delegates-events, csharp/reflection]
+terms: [generic, type-parameter, generic-constraint, variance, boxing]
+verified: { version: 'C# 14 / .NET 10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: csharp/generics
+sources:
+  - { title: 'Generics - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/generics' }
+  - { title: 'Constraints on type parameters - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/constraints-on-type-parameters' }
+  - { title: 'Variance in generic interfaces - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/covariance-contravariance/variance-in-generic-interfaces' }
+  - { title: 'Generics in the runtime - C#', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/generics-in-the-run-time' }
+  - { title: 'C# language specification - Types', url: 'https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/types#constructed-types' }
+origin: old/src/content/docs/csharp/generics.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    泛型用类型参数保留输入、输出和存储之间的类型关系，同一份声明可以由多个具体类型构造使用。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    约束只开放编译期能力，不会验证运行时业务数据；泛型类默认不变，`out` 和 `in` 也只对符合条件的接口与委托生效。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    用最小约束表达算法真正需要的操作，以 `EqualityComparer<T>.Default` 等泛型协议处理值，并在 API 边界单独验证 `null`、空集合与业务不变量。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="generic">泛型（generic）</Term>声明把一个或多个类型留作参数。类、结构、接口、委托和方法都可以声明<Term id="type-parameter">类型参数（type parameter）</Term>，通常写作 `T`、`TKey` 或 `TResult`。使用方提供类型实参后，`List<string>` 或 `Dictionary<string, int>` 这样的构造类型才确定下来。
+
+泛型解决的是类型关系复用，而不只是少写几份代码。`T Find<T>(IEnumerable<T> source)` 表明返回值与序列元素是同一种类型；若改成 `object Find(IEnumerable source)`，这种关系会消失，调用方只能强制转换并承担运行时失败。
+
+值类型通过 `object` 传递时通常发生<Term id="boxing">装箱（boxing）</Term>，取回时还要拆箱。`List<int>` 直接按 `int` 存取元素，既保留编译期检查，也不需要为了集合的每个元素先转换成 `object`。这不表示所有泛型代码都零分配，只说明它避免了这条特定转换路径。
+
+你会在集合、LINQ、委托、异步 API、依赖注入和序列化库中反复遇到泛型。读取 `IEnumerable<Order>` 时，尖括号里的类型不是文档装饰，而是编译器和运行时都能使用的契约组成部分。
+
+泛型适合多种类型共享同一算法，而且算法只依赖一组明确能力的场景。如果不同类型需要完全不同的业务流程，堆叠类型检查和 `typeof(T)` 分支通常是在隐藏多个实现；接口、多态或独立服务会更清楚。
+
+## 工作原理
+
+### 声明与构造是两个阶段
+
+`Cache<TKey, TValue>` 声明两个类型参数。`Cache<string, Product>` 提供两个类型实参，形成封闭构造类型；参数个数、顺序和约束都必须匹配。`Cache<,>` 表示未绑定泛型类型，只能用于 `typeof` 和反射等元数据操作，不能直接创建实例。
+
+同一个类型参数在多个位置出现时，编译器会保持它们相等。下面的签名要求 `item`、`fallback` 和返回值都使用同一个 `T`，调用方不能把互不相关的类型混在一次调用中。
+
+```csharp
+static T Choose<T>(bool useItem, T item, T fallback) =>
+    useItem ? item : fallback;
+```
+
+泛型方法的类型参数属于方法，不要求包含它的类型也是泛型。调用 `Choose(true, 10, 20)` 时，编译器从实参推断 `T` 为 `int`。方法类型推断不靠返回值猜测 `T`，推断失败或结果不符合约束时，调用方必须调整实参或明确写出类型实参。
+
+### 约束开放可用能力
+
+没有约束的 `T` 只能使用所有类型都具备的操作，例如赋值、`object` 成员和 `EqualityComparer<T>.Default`。<Term id="generic-constraint">泛型约束（generic constraint）</Term>通过 `where` 子句缩小可接受类型，同时让泛型实现可以调用约束保证的成员。
+
+| 约束 | 调用方可提供的类型 | 泛型实现获得的能力 |
+| --- | --- | --- |
+| `where T : class` | 非可空引用类型 | 按非可空引用类型分析 `T` |
+| `where T : class?` | 可空或非可空引用类型 | 按可空引用类型分析 `T` |
+| `where T : struct` | 非可空值类型 | 使用值类型规则；隐含可用无参构造 |
+| `where T : unmanaged` | 不含托管引用的非可空值类型 | 在允许不安全代码时取得大小或指针 |
+| `where T : notnull` | 非可空值类型或非可空引用类型 | 对可空类型实参产生诊断 |
+| `where T : BaseType` | 指定基类的派生类型 | 使用基类公开成员 |
+| `where T : IContract` | 实现指定接口的类型 | 使用接口成员，包括静态抽象成员 |
+| `where T : new()` | 具有公开无参构造函数的非抽象类型 | 执行 `new T()` |
+
+约束是编译期规则，不是业务验证器。`where T : class` 不会阻止旧代码、反射或关闭可空分析的调用方传入 `null`；`where T : new()` 也不能证明新对象已满足领域不变量。公开边界仍要检查实际值。
+
+多个约束的顺序受语法限制：引用类型、值类型或 `unmanaged` 等主约束放在前面，基类或接口约束随后，`new()` 靠后。`allows ref struct` 是反约束，表示实现遵守 `ref struct` 的安全规则；它必须位于其他约束之后，不能把类型实参当作可以装箱或跨 `await` 保存的普通值。
+
+### 相等、比较与运算符需要协议
+
+对未知 `T` 使用 `==` 并不总能编译，也未必表达领域需要的相等性。普通相等查找应使用 `EqualityComparer<T>.Default`，排序可以接收 `IComparer<T>`，需要调用 `CompareTo` 时才添加 `IComparable<T>` 约束。这样，值类型、引用类型和调用方提供的比较策略走同一条明确路径。
+
+C# 的接口可以声明静态抽象成员。`INumber<TSelf>` 等泛型数学接口因此能让受约束代码使用 `T.Zero` 和 `+`，而不必改用 `dynamic`。这是一个真正的能力约束：调用方只能提供实现所需静态协议的类型。
+
+不要为了方便随手添加 `new()`、`class` 或某个宽泛接口。约束会成为公开 API 的兼容性边界；算法没有使用的约束只会排除原本有效的类型，并让以后移除约束成为设计修正。
+
+### 变体控制引用转换方向
+
+<Term id="variance">变体（variance）</Term>描述已有引用类型转换怎样传播到泛型接口或委托。`IEnumerable<out T>` 是协变的，所以 `IEnumerable<string>` 可以赋给 `IEnumerable<object>`；它只从接口输出 `T`，调用方无法通过该接口写入一个任意 `object`。
+
+`IComparer<in T>` 是逆变的。能比较任意 `Animal` 的比较器当然也能比较两个 `Dog`，所以 `IComparer<Animal>` 可以用于需要 `IComparer<Dog>` 的位置。方向看起来相反，是因为 `T` 只作为输入进入接口。
+
+只有接口和委托的类型参数可以声明 `out` 或 `in`，泛型类本身始终不变。即使 `Dog` 派生自 `Animal`，`List<Dog>` 也不能赋给 `List<Animal>`；否则接收方就能加入一只不是 `Dog` 的 `Animal`。变体转换也只适用于引用类型实参，`IEnumerable<int>` 不会因此转换成 `IEnumerable<object>`。
+
+## 示例
+
+四个示例依次展示类型关系、约束提供的静态能力、变体转换和运行时类型身份。当前环境没有 .NET SDK 或 C# 编译器，因此代码块按仓库约定标明未执行，输出块不伪造结果。
+
+### 用类型参数保留查找结果
+
+这个查找方法把元素、目标值和比较器绑定到同一个 `T`。调用方从 `string?[]` 实参得到 `string?` 推断，不需要把元素转换成 `object`。
+
+<Depth level="quick">
+
+```csharp title="GenericFind.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+
+string?[] states = ["queued", null, "sent", "sent"];
+
+Console.WriteLine(FindIndex(states, null));
+Console.WriteLine(FindIndex(states, "sent"));
+Console.WriteLine(FindIndex(states, "missing"));
+
+static int FindIndex<T>(IReadOnlyList<T> items, T target)
+{
+    EqualityComparer<T> comparer = EqualityComparer<T>.Default;
+
+    for (int index = 0; index < items.Count; index++)
+    {
+        if (comparer.Equals(items[index], target))
+            return index;
+    }
+
+    return -1;
+}
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+<TryToBreak items={['空数组', '包含重复值的数组', '目标值为 null']} />
+
+</Depth>
+
+`EqualityComparer<T>.Default` 能处理示例中的两个 `null` 操作数，也会采用具体类型的默认相等规则。方法返回索引而不是 `default(T)`，所以「没有找到」不会和元素类型的合法默认值混在一起。
+
+真实 API 还要决定 `items` 本身能否为 `null`。可空注解可以表达预期并产生警告，但跨越反射、反序列化或未启用可空分析的边界时，若契约要求拒绝 `null`，仍应执行运行时检查。
+
+### 用静态抽象成员实现泛型求和
+
+`INumber<T>` 保证 `T.Zero` 和加法可用。实现既没有按具体数值类型分支，也没有把运算推迟给 `dynamic`。
+
+```csharp title="GenericSum.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+
+int[] units = [2, 3, 5];
+decimal[] prices = [1.25m, 2.50m, 4.00m];
+
+Console.WriteLine(Sum(units));
+Console.WriteLine(Sum(prices));
+
+static T Sum<T>(IEnumerable<T> values) where T : INumber<T>
+{
+    T total = T.Zero;
+
+    foreach (T value in values)
+        total += value;
+
+    return total;
+}
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+空序列会返回 `T.Zero`，这是该方法明确选择的数学单位元。这个结果不一定适合平均值、最大值或业务金额校验；那些操作需要各自定义空输入契约，而不是照搬求和行为。
+
+若只需要加法和零值，可以约束更窄的操作符接口，而不是整个 `INumber<T>`。约束应跟随实现真正调用的成员，这能让自定义数值类型更容易满足 API。
+
+### 分开读取方与写入方
+
+生产者只返回 `T`，因此声明 `out T`；接收器只接收 `T`，因此声明 `in T`。赋值方向由这两个接口位置决定，并没有改变具体对象的运行时类型。
+
+```csharp title="Variance.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+
+IProducer<Dog> dogSource = new DogSource();
+IProducer<Animal> animalSource = dogSource;
+
+IConsumer<Animal> animalSink = new AnimalSink();
+IConsumer<Dog> dogSink = animalSink;
+
+Animal animal = animalSource.Create();
+dogSink.Save(new Dog("Rex"));
+Console.WriteLine(animal.Name);
+
+public interface IProducer<out T>
+{
+    T Create();
+}
+
+public interface IConsumer<in T>
+{
+    void Save(T value);
+}
+
+public sealed class DogSource : IProducer<Dog>
+{
+    public Dog Create() => new("Milo");
+}
+
+public sealed class AnimalSink : IConsumer<Animal>
+{
+    public void Save(Animal value) =>
+        Console.WriteLine($"saved: {value.Name}");
+}
+
+public record Animal(string Name);
+public sealed record Dog(string Name) : Animal(Name);
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+`animalSource` 的静态类型只承诺产生 `Animal`，但实际对象仍是 `DogSource`，产生的实例仍是 `Dog`。`dogSink` 只能被调用来保存 `Dog`，而底层 `AnimalSink` 本来就能处理这种输入。
+
+若一个接口既接收又返回同一个 `T`，通常不能把该参数标为协变或逆变。把读取和写入能力拆成两个窄接口，有时能得到安全的变体转换；拆分是否合适仍取决于领域契约。
+
+### 观察构造类型的运行时身份
+
+运行时保留泛型类型实参。示例还展示了泛型静态类的字段按封闭构造类型分别存在。
+
+```csharp title="GenericRuntime.cs"
+// # not executed here: the .NET SDK and C# compilers are unavailable
+using System;
+using System.Collections.Generic;
+
+Type integers = typeof(List<int>);
+Type strings = typeof(List<string>);
+
+Console.WriteLine(integers == strings);
+Console.WriteLine(integers.GetGenericTypeDefinition() == typeof(List<>));
+Console.WriteLine(string.Join(", ", integers.GetGenericArguments()));
+
+TypeSlot<int>.Label = "quantities";
+TypeSlot<string>.Label = "names";
+
+Console.WriteLine(TypeSlot<int>.Label);
+Console.WriteLine(TypeSlot<string>.Label);
+
+public static class TypeSlot<T>
+{
+    public static string Label { get; set; } = typeof(T).Name;
+}
+```
+
+```text
+# not executed here: the .NET SDK and C# compilers are unavailable
+```
+
+`List<int>` 与 `List<string>` 是不同的构造类型，但两者的泛型类型定义都是 `List<>`。反射代码需要先分清拿到的是定义还是封闭类型，再决定调用 `GetGenericArguments()`、`MakeGenericType()` 或创建实例。
+
+`TypeSlot<int>.Label` 和 `TypeSlot<string>.Label` 不共享字段。这种行为可用于按类型缓存元数据，但缓存仍需要容量与生命周期设计；类型数量来自不受控动态输入时，泛型静态字段不是自动有界的缓存。
+
+## 陷阱
+
+### 用 `object` 或 `dynamic` 绕过设计问题
+
+> [!PITFALL]
+> 生成代码遇到泛型编译错误时，常把 `T` 改成 `object`，或用 `dynamic` 执行比较和算术。代码可能暂时编译，却丢失输入输出关系，并把成员不存在、转换失败和运算符不匹配推迟到运行时。
+
+**修复方法：** 先写出算法需要的最小协议。相等使用 `IEqualityComparer<T>`，排序使用 `IComparer<T>`，静态运算使用带静态抽象成员的接口；不同业务行为则用多态或独立实现，不要用 `dynamic` 掩盖。
+
+### 把 `default(T)` 当作未找到
+
+> [!PITFALL]
+> `default(T)` 可能是合法数据：`0`、`false`、全零结构值或 `null` 都可能出现在输入中。返回它表示失败，会让调用方无法区分「找到了默认值」和「没有结果」。
+
+**修复方法：** 返回索引、布尔值加 `out T`、可辨识的结果类型，或在契约适合时返回可空值。选择必须同时覆盖值类型、引用类型和实际业务含义。
+
+### 用 `new()` 代替对象创建契约
+
+> [!PITFALL]
+> `where T : new()` 只保证公开无参构造函数，不会注入依赖、传入必填数据或验证创建后的对象。为了能写 `new T()` 而添加它，常会迫使领域类型暴露无效的空状态。
+
+**修复方法：** 让调用方传入 `Func<T>` 或领域工厂，或者约束到真正描述创建协议的接口。只有空对象本来就有效，而且泛型实现确实负责创建时，才使用 `new()`。
+
+### 把所有泛型集合都当作协变
+
+> [!PITFALL]
+> `IEnumerable<Dog>` 能转换为 `IEnumerable<Animal>`，不代表 `List<Dog>` 能转换为 `List<Animal>`。可写集合若允许这种转换，调用方就可能插入不是 `Dog` 的其他 `Animal`。
+
+**修复方法：** 查看实际接口声明中的 `out` 或 `in`，并检查类型实参是否是引用类型。只读消费方可接收协变接口；需要修改时，保留准确元素类型或显式复制到新的目标集合。
+
+### 认为可空约束已经检查了值
+
+> [!PITFALL]
+> `where T : notnull` 和 `where T : class` 主要影响类型实参与可空分析。它们不会在方法入口自动生成 `null` 检查，也无法阻止所有未受可空分析约束的调用路径。
+
+**修复方法：** 用约束表达类型级意图，用 `ArgumentNullException.ThrowIfNull` 等运行时检查保护真实边界。测试来自反射、反序列化、旧程序集和禁用可空上下文的输入。
+
+### 添加算法没有使用的约束
+
+> [!PITFALL]
+> 约束越多不代表 API 越安全。多余的 `class`、`IComparable<T>` 或 `new()` 会拒绝本可正常工作的类型，还可能让调用方误以为实现依赖这些能力。
+
+**修复方法：** 为约束中的每项能力找到实现里的实际使用位置。找不到就删除；业务数据规则应放进参数验证或领域类型，而不是借类型约束表达。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型会看到 `IEnumerable<Dog>` 的协变转换，随后错误地生成 `List<Dog>` 到 `List<Animal>` 的赋值；也会用 `dynamic` 让 `T + T` 通过编译，或加上宽泛的 `INumber<T>` 约束却只需要一个运算符。另一些生成结果用 `default(T)` 表示缓存未命中，把合法的 `0` 与失败混在一起；还有代码用 `where T : new()` 直接创建依赖不完整的实体，并误以为 `notnull` 已完成运行时校验。
+
+**让 AI 检查**
+
+- 列出每个类型参数在参数、返回值、字段和委托中的位置，并说明它应当不变、协变还是逆变。
+- 为每个 `where` 约束指出实现中实际使用的成员，并给出删除该约束后会失败的具体语句。
+- 跟踪所有 `default(T)`、`object` 强制转换、装箱和 `dynamic`，说明每条失败路径怎样向调用方报告。
+
+**审查清单**
+
+- 用值类型、引用类型、可空输入和空序列分别测试泛型边界。
+- 确认比较器、相等规则与变体方向来自公开契约，而不是碰巧通过编译的具体类型。
+- 检查反射构造、依赖注入注册与序列化代码传入的类型实参是否满足约束，并验证实际值。
+
+**提示词词汇**
+
+使用准确术语：`generic`（泛型）、`type parameter`（类型参数）、`type argument`（类型实参）、`constructed type`（构造类型）、`generic constraint`（泛型约束）、`method type inference`（方法类型推断）、`invariance`（不变）、`covariance`（协变）、`contravariance`（逆变）、`variance annotation`（变体标注）、`static abstract interface member`（静态抽象接口成员）、`allows ref struct anti-constraint`（`allows ref struct` 反约束）。要求模型输出类型位置表和约束使用表；只说「让它更通用」无法确定安全的 API。
+
+<Depth level="deep">
+
+## 约束的边界与可空性
+
+`class`、`class?`、`notnull` 和 `struct` 表达不同集合。启用可空分析时，`class` 要求非可空引用类型，`class?` 接受可空引用类型；`notnull` 同时接受非可空引用类型与非可空值类型；`struct` 接受非可空值类型，但不接受 `Nullable<T>`。把它们统称为非空约束会丢失真实差异。
+
+可空注解的警告级别还取决于调用方的可空上下文。违反 `notnull` 通常产生编译器警告而不是运行时异常，因此库实现不能把它当作信任边界。泛型参数的 `T?` 含义也受约束影响：编写公开 API 时，应配合注解属性与运行时验证表达完整契约。
+
+`default` 约束只用于重写方法或显式接口实现，以说明未带 `class` 或 `struct` 主约束的类型参数。它不是一个可以随处添加的零值约束。`allows ref struct` 则放宽可接受类型集合，同时要求泛型实现遵守栈限制；它与普通约束缩小集合的方向相反，所以文档称它为反约束。
+
+约束之间还可能互斥。`struct` 已经保证可用无参构造，所以不能再组合 `new()`；基类约束与某些主约束也不能任意并列。不要凭记忆排列复杂约束，编译最小声明，并让公开签名只保留确有用途的部分。
+
+## 运行时的构造泛型
+
+.NET 运行时保留封闭泛型类型的类型实参，因此 `typeof(List<int>)` 能报告 `int`，反射也能区分 `List<int>` 与 `List<string>`。这与把所有类型实参擦成同一个运行时类型的模型不同。序列化器、依赖注入容器和反射工厂正是依赖这些元数据工作。
+
+保留类型身份不表示每个构造类型都复制全部机器码。运行时通常能为多个引用类型实参共享泛型实现代码，而值类型构造通常需要针对其布局生成代码。这是运行时策略，不应被改写成没有测量依据的速度结论。
+
+泛型类型的静态字段属于每个封闭构造类型。`Registry<Order>` 和 `Registry<Customer>` 各有自己的静态状态，这能实现按类型存储，也可能悄悄形成多个生命周期很长的缓存。审查时要按实际构造类型计数，并明确清理、容量与并发规则。
+
+反射中的 `typeof(Dictionary<,>)` 是泛型类型定义，包含未绑定参数；`typeof(Dictionary<string, int>)` 是封闭构造类型。`MakeGenericType()` 会在运行时验证参数个数和约束，不合格时抛出异常。外部输入不应直接决定要构造的类型定义或类型实参，应先映射到允许列表。
+
+## 变体的精确边界
+
+变体标注写在接口或委托的声明处，不写在使用处。协变参数主要出现在输出位置，逆变参数主要出现在输入位置；编译器还会检查属性、方法参数、返回值和嵌套委托位置，拒绝可能造成不安全写入或读取的声明。
+
+变体只传播已有的隐式引用转换。`string` 到 `object` 有引用转换，所以 `IEnumerable<string>` 到 `IEnumerable<object>` 成立；`int` 到 `object` 需要装箱，不属于同一种转换，因此对应泛型接口之间不发生协变。用户定义转换也不会自动变成泛型变体转换。
+
+泛型类可以实现变体接口，但类本身仍然不变。`List<string>` 可被当作 `IEnumerable<object>` 使用，是先把列表看作 `IEnumerable<string>`，再应用接口的协变；这不产生 `List<object>`，也没有给原列表增加写入 `object` 的能力。
+
+数组协变是另一套更早的运行时规则。`string[]` 可以赋给 `object[]`，但写入不兼容对象会在运行时抛出 `ArrayTypeMismatchException`。不要拿数组行为推导泛型集合；泛型变体的目标正是让不安全方向在编译期被拒绝。
+
+## 泛型 API 的演进
+
+公开类型参数名称会出现在文档和反射中，`TKey`、`TValue`、`TSource` 比无差别的 `T1`、`T2` 更能说明关系。名称不改变类型身份，但它影响调用方理解约束、诊断消息与生成文档的质量。
+
+增加约束通常会让已有调用代码无法重新编译，因为原先允许的类型实参可能被排除。移除约束能扩大调用集合，却可能迫使实现放弃原先使用的成员。修改 `in`、`out` 或参数位置也会改变可赋值关系，因此这些都属于 API 设计变更。
+
+返回宽泛接口并不自动改善设计。`IEnumerable<T>` 可能延迟执行、重复查询或只允许单次枚举；`IReadOnlyList<T>` 才承诺计数和索引，但仍不保证底层数据不会变化。泛型参数表达元素类型，集合接口表达访问能力，两层契约都要写准确。
+
+测试泛型库时，不要只挑一个引用类型。至少选一个值类型来暴露装箱与默认值假设，选一个可空场景验证边界，再选一个具有自定义相等或比较规则的类型。涉及变体时，分别写出应当编译和应当拒绝的赋值，并把编译诊断作为测试目标的一部分。
+
+## 框架中的开放泛型
+
+反射和依赖注入框架常接收开放泛型定义。例如，一个注册关系可以表达每个 `IRepository<T>` 都由 `Repository<T>` 实现，容器在请求具体服务时再用同一个类型实参封闭两边。这个机制减少重复注册，却没有取消构造函数、生命周期和约束检查。
+
+开放定义的参数个数与位置必须兼容。二元定义不能直接匹配一元服务，带约束的实现也不能为不满足约束的实参创建封闭类型。框架何时报告错误取决于它是在注册、构建容器还是第一次解析时验证，因此启动测试应主动解析关键封闭类型。
+
+| 表达式 | 表示的类型 | 能否直接创建实例 |
+| --- | --- | --- |
+| `typeof(Box<>)` | 带一个未绑定参数的泛型定义 | 否 |
+| `typeof(Box<int>)` | 类型实参为 `int` 的封闭构造类型 | 是 |
+| `typeof(Box<>).MakeGenericType(typeof(string))` | 运行时创建的封闭构造类型 | 是 |
+
+开放泛型注册不会证明每个封闭组合都有业务意义。`Repository<AuditLog>` 可能满足语言约束，却违反应用对聚合根、事务或授权的要求。需要这种规则时，应通过明确标记、注册允许列表或领域接口限制，而不是等到第一次请求才发现。
+
+不要把客户端提供的程序集限定名直接交给 `Type.GetType()` 和 `MakeGenericType()`。即使最终创建动作受语言约束限制，攻击者仍可能选择不应公开的应用类型或触发大量封闭组合。外部名称应先映射到一组固定的服务与类型实参。
+
+开放泛型排查应同时记录定义和最终封闭类型。只看到 `IHandler<>` 的注册无法说明失败请求用了哪个消息类型；只看到 `IHandler<Invoice>` 又可能隐藏它来自一条全局开放注册。诊断信息应把两者和所用生命周期放在一起。
+
+</Depth>
+
+<Checkpoint id="csharp/generics" />
+
+## 延伸阅读
+
+- [C# 泛型概述](https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/types/generics)
+- [类型参数约束](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/constraints-on-type-parameters)
+- [泛型接口中的变体](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/covariance-contravariance/variance-in-generic-interfaces)
+- [.NET 运行时中的泛型](https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/generics/generics-in-the-run-time)
+- [C# 语言规范中的构造类型](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/types#constructed-types)
