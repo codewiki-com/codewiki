@@ -28,17 +28,16 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-05 00:30 local — Claude usage near its limit; jobs keep running)
+## Active work (updated 2026-09-05 01:10 local)
 - **Routing:** Opus for insight-heavy content, reviews, complex merges; Codex for bulk mechanical work; running jobs never re-routed.
-- **Done, reviewed by the design lead, NOT yet merged:** `fix-content-taxonomy` (3 commits, HEAD 5936b3b; 30 sections, 142 titles, 7 duplicate pairs, 8 quiz line-span repairs; ledger `ledgers/2026-09-04-taxonomy-pass.md`). Merge into `main` once the site review finishes (it reads the root checkout). Follow-up decided: delete `python/scope` (byte-identical to `python/scope-namespaces`) and redirect `/python/scope/` → `/python/scope-namespaces/` in both locales; update its 2 inbound references.
-- **Running (4):**
-  - Opus whole-site review on `main` (root checkout, read-only; report → `ledgers/2026-09-04-site-review.md`, ends with the deploy verdict).
-  - Codex UI fixes on `fix-ui-real-content` (files edited, tests running, no commit yet; log `codex-fix-ui.log` in the session scratchpad; report `.superpowers/sdd/fix/report.md` in that worktree; hero mock capped, wrapping track filter, path-map label clipping).
-  - Opus PWA offline on `feat-pwa` (manifest, `sw.js` shell precache + visited pages, per-track "save offline", opt-in runtimes, update toast; report → `ledgers/2026-09-04-pwa-report.md`).
-  - Opus daily kata on `feat-daily-kata` (design `docs/design/daily-kata.md`; Chinese name 每日一练; report → `ledgers/2026-09-04-daily-kata-report.md`).
-- **Merge order when they finish:** taxonomy → fix-ui → daily-kata → pwa (each: read its report, `git log main..HEAD`, spot-check, `git merge --no-ff` into `main`, run `pnpm lint && pnpm check && pnpm test`), then one Opus fix round for the site-review findings + the `python/scope` redirect, then `pnpm build && pnpm check:links && pnpm test:e2e && pnpm exec lhci autorun`, then deploy prep (Cloudflare Pages needs the user's auth).
+- **Merged:** `fix-content-taxonomy` (ba8d154). **Site review done:** `ledgers/2026-09-04-site-review.md` — Not ready: C1 practice hub ships 1,748 cards (1.77 MB), I1 duplicate topics, I2 cheatsheet snippets unfocusable, I3 rules cut mid-sentence, I4 e2e 50 failures (mostly stale fixtures), I5 interview coverage 132 topics < 3 items, 11 minors. Rulings written: `docs/superpowers/briefs/site-review-fix-round.md`.
+- **Running — Codex (5, launched 01:05, logs `.superpowers/sdd/fix-round/codex.log` in each worktree, end with `end … exit=` + `TASK DONE`):** `content-interview-1` (python, go), `content-interview-2` (javascript, architecture), `content-interview-3` (backend, frontend), `content-interview-4` (typescript, ai-era) — each fills interview banks to ≥ 3 items per topic, disjoint yaml files; `fix-content-minors` (M6 TryToBreak, M8 SQL seed, M9 record-type glossary, M11 phrase).
+- **Running — Codex UI fixes** on `fix-ui-real-content` (edited, tests running, no commit yet; log `codex-fix-ui.log` in the previous session scratchpad `f094501c…`; report `.superpowers/sdd/fix/report.md` in that worktree).
+- **Running — Opus:** PWA offline on `feat-pwa` (report → `ledgers/2026-09-04-pwa-report.md`); daily kata on `feat-daily-kata` (design `docs/design/daily-kata.md`, Chinese 每日一练; report → `ledgers/2026-09-04-daily-kata-report.md`).
+- **Not yet started:** the Opus code fix round on `fix-site-review` — start it from `main` right after `fix-ui-real-content` merges, with the brief above as the prompt (it merges `main` again before its gate).
+- **Merge order:** fix-ui → (start fix round) → interview-1..4 + content-minors (disjoint files, review the reports, spot-check 3 items each) → daily-kata → pwa → fix-site-review; after each merge `pnpm lint && pnpm check && pnpm test`; then full gate on `main` (`pnpm build && pnpm check:links && pnpm test:e2e && pnpm exec lhci autorun`), then deploy prep (Cloudflare Pages needs the user's auth).
 - Branches: `p0-content-pipeline` (worktree kept for future tier-2 runs), `p2-learning-layer`, `p1-site-foundation` are merged; `p0-generate` worktree removed.
-- Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; Opus subagent reports live under `docs/superpowers/ledgers/` on their branches.
+- Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; Opus subagent reports live under `docs/superpowers/ledgers/` on their branches. Never re-dispatch a job whose branch already has commits or a report.
 
 ## TODO (deferred by the user)
 - **MCP server: dropped** by the user on 2026-09-04 (do not build). P3 keeps compare pages, visualizer tools and the daily kata surface.
