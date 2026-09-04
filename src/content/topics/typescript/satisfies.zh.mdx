@@ -1,0 +1,433 @@
+---
+title: satisfies 操作符
+description: 用 satisfies 校验表达式是否符合类型约束，同时保留可用的推断精度，并避开它不做运行时验证的陷阱。
+track: typescript
+section: type-system
+difficulty: intermediate
+tags: [satisfies, type-inference, type-checking]
+prerequisites: [typescript/basics, typescript/type-inference, typescript/literal-types]
+related: [typescript/strict-mode, typescript/type-coverage, typescript/advanced-types, typescript/type-narrowing]
+terms: [satisfies-operator, type-annotation, type-assertion, type-inference, literal-widening, const-assertion, structural-typing]
+verified: { version: 'TypeScript 6', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: typescript/satisfies
+sources:
+  - { title: 'TypeScript 4.9 release notes: The satisfies operator', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html' }
+  - { title: 'TypeScript handbook: Type assertions', url: 'https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions' }
+  - { title: 'TypeScript handbook: Excess property checks', url: 'https://www.typescriptlang.org/docs/handbook/2/objects.html#excess-property-checks' }
+  - { title: 'TypeScript 3.4 release notes: const assertions', url: 'https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions' }
+origin: old/src/content/docs/typescript/satisfies.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `satisfies` 检查一个表达式能否赋给目标类型，但不会直接把表达式的结果类型替换成目标类型。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    它只在编译时工作，既不会验证外部数据，也不保证每个属性都保留字面量类型。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    用有限键集合描述静态表格，用运行时解析器守住数据边界；确实需要只读字面量时再组合 `as const`。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="satisfies-operator">`satisfies` 操作符（satisfies operator）</Term>检查左侧表达式的类型能否赋给右侧目标类型。检查通过后，变量仍暴露表达式得到的具体类型，而不是统一暴露目标类型。它适合配置对象、路由表、命令注册表等“既要校验整体结构，又要继续使用每个条目的具体信息”的声明。
+
+<Term id="type-annotation">类型注解（type annotation）</Term>回答“这个变量对外应是什么类型”。它会把声明绑定到写出的契约，因此之后的读取和赋值都按该契约处理。`satisfies` 回答的问题更窄：“这个表达式是否兼容该契约”。
+
+<Term id="type-assertion">类型断言（type assertion）</Term>则要求检查器接受开发者的判断。断言可以跳过本来会失败的兼容性检查，而 `satisfies` 不能把错误的值强行变成正确类型。需要证明一个源码内常量的结构时，优先使用检查；需要处理网络、文件或环境变量时，两者都不能替代运行时验证。
+
+这个差别最常出现在异构对象中。一个调色板的值可能是字符串，也可能是 RGB 元组；若把整个变量注解成 `Record<string, string | RGB>`，读取任何条目都只得到联合类型。`satisfies` 可以检查所有条目，同时让已知字符串条目继续使用字符串方法，让数组条目继续按元组处理。
+
+## 工作原理
+
+`value satisfies Target` 是一个表达式。编译器先用 `Target` 为左侧表达式提供上下文，再检查左侧得到的类型是否可赋给 `Target`。最终表达式的类型来自左侧推断结果，而不是简单替换为 `Target`。
+
+因此，“`satisfies` 完全不影响推断”也不够准确。目标类型会参与对象字面量、数组字面量和回调参数的上下文类型推断。例如，目标中的 `"GET" | "POST"` 能让某个 `method` 保持为 `"GET"`，而目标中的普通 `string` 通常仍让可变对象属性推断为 `string`。
+
+一次检查可以拆成四步：
+
+1. 读取目标类型，建立属性、索引签名和回调的上下文。
+2. 在该上下文中推断左侧表达式的类型。
+3. 按 TypeScript 的结构类型与可赋值性规则检查兼容关系。
+4. 保留推断出的表达式类型，并在生成 JavaScript 时移除 `satisfies Target`。
+
+<Term id="structural-typing">结构类型（structural typing）</Term>意味着兼容性主要取决于成员形状，而不是声明名称。必填属性必须存在，属性值必须兼容；直接对象字面量还会触发多余属性检查。若目标含有 `Record<string, Entry>` 这样的开放索引签名，任意字符串键都合法，因此它不能发现键名拼写错误。
+
+`satisfies` 不会创建属性、冻结对象、转换值或发出运行时代码。它也不会让 `JSON.parse()` 产生的 `any` 变安全，因为 `any` 本来就能绕过大多数静态检查。把外部值先保留为 `unknown`，经过真实的运行时检查后再赋予领域类型。
+
+## 示例
+
+下面四个示例逐步构造一个静态注册表。它们分别展示具体成员推断、异构值、`as const` 组合，以及静态检查与运行时验证的边界。
+
+<Depth level="quick">
+
+### 校验路由注册表
+
+类型注解适合固定公开契约，但会让每次属性读取都只看到该契约。`satisfies` 仍检查精确键集合，并保留 `health.method` 的具体 `"GET"` 类型。
+
+```typescript run title="route_registry.ts"
+type Method = "GET" | "POST";
+type Route = { path: string; method: Method };
+
+const annotated: Record<string, Route> = {
+  health: { path: "/health", method: "GET" },
+};
+
+const routes = {
+  health: { path: "/health", method: "GET" },
+  createUser: { path: "/users", method: "POST" },
+} satisfies Record<"health" | "createUser", Route>;
+
+function acceptGet(method: "GET"): string {
+  return method;
+}
+
+console.log(acceptGet(routes.health.method));
+console.log(Object.keys(routes).join(","));
+console.log(annotated.health.method);
+```
+
+```text
+GET
+health,createUser
+GET
+```
+
+`acceptGet(routes.health.method)` 能通过检查，因为目标联合为该属性提供了上下文，而结果类型仍保留已选择的联合成员。`annotated.health.method` 在运行时也是 `GET`，但它的静态类型是完整的 `Method`，所以不能直接传给只接受 `"GET"` 的函数。
+
+</Depth>
+
+### 保留异构条目的能力
+
+目标类型允许字符串或 RGB 元组。检查器既会拒绝长度错误的数组，也会让已知条目保留各自可用的操作。
+
+```typescript run title="palette.ts"
+type RGB = readonly [number, number, number];
+type ColorValue = string | RGB;
+
+const palette = {
+  red: [255, 0, 0],
+  green: "#00ff00",
+  blue: [0, 0, 255],
+} satisfies Record<"red" | "green" | "blue", ColorValue>;
+
+const firstChannel: number = palette.red[0];
+const uppercaseGreen = palette.green.toUpperCase();
+
+console.log(firstChannel);
+console.log(uppercaseGreen);
+```
+
+```text
+255
+#00FF00
+```
+
+这里的 `palette.red` 在目标联合的上下文中推断为三元素数组，而 `palette.green` 可直接调用字符串方法。不要把这个结果误读为所有值都保持原始字面量：`palette.green` 是 `string`，并不是 `"#00ff00"`。
+
+键集合也很重要。若把目标改为 `Record<string, ColorValue>`，值仍会接受检查，但 `gren` 这样的拼写错误会成为一个合法的新键。由程序拥有键集合时，应使用字面量联合、映射类型或已有对象的 `keyof`。
+
+### 组合 `as const` 与 `satisfies`
+
+如果调用方需要精确值和只读属性，可以先应用<Term id="const-assertion">`const` 断言（const assertion）</Term>，再检查结构。目标中的数组也应声明为 `readonly`，否则只读元组无法赋给可变数组。
+
+```typescript run title="command_registry.ts"
+type Role = "viewer" | "editor";
+type Command = {
+  label: string;
+  roles: readonly Role[];
+};
+
+const commands = {
+  publish: {
+    label: "Publish",
+    roles: ["editor"],
+  },
+  preview: {
+    label: "Preview",
+    roles: ["viewer", "editor"],
+  },
+} as const satisfies Record<"publish" | "preview", Command>;
+
+type CommandName = keyof typeof commands;
+
+function canRun(command: CommandName, role: Role): boolean {
+  return commands[command].roles.some((allowed) => allowed === role);
+}
+
+console.log(canRun("publish", "editor"));
+console.log(commands.preview.roles.join(","));
+console.log(Object.isFrozen(commands));
+```
+
+```text
+true
+viewer,editor
+false
+```
+
+`keyof typeof commands` 从真实对象派生出 `"publish" | "preview"`，避免另写一份名称列表。角色数组保持只读元组精度，因此 `some()` 回调中的 `allowed` 只可能是该命令实际声明的角色。
+
+最后一行说明 `as const` 只是静态断言。它不会调用 `Object.freeze()`，`satisfies` 也不会增加任何运行时保护。若运行时不可变性属于契约，必须采用冻结、封装或复制等运行时机制。
+
+### 在数据边界执行真实验证
+
+源码内的默认值适合用 `satisfies` 检查；解析得到的外部值则先保持为 `unknown`。类型守卫必须检查容器、判别值和字段类型，而不是只写一个返回类型。
+
+```typescript run title="runtime_boundary.ts"
+type Settings = {
+  mode: "safe" | "fast";
+  retries: number;
+};
+
+const defaults = {
+  mode: "safe",
+  retries: 2,
+} satisfies Settings;
+
+function isSettings(value: unknown): value is Settings {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    (candidate.mode === "safe" || candidate.mode === "fast") &&
+    typeof candidate.retries === "number"
+  );
+}
+
+const external: unknown = JSON.parse('{"mode":"fast","retries":"3"}');
+
+console.log(isSettings(defaults));
+console.log(isSettings(external));
+```
+
+```text
+true
+false
+```
+
+外部 JSON 的 `retries` 是字符串，所以验证器返回 `false`。如果写成 `JSON.parse(raw) satisfies Settings`，左侧是 `any`，表达式通常会通过编译，却不会检查任何字段。这种写法比明显的断言更容易造成“已经验证”的错觉。
+
+示例中的 `as Record<string, unknown>` 只用于安全读取已经确认是对象的候选属性。每个领域字段随后仍接受显式检查；这个局部断言没有直接把候选值升级为 `Settings`。
+
+## 陷阱
+
+> [!PITFALL]
+> 把 `satisfies` 当作运行时验证器。它在输出 JavaScript 前被移除，因此无法检查请求、JSON、环境变量或 JavaScript 调用方送来的值。
+
+**修复方法：** 让外部数据以 `unknown` 进入系统，并用解析器、模式验证器或逐字段类型守卫检查。只有验证成功的分支才能构造领域值；`satisfies` 只检查验证器自身的静态声明。
+
+> [!PITFALL]
+> 以为目标类型会成为变量类型。若目标有可选的 `cache` 属性，而左侧对象没有该属性，检查通过后访问 `object.cache` 仍会报错，因为结果类型没有凭空增加成员。
+
+**修复方法：** 需要对象对外暴露完整契约，或者稍后要补充可选属性时，使用类型注解。只想验证当前声明并继续派生精确键集合时，使用 `satisfies`。
+
+> [!PITFALL]
+> 以为每个字面量都会保留。可变对象中的 `path: "/health"` 在目标属性为 `string` 时通常仍推断为 `string`；数字属性同样通常拓宽为 `number`。
+
+**修复方法：** 先判断调用方真正需要的精度。目标使用字面量联合时可以保留选中的成员；需要整个对象保持精确且只读时使用 `as const satisfies Target`，不要为了展示窄类型而过度收窄可变状态。
+
+> [!PITFALL]
+> 用开放索引签名检查程序拥有的闭合集合。`Record<string, Handler>` 会检查每个现有值，却允许任意字符串键，因此漏写必需键和拼错键名都可能逃过检查。
+
+**修复方法：** 把合法键写成字面量联合，例如 `Record<RouteName, Handler>`。需要从现有数据派生时，使用 `keyof typeof source`，让一个声明成为唯一事实来源。
+
+> [!PITFALL]
+> 先用宽泛断言隐藏错误，再追加 `satisfies`。`value as unknown as Target satisfies Target` 检查的只是已经伪装成 `Target` 的表达式，没有恢复任何证据。
+
+**修复方法：** 删除断言，修正左侧值或目标契约。确实无法在静态系统中表达的边界，应把断言限制在很小的辅助函数中，并用运行时检查与测试证明该函数的前置条件。
+
+> [!PITFALL]
+> 把更窄的结果当作可随意修改的契约。`{ enabled: true } satisfies { enabled: boolean }` 在 TypeScript 6 中会让属性保持为 `true`，随后赋值 `false` 会失败。
+
+**修复方法：** 若状态必须在多个合法值之间变化，给变量或属性写出预期的可变类型注解。`satisfies` 更适合声明后保持稳定，并用于派生键、联合或回调签名的静态表格。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把 `const config: Config = …` 机械改成 `const config = … satisfies Config`，却没有检查后续赋值；布尔值或判别字段变窄后，更新代码会编译失败。它们也会生成 `JSON.parse(raw) satisfies Config`，让 `any` 绕过检查；或者把有限注册表写成 `Record<string, Entry>`，使拼错的键看起来合法。另一类错误是无条件添加 `as const`，导致只读元组无法传给需要可变数组的 API。
+
+**让 AI 检查**
+
+- 列出每个 `satisfies` 左侧表达式的实际推断类型，并与目标类型逐属性对照。
+- 找出来自 `any`、`unknown`、JSON、环境变量和类型断言的数据，说明哪一步执行了真实运行时验证。
+- 检查目标中的键集合是否本应封闭，并跟踪声明后的每次赋值是否需要更宽类型。
+
+**审查清单**
+
+- 用 TypeScript 6 在严格模式下运行类型检查，同时保留用于证明非法情况的 `@ts-expect-error` 测试。
+- 对注册表故意漏掉一个必需键、拼错一个键，并确认编译器都能拒绝。
+- 给运行时解析器输入 `null`、错误判别值、缺失字段和错误字段类型，确认它们不会进入领域逻辑。
+
+**提示词词汇**
+
+使用 `satisfies operator`（`satisfies` 操作符）、`contextual typing`（上下文类型推断）、`assignability`（可赋值性）、`inferred expression type`（表达式推断类型）、`excess property check`（多余属性检查）、`finite key union`（有限键联合）、`runtime validation`（运行时验证）和 `const assertion`（`const` 断言）。要求模型分别写出“目标契约”和“结果类型”；只说“保持类型安全”不足以暴露 `any` 与开放索引签名。
+
+<Depth level="deep">
+
+## 上下文类型会影响推断
+
+<Term id="type-inference">类型推断（type inference）</Term>并非只看左侧字面量本身。表达式所在位置提供的预期类型也会影响参数、数组和对象属性的推断，这称为上下文类型推断。`satisfies` 的右侧就是这样一个上下文来源。
+
+普通声明 `const plain = { mode: "safe" }` 中，`plain.mode` 通常拓宽为 `string`，因为对象属性可被修改。目标为 `{ mode: "safe" | "fast" }` 时，`satisfies` 提供一个字面量联合上下文，结果可保留 `"safe"`。目标若只是 `{ mode: string }`，则没有可选择的窄联合成员，结果仍通常是 `string`。
+
+数组也会利用目标上下文。目标分支包含固定长度元组时，数组字面量可以推断为元组，从而保留长度信息。目标只有 `number[]` 时，数组仍是普通数组；`satisfies` 不会自动把所有数组变成元组。
+
+回调参数同样可以从目标取得类型。注册表目标若规定 `(event: Event) => void`，未显式注解的回调参数会被推断为 `Event`。最终对象仍拥有每个具体回调的推断签名，但这不意味着函数参数方差规则被关闭。
+
+这个机制解释了为什么“检查但绝不改变类型”容易造成误解。准确说法是：目标参与左侧的上下文推断，检查完成后不会用整个目标类型覆盖推断结果。评审时应查看编译器实际显示的类型，而不是从语法口号猜测。
+
+## 精确键集合与可赋值性
+
+`satisfies` 使用普通的可赋值性规则，不会引入新的“精确对象类型”。直接对象字面量面对没有索引签名的目标时会执行多余属性检查，所以 `Record<"read" | "write", Handler>` 能拒绝 `wirte`。若先把同一个对象存进变量再检查，结构类型的一般规则可能允许额外成员。
+
+必需键检查来自映射类型本身。`Record<"read" | "write", Handler>` 展开后需要两个属性，缺少其中任何一个都会失败。`Record<string, Handler>` 只声明“存在的任意字符串属性都必须是 Handler”，并不要求某个具体键存在。
+
+有限键联合应来自最可靠的数据源。若命令对象是事实来源，就从 `keyof typeof commands` 派生名称；若协议先定义合法名称，就让 `Record<CommandName, Command>` 检查对象。不要同时手写对象键、联合和验证数组三份列表。
+
+多余属性检查不是运行时白名单。即使源码对象通过精确键检查，JavaScript 仍可在运行时添加属性，外部 JSON 也可以包含额外字段。需要拒绝未知字段时，运行时解析器必须明确执行这一策略。
+
+## 可选属性不会被补上
+
+目标中的可选属性表示兼容值可以没有该属性。左侧省略它时，`satisfies` 会接受对象，但结果类型仍只包含实际声明的属性。这样一来，`"cache" in config` 与 `config.cache` 的静态可用性不会被目标虚构出来。
+
+若左侧写出可选属性，它的值必须满足当前编译器选项下的可赋值性规则。启用 `exactOptionalPropertyTypes` 时，`option?: string` 表示属性存在时必须是 `string`，不自动包含 `undefined`。关闭该选项时，显式 `undefined` 的兼容范围会更宽。
+
+库和应用应在自己的 `tsconfig` 下验证示例与声明。`satisfies` 不会隔离 `strictFunctionTypes`、`noUncheckedIndexedAccess` 或 `exactOptionalPropertyTypes` 等选项的影响。复制生成代码时，必须在目标项目的真实配置中运行 `tsc`。
+
+需要稍后添加可选属性时，注解通常更符合意图。例如，先声明 `const config: Config = defaults`，再更新 `config.cache`，公开契约清楚且允许目标定义的变化。用 `satisfies` 后再通过断言补属性，只是在抵消原本保留精确结果类型的选择。
+
+## `as const satisfies` 有先后顺序
+
+表达式 `value as const satisfies Target` 先对字面量应用 `const` 断言，再检查只读、窄化后的结果能否赋给 `Target`。因此，对象属性会变为只读，数组会成为只读元组，原始值会尽量保持字面量类型。目标必须接受这种只读性。
+
+顺序适合静态常量表，但不适合所有配置。若下游函数拥有数组并会排序或追加元素，向它传递只读元组应当失败；把目标中的数组改成 `readonly` 只是准确描述不修改的使用方，不能用来掩盖真实的可变需求。
+
+两个操作符都会从生成的 JavaScript 中消失。运行时值仍是普通对象，引用身份与不带这些类型语法时相同。编译器检查通过只证明受检源码表达式与静态目标兼容，不证明对象之后永远不变。
+
+对外发布的常量还要考虑声明输出。保留极窄的推断类型会让生成的 `.d.ts` 暴露大量具体属性；这可能是有意设计，也可能把实现细节变成公共 API。库边界需要稳定契约时，应给导出写显式注解，并在内部使用 `satisfies` 检查更具体的实现表。
+
+## 根据契约与可变性选择语法
+
+类型注解、`satisfies`、`as const` 和类型断言并不是四种风格不同的同义写法。
+它们分别控制公开契约、兼容性检查、只读字面量推断和检查器信任，因此选择标准应是代码下一步要做什么。
+
+### 类型注解固定公开类型
+
+变量需要在多个合法状态之间赋值时，注解通常最直接。
+`let mode: "safe" | "fast" = "safe"` 明确表示后续可以写入另一个联合成员，而不是把初始化值当成永久状态。
+
+导出的函数参数、返回值和对象也常需要注解，因为维护者希望实现变化不能悄悄改变使用方看到的类型。
+注解造成的拓宽在这里不是信息损失，而是稳定 API 的有意选择。
+
+### `satisfies` 校验当前表达式
+
+静态表格通常先声明一次，之后从中派生名称、判别值或回调类型。
+此时保留当前表达式的成员信息有实际价值，而目标类型负责阻止缺失条目和不兼容值。
+
+目标不应比真实契约更宽。
+若调用方只支持两个命令，却用 `Record<string, Command>` 检查，实现得到的是虚假的开放能力，而不是更灵活的设计。
+
+### `as const` 请求只读精度
+
+`as const` 适合协议常量、测试向量和不会修改的查找表。
+它会递归地把字面量表达式中的属性标记为只读，但不会深度冻结值引用的现有对象。
+
+若只需要某一个判别字段保持窄类型，可以给该字段更具体的上下文，而不必冻结整个对象的静态形状。
+这种局部设计通常更容易与需要可变集合的代码协作。
+
+### 类型断言记录外部证明
+
+类型断言只应出现在开发者掌握了编译器无法表达的证据时。
+典型位置是经过运行时检查后的窄小适配器，而不是未验证数据刚进入系统的位置。
+
+断言附近应能看到证据来源、前置条件和失败策略。
+如果只能用“数据应该是这样”解释断言，就还没有建立足够的证明。
+
+| 语法 | 主要作用 | 结果类型 | 运行时行为 |
+| --- | --- | --- | --- |
+| `const value: Target = expression` | 固定公开契约 | `Target` | 无额外验证 |
+| `const value = expression satisfies Target` | 检查可赋值性 | 上下文中的推断结果 | 无额外验证 |
+| `expression as const` | 请求只读字面量精度 | 窄化的只读结果 | 不冻结对象 |
+| `expression as Target` | 要求检查器信任断言 | `Target` | 不验证也不转换 |
+
+## 用类型测试固定静态保证
+
+`satisfies` 的价值存在于编译器行为中，只运行 JavaScript 无法验证它。
+除了执行示例，还要运行 `tsc --noEmit`，并把关键的接受与拒绝情况写成类型测试。
+
+### 正向测试证明可用能力
+
+正向测试应使用检查后保留的具体能力，例如把 `routes.health.method` 传给只接受 `"GET"` 的函数。
+这比只声明对象更有信息量，因为目标类型意外变宽时，使用点会立即失败。
+
+也可以用 `keyof typeof registry` 构造名称联合，再让函数只接受该联合。
+添加或删除注册项后，类型测试会展示派生 API 是否按预期同步变化。
+
+### 负向测试证明错误仍被拒绝
+
+使用 `@ts-expect-error` 标记刻意错误的声明，可以让“应该报错”成为可执行断言。
+若未来的重构让该行不再产生诊断，TypeScript 会报告这个指令未被使用。
+
+有限注册表至少应测试一个缺失键、一个多余键和一个错误值。
+可变配置还应测试合法重新赋值，防止从注解改成 `satisfies` 后无意留下过窄类型。
+
+### 编译器配置属于测试输入
+
+类型测试必须使用项目支持的 TypeScript 版本和 `tsconfig`。
+编辑器中的临时推断不能替代 CI，因为编辑器可能选择另一个工作区版本或不同配置。
+
+验证生成代码时，至少记录以下条件：
+
+- TypeScript 的确切版本，而不是只写“最新版”。
+- 是否启用 `strict` 与 `exactOptionalPropertyTypes`。
+- 类型测试使用的入口文件和 `tsconfig`。
+- 预期成功与预期失败的命令退出状态。
+
+这些记录能区分语言行为变化、配置差异与代码回归。
+只保存运行时快照会漏掉 `satisfies` 最重要的静态保证。
+
+## 分层处理注册表与外部数据
+
+成熟系统通常同时有静态注册表和动态输入，两者不应共用一种“验证”方式。
+源码注册表由 TypeScript 检查，外部名称与载荷由运行时解析器检查，领域逻辑只接收已验证结果。
+
+### 静态层拥有实现
+
+处理器对象可以用有限键联合与 `satisfies` 校验。
+这样既保证每个协议命令都有实现，也保留每个处理器的具体参数和返回类型。
+
+从该对象派生 `keyof` 时，得到的是实现真正拥有的名称。
+不要用断言把 `Object.keys()` 直接升级成任意联合，除非对象的运行时构造路径也保证没有额外键。
+
+### 边界层拥有解析
+
+解析器接收 `unknown`，检查输入是否为对象，再验证命令名称和对应载荷。
+它可以返回判别联合，让后续控制流根据名称收窄整个请求。
+
+运行时成员检查应来自与静态联合同步的数据源，例如一个 `as const` 名称数组或模式定义。
+只有返回类型而没有实际比较的类型谓词，仍然只是另一种未经证明的断言。
+
+### 领域层依赖已建立的不变量
+
+领域分派不必重复检查每个基础字段，但应保留不可达分支的运行时失败。
+即使静态联合看似穷尽，旧客户端、JavaScript 调用方或错误断言仍可能送入未知名称。
+
+这种分层给 `satisfies` 一个清晰位置：它检查源码拥有的声明，不承担输入清洗、安全验证或数据迁移。
+生成代码把这三层压成一次断言时，应先恢复边界，再讨论类型精度。
+
+</Depth>
+
+<Checkpoint id="typescript/satisfies" />
+
+## 延伸阅读
+
+- [TypeScript 4.9 发布说明：`satisfies` 操作符](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html)
+- [TypeScript 手册：类型断言](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions)
+- [TypeScript 手册：多余属性检查](https://www.typescriptlang.org/docs/handbook/2/objects.html#excess-property-checks)
+- [TypeScript 3.4 发布说明：`const` 断言](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-3-4.html#const-assertions)

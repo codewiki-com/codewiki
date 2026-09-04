@@ -1,0 +1,448 @@
+---
+title: Kotlin 内联值类
+description: 使用 `@JvmInline value class` 建模单值领域类型，理解 JVM 表示、装箱边界、构造校验与 Java 互操作。
+track: kotlin
+section: functions-classes
+difficulty: intermediate
+tags: [kotlin, inline-value-classes, value-classes, boxing, jvm]
+prerequisites: [kotlin/fundamentals, kotlin/oop]
+related: [kotlin/data-classes, kotlin/null-safety, kotlin/collections, kotlin/extensions]
+terms: [value-class, underlying-type, boxing, class-invariant]
+verified: { version: 'Kotlin 2.4.10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: kotlin/inline-classes
+sources:
+  - { title: 'Kotlin documentation: Inline value classes', url: 'https://kotlinlang.org/docs/inline-classes.html' }
+  - { title: 'Kotlin documentation: Calling Kotlin from Java', url: 'https://kotlinlang.org/docs/java-to-kotlin-interop.html#inline-value-classes' }
+  - { title: 'Kotlin language specification: Value class declaration', url: 'https://kotlinlang.org/spec/declarations.html#value-class-declaration' }
+  - { title: 'Kotlin documentation: Equality', url: 'https://kotlinlang.org/docs/equality.html' }
+origin: old/src/content/docs/kotlin/inline-classes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    内联值类用一个新类型包装单个值；在合适的位置，编译器可以直接使用它的底层表示。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    “内联”不是不分配对象的保证。泛型、接口和可空边界可能需要装箱，公开构造函数也可能绕过你原本想强制执行的工厂规则。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    先用值类表达类型与不变量，再检查真实调用边界。只有性能重要且测量结果指向装箱时，才围绕具体热路径调整表示。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="value-class">内联值类（inline value class）</Term>是没有稳定对象标识、以一个主构造函数属性承载数据的 Kotlin 类。
+在 JVM 后端，声明同时使用 `value` 与 `@JvmInline`：`@JvmInline value class UserId(val value: Long)`。
+它在 Kotlin 类型系统中是独立类型，但编译器可以在运行时用被包装的值表示实例。
+
+值类解决的是“多个概念碰巧使用同一种基础类型”的问题。
+如果用户 ID 与订单 ID 都是 `Long`，普通参数可以被意外对调，而且编译器无法发现。
+把它们声明成 `UserId` 与 `OrderId` 后，错误会停在编译期，而存储和协议边界仍可显式访问原始 `Long`。
+
+你会在标识符、计量单位、已规范化字符串和受约束标量中遇到值类。
+它适合一个值就能完整表达的概念。
+需要多个数据属性、可复制快照或常规对象标识时，应考虑数据类或普通类，而不是把几个字段塞进集合或字符串后再包装。
+
+### 类型别名不创建新类型
+
+`typealias UserId = Long` 只给 `Long` 增加另一个源码名称。
+它与 `Long` 赋值兼容，另一个指向 `Long` 的别名也能传给 `UserId` 参数。
+类型别名适合缩短复杂类型签名，不适合阻止相同底层类型之间的误传。
+
+值类则创建真正的新类型。
+`UserId(7)` 不能直接传给需要 `OrderId` 或 `Long` 的函数，反方向也不行。
+这种边界是值类最可靠的收益；运行时是否装箱属于另一层问题，不应混为“类型是否真实存在”。
+
+## 工作原理
+
+### 声明约束
+
+JVM 内联值类必须有且只有一个主构造函数属性。
+该属性使用 `val`，不能是 `vararg`；类本身始终是 `final`，不能声明为 `inner`、`data` 或 `enum`，也不能继承普通类。
+值类可以实现接口，因此可以在保留领域类型的同时加入一项行为契约。
+
+构造函数、`init` 块、次构造函数、成员函数与计算属性都可以出现在值类中。
+除主构造函数属性外，其他属性不能拥有后备字段，所以 `lateinit` 属性与委托属性不适用。
+伴生对象可以提供解析或规范化入口，也不会给每个实例增加字段。
+
+主构造函数的单个属性是<Term id="underlying-type">底层类型（underlying type）</Term>的来源。
+它可以是原始数值、引用类型，或带上界的类型参数。
+“只有一个属性”限制的是当前内联表示，不表示被引用对象本身不可变或只有一个字段。
+
+### 表示由使用位置决定
+
+编译器为每个值类保留包装类，同时尽量在允许的位置使用底层值。
+直接接收 `OrderId` 的 JVM 函数通常可接收它的底层 `long`，成员调用也可编译成处理底层值的静态方法。
+这是一种编译策略，不是源码层面可以观察或依赖的对象布局契约。
+
+实例以另一种类型使用时，通常要进行<Term id="boxing">装箱（boxing）</Term>。
+典型边界包括泛型类型参数、实现的接口、`Any`，以及底层值无法同时表达 `null` 的可空值类。
+同一个源码值可能在一处使用底层表示，在另一处使用包装表示。
+
+表示切换不会取消 Kotlin 的静态类型检查。
+装箱后的 `UserId` 仍不是 `OrderId`，拆箱后返回 `UserId` 的泛型函数也不会把它变成 `Long`。
+它只改变运行时承载方式，并可能改变分配与调用成本。
+
+### 成员、相等性与标识
+
+值类可以声明成员函数、实现接口方法和重写 `toString()`。
+编译器基于唯一数据属性提供 `equals()` 与 `hashCode()`；当前规则不允许值类自行重写这两个成员。
+使用 `==` 比较同一值类的值，语义与底层属性的值相等性一致。
+
+值类没有可依赖的引用标识，因为同一个值可能被内联，也可能被包装为不同对象。
+因此，不要用 `===` 或 `!==` 推断两个值类值是否来自同一个构造调用。
+Kotlin 编译器会拒绝许多这样的比较，即使某种写法通过，其结果也不是领域语义。
+
+`val` 只禁止重新赋值主构造函数属性。
+如果底层值是 `MutableList` 或其他可变对象，其内容仍能变化，继而改变基于底层值生成的相等性和哈希。
+值类不是深不可变容器。
+
+## 示例
+
+下面四个程序都是独立文件。
+它们已使用 Kotlin 2.4.10 编译器编译，并在 JRE 21 上运行；紧随代码的输出来自实际执行。
+代码块没有浏览器运行标记，因为本站的浏览器运行器不执行 Kotlin。
+
+### 区分相同的底层类型
+
+第一个例子让两个 `Long` 承担不同角色。
+`Order` 的构造函数因此写出了字段含义，而不是依赖参数顺序和命名约定。
+
+<Depth level="quick">
+
+```kotlin
+@JvmInline
+value class UserId(val value: Long)
+
+@JvmInline
+value class OrderId(val value: Long)
+
+data class Order(val id: OrderId, val buyerId: UserId)
+
+fun label(order: Order): String =
+    "order=${order.id.value} buyer=${order.buyerId.value}"
+
+fun main() {
+    val order = Order(OrderId(42), UserId(7))
+
+    println(label(order))
+    println("same raw value=${order.id.value == UserId(42).value}")
+
+    // label(Order(OrderId(42), OrderId(7))) 无法通过编译。
+}
+```
+
+```text
+order=42 buyer=7
+same raw value=true
+```
+
+</Depth>
+
+第二行输出说明两个包装值的原始 `Long` 可以相等。
+它们在源码中仍属于不同类型，所以相等的位模式不会让 `OrderId` 自动兼容 `UserId`。
+注释中的调用若取消注释，第二个参数会在编译期报告类型不匹配。
+
+这个边界也让重构更安全。
+字段或参数更名只能改善提示，独立类型则让编译器检查每个调用点。
+在数据库、JSON 或 URL 边界解包仍是显式操作，代码审查可以看到类型安全从哪里开始、在哪里结束。
+
+### 在构造边界建立不变量
+
+值类可以让已经规范化并通过校验的字符串拥有专用类型。
+私有主构造函数阻止同一模块中的普通调用点绕过 `parse()`。
+
+```kotlin
+@JvmInline
+value class EmailAddress private constructor(val value: String) {
+    init {
+        require('@' in value) { "email must contain @" }
+        require(value.none(Char::isWhitespace)) { "email must not contain whitespace" }
+    }
+
+    val domain: String
+        get() = value.substringAfter('@')
+
+    companion object {
+        fun parse(raw: String): EmailAddress =
+            EmailAddress(raw.trim().lowercase())
+    }
+}
+
+fun main() {
+    val email = EmailAddress.parse("  ADA@EXAMPLE.COM ")
+    println(email.value)
+    println(email.domain)
+
+    val message = runCatching { EmailAddress.parse("missing-at-sign") }
+        .exceptionOrNull()
+        ?.message
+    println(message)
+}
+```
+
+```text
+ada@example.com
+example.com
+email must contain @
+```
+
+`parse()` 先修剪并统一大小写，随后由 `init` 检查构造结果。
+成功返回 `EmailAddress` 后，使用方不必重复检查空白或 `@`。
+失败仍是公开 API 的一部分；若输入错误属于正常分支，可以提供返回可空值或领域结果类型的另一个工厂。
+
+这里的规则只是教学用的最小约束，不是完整邮箱标准。
+值类不会把简单的字符串判断升级为标准验证器，也不会自动改变 JSON 或数据库格式。
+真实边界仍要明确决定解析、错误报告与序列化方式。
+
+### 观察装箱边界
+
+下一个值类实现接口，并分别穿过泛型、可空和接口参数。
+这些函数内部通过 JVM 类名观察到包装表示。
+
+```kotlin
+interface Renderable {
+    fun render(): String
+}
+
+@JvmInline
+value class CustomerId(val value: Long) : Renderable {
+    override fun render(): String = "customer-$value"
+}
+
+fun <T : Any> describeGeneric(value: T): String =
+    "${value.javaClass.simpleName}:$value"
+
+fun describeNullable(value: CustomerId?): String =
+    "${value?.javaClass?.simpleName}:$value"
+
+fun describeInterface(value: Renderable): String =
+    "${value.javaClass.simpleName}:${value.render()}"
+
+fun main() {
+    val id = CustomerId(7)
+
+    println(id.render())
+    println(describeGeneric(id))
+    println(describeNullable(id))
+    println(describeInterface(id))
+}
+```
+
+```text
+customer-7
+CustomerId:CustomerId(value=7)
+CustomerId:CustomerId(value=7)
+CustomerId:customer-7
+```
+
+直接的 `id.render()` 可以使用值类自身的表示。
+另外三次调用要求值充当 `T`、`CustomerId?` 或 `Renderable`，运行时因此能看到名为 `CustomerId` 的包装类。
+默认 `toString()` 也把类名和底层属性写进输出。
+
+这段输出证明这些具体调用存在包装表示，却不是微基准。
+JIT 仍可能消除某些临时分配，其他后端的表示规则也不同。
+如果成本影响目标服务，应在相同编译选项、后端和调用形状下测量，而不是从类名推算速度。
+
+### 给 Java 一个稳定入口
+
+值类参数会参与 JVM 名称修饰。
+`@JvmName` 可以给采用底层表示的顶层函数指定一个合法且稳定的 Java 名称。
+
+```kotlin
+@file:JvmName("OrderQueries")
+
+@JvmInline
+value class OrderId(val value: Long)
+
+@JvmName("findOrderById")
+fun findOrder(id: OrderId): String = "order-${id.value}"
+
+fun main() {
+    println(findOrder(OrderId(42)))
+}
+```
+
+```text
+order-42
+```
+
+对编译产物运行 `javap`，可以看到 `OrderQueries.findOrderById(long)`。
+Java 调用方传入 `long`，而 Kotlin 实现立即恢复 `OrderId` 的领域边界。
+这种桥接适合只需传递底层表示的稳定 Java API。
+
+Kotlin 2.4.10 还提供实验性的 `@JvmExposeBoxed` 与模块级 `-Xjvm-expose-boxed`，用于生成 Java 可访问的包装构造函数和装箱方法变体。
+它们需要 `ExperimentalStdlibApi` 选择加入。
+是否暴露装箱 API 是 ABI 设计决定，不应为了方便 Java 调用而在整个模块中无差别开启。
+
+## 陷阱
+
+> [!PITFALL]
+> 把值类描述为“保证零分配”会把一种编译偏好误写成语言契约。泛型、接口、`Any` 与某些可空位置都可能产生包装表示。
+
+**修复方法：** 先按类型安全设计接口，再定位实际热路径。
+使用目标 Kotlin 版本的编译产物和分析器确认装箱，并用贴近生产调用形状的基准判断它是否重要。
+
+> [!PITFALL]
+> 用可变集合或可变领域对象作为底层值，不会因为外面加了 `value class` 就变成不可变。内容改变后，值类的相等性与哈希也可能改变。
+
+**修复方法：** 作为哈希键或长期值使用时，让整条相等性对象图保持稳定。
+在构造边界复制可变输入，或包装真正不可变的表示；不要把只读接口误当作没有别名的保证。
+
+> [!PITFALL]
+> 把校验只放在伴生对象工厂中，却保留公开主构造函数，会让其他 Kotlin 代码直接构造未规范化的值。
+
+**修复方法：** 不变量必须统一时，限制主构造函数可见性，并让所有公开工厂经过同一校验路径。
+同时测试大小写、前后空白、空值和边界值，确认每个入口产生一致结果。
+
+> [!PITFALL]
+> 用 `===` 比较值类会假设一个不存在的稳定对象标识。内联与装箱可以让相同领域值没有对象，也可以让它在不同位置出现为不同包装对象。
+
+**修复方法：** 使用 `==` 表达值相等，并为底层类型选择正确的相等性语义。
+若业务需要独立实体标识，把标识本身放进值类，用该值比较，而不是比较包装对象引用。
+
+> [!PITFALL]
+> 从旧字节码示例复制 `box-impl`、`unbox-impl` 或带连字符的修饰名称到 Java 源码，通常无法编译。这些是编译器生成细节，不是稳定的 Java 源码 API。
+
+**修复方法：** 为底层表示提供带 `@JvmName` 的明确桥接，或在接受实验性 ABI 后有选择地使用 `@JvmExposeBoxed`。
+用 `javap` 检查发布产物，并从 Java 测试源码实际编译调用点。
+
+> [!PITFALL]
+> 把令牌或密码放进值类不会自动遮盖日志。默认 `toString()` 会显示类名和底层属性，泛型日志函数又会触发装箱并调用它。
+
+**修复方法：** 敏感值需要明确的允许字段日志策略，而不只是重写一个显示方法。
+可以重写 `toString()` 降低意外泄漏风险，但序列化、调试器、反射和显式属性访问仍要单独审查。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型常把“编译器尽量内联”改写成“运行时绝不分配”，随后在 `List<UserId>`、泛型仓库接口或 `UserId?` 上继续承诺零成本。
+它也会生成含两个主构造函数属性的值类、把 `var` 当作数据属性，或用 `===` 做去重。
+Java 互操作代码尤其容易复述旧文章中的 `box-impl` 调用，而不检查名称修饰、`@JvmName` 或当前的实验性装箱暴露选项。
+
+**让 AI 检查**
+
+- 标出每个值类值跨越泛型、接口、`Any`、可空、反射或集合边界的位置，并说明预期表示。
+- 列出所有构造与反序列化入口，证明规范化和不变量不能被公开构造函数绕过。
+- 从目标构建产物提取 JVM 签名，再编译一个最小 Java 调用方，验证名称与参数表示。
+
+**审查清单**
+
+- 用错误类型调用相邻 ID 或单位参数，保留应当编译失败的负向测试。
+- 改变底层对象中的可变内容，确认哈希键、相等性和缓存行为不会漂移。
+- 在日志、异常、序列化输出和调试表示中搜索哨兵秘密值，确认包装没有造成虚假的安全感。
+
+**提示词词汇**
+
+使用准确术语：`inline value class`（内联值类）、`underlying type`（底层类型）、`unboxed representation`（未装箱表示）、`boxed representation`（装箱表示）、`name mangling`（名称修饰）、`JVM signature`（JVM 签名）、`class invariant`（类不变量）、`referential equality`（引用相等性）。
+要求 AI 按具体使用位置说明表示，并提供编译器版本与字节码证据；“把 ID 优化成零成本类型”既没有定义边界，也没有可验证条件。
+
+<Depth level="deep">
+
+## JVM 表示与 ABI
+
+### 包装类始终存在
+
+JVM 后端会为值类生成包装类，因为接口、泛型和其他对象位置需要真实引用。
+同一个产物还包含处理底层值的合成函数，例如构造、成员调用、相等性、装箱和拆箱辅助方法。
+这些方法让编译器在不同表示之间转换，但名称和具体形状属于后端 ABI。
+
+直接的值类参数通常编译成底层 JVM 类型。
+例如，以 `Long` 为底层类型的 `OrderId` 可以出现在方法描述符中作为原始 `long`。
+如果底层类型本来就是引用，未装箱表示仍是那个引用；“未装箱”不等于“原始数值”。
+
+源码层面的构造调用也不保证创建包装对象。
+编译器可以把 `OrderId(42)` 编译成底层值，并在遇到对象边界时才装箱。
+反过来，泛型函数返回后若静态类型恢复为 `OrderId`，编译器又可以拆箱供后续直接调用使用。
+
+### 名称修饰避免签名冲突
+
+若 `OrderId` 以 `long` 表示，`fun load(id: Long)` 与 `fun load(id: OrderId)` 在 JVM 上原本会得到同一参数描述符。
+Kotlin 为使用值类的函数名增加稳定哈希，以免两个声明发生平台签名冲突。
+哈希解决了 JVM 层面的重载，却让默认方法名不适合直接写在 Java 源码中。
+
+`@JvmName` 改变导出的 JVM 名称，但不会让值类包装构造函数自动变成 Java API。
+当 Java 只需传递底层值时，命名桥接通常最小也最清楚。
+桥接函数应立即构造领域类型，这样校验与 Kotlin 内部 API 仍集中在一处。
+
+需要 Java 持有值类对象时，`@JvmExposeBoxed` 会生成装箱入口。
+它在 Kotlin 2.4.10 中仍是实验性 API，所以升级编译器时要重新验证生成签名。
+模块级开关影响范围更大，库作者还要把它视为二进制兼容性承诺。
+
+### 可空表示取决于底层类型
+
+对于底层为非空原始值的 `CustomerId`，`CustomerId?` 必须区分一个有效数字与 `null`，因此通常使用包装引用。
+但可空规则不能缩写成“问号永远分配对象”。
+底层本身可空、泛型上界和后续内联都会影响可用表示，JIT 也可能消除临时对象。
+
+不要为了逃避可能的装箱而引入魔法数字或空字符串哨兵。
+这种做法把表示问题变成数据正确性问题，还可能让一个本应非法的值流入数据库或协议。
+先保留准确的空值语义，再根据测量决定是否需要改造热路径的数据布局。
+
+泛型底层类型在 JVM 上会映射到其运行时可用的上界，未指定更窄上界时通常是 `Any?`。
+这让 `value class Box<T>(val value: T)` 保留静态类型区别，却不能承诺原始类型专门化。
+需要扁平原始数组或数值批处理时，应检查生成表示，而不是从 `value` 修饰符推断。
+
+## 不变量、相等性与可变性
+
+### 构造成功才建立不变量
+
+<Term id="class-invariant">类不变量（class invariant）</Term>是在成功构造后以及每次公开操作后都必须成立的规则。
+值类的 `init` 块可以拒绝非法底层值，私有构造函数则能迫使普通 Kotlin 调用方经过命名工厂。
+两者组合适合完成修剪、大小写统一、范围检查或格式解析。
+
+工厂名称应说明失败模型。
+`parse()` 可以抛出格式错误，`parseOrNull()` 应以 `null` 表示失败，返回领域结果的工厂则能保留原因。
+模型生成代码常混用这些形式，使调用方既捕获异常又检查空值；公开入口应选择并记录一种契约。
+
+框架边界需要单独验证。
+序列化库、ORM、反射和 Java 代码不一定沿用手写 Kotlin 调用点的构造路径，支持方式也随库和插件版本变化。
+为每个真实适配器写往返测试，并在边界恢复领域类型后立即断言不变量。
+
+### 值语义不等于深不可变
+
+值类的 `equals()` 与 `hashCode()` 由唯一数据属性决定。
+当底层属性拥有稳定值语义时，这正适合作为映射键；两个独立构造的 `UserId(7)` 会按值相等并得到一致哈希。
+无需也不应观察某个包装对象是否被复用。
+
+底层引用若可变，风险会透过包装继续存在。
+把包装的列表插入 `HashMap` 后再修改列表内容，可能改变哈希码，让原键无法在原存储桶中找到。
+声明中的 `val` 只固定列表引用，没有冻结列表元素。
+
+对数组还要额外小心，因为数组的默认 `equals()` 与列表的内容相等性不同。
+如果领域含多个组成部分、需要结构复制或明确控制每个字段的相等性，数据类通常更诚实。
+为获得“单字段”形式而把数据编码进数组，会隐藏而不是解决模型问题。
+
+### 值类、数据类与普通类
+
+选择值类的首要条件是领域概念能由一个底层值完整表达，并且没有对象标识语义。
+它的优势是静态类型边界以及可能使用紧凑表示。
+可能的内联是收益，不应成为省略正确建模的理由。
+
+数据类适合由多个主构造函数属性描述的值，并提供 `copy()` 与解构。
+它拥有普通对象表示，`copy()` 仍是浅拷贝，也不自动提供深不可变。
+从数据类改成值类会改变源码 API、相等性边界和 JVM ABI，不是机械性能重构。
+
+普通类适合资源所有权、可变生命周期或对象标识比内容更重要的情况。
+如果两个字段相同的实例仍应被视为两个独立对象，值类的无标识模型就不合适。
+此时应显式建模实体 ID，而不是让包装对象引用承担身份。
+
+最后看调用边界。
+一个贯穿泛型集合、反射框架和 Java API 的类型可能经常装箱，但仍能凭借类型安全值得使用。
+是否保留它应由错误预防价值和实测成本共同决定，而不是由“零成本”口号决定。
+
+</Depth>
+
+<Checkpoint id="kotlin/inline-classes" />
+
+## 延伸阅读
+
+- [Kotlin 文档：内联值类](https://kotlinlang.org/docs/inline-classes.html)
+- [Kotlin 文档：从 Java 调用 Kotlin](https://kotlinlang.org/docs/java-to-kotlin-interop.html#inline-value-classes)
+- [Kotlin 语言规范：值类声明](https://kotlinlang.org/spec/declarations.html#value-class-declaration)
+- [Kotlin 文档：相等性](https://kotlinlang.org/docs/equality.html)

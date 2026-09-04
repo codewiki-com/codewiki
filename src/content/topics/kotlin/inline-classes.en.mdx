@@ -1,0 +1,448 @@
+---
+title: Kotlin inline value classes
+description: Model single-value domain types with `@JvmInline value class`, including JVM representation, boxing boundaries, validation, and Java interop.
+track: kotlin
+section: functions-classes
+difficulty: intermediate
+tags: [kotlin, inline-value-classes, value-classes, boxing, jvm]
+prerequisites: [kotlin/fundamentals, kotlin/oop]
+related: [kotlin/data-classes, kotlin/null-safety, kotlin/collections, kotlin/extensions]
+terms: [value-class, underlying-type, boxing, class-invariant]
+verified: { version: 'Kotlin 2.4.10', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: kotlin/inline-classes
+sources:
+  - { title: 'Kotlin documentation: Inline value classes', url: 'https://kotlinlang.org/docs/inline-classes.html' }
+  - { title: 'Kotlin documentation: Calling Kotlin from Java', url: 'https://kotlinlang.org/docs/java-to-kotlin-interop.html#inline-value-classes' }
+  - { title: 'Kotlin language specification: Value class declaration', url: 'https://kotlinlang.org/spec/declarations.html#value-class-declaration' }
+  - { title: 'Kotlin documentation: Equality', url: 'https://kotlinlang.org/docs/equality.html' }
+origin: old/src/content/docs/kotlin/inline-classes.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    An inline value class wraps one value in a new type; where permitted, the compiler can use the underlying representation directly.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    "Inline" does not guarantee zero allocations. Generic, interface, and nullable boundaries can require boxing, while a public constructor can bypass an intended factory rule.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Use the value class for types and invariants first, then inspect real call boundaries. Change a representation only when performance matters and measurements identify boxing on a specific hot path.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+An <Term id="value-class">inline value class</Term> is a Kotlin class with no stable object identity and one primary-constructor property carrying its data.
+On the JVM backend, the declaration uses both `value` and `@JvmInline`: `@JvmInline value class UserId(val value: Long)`.
+It is a distinct type in Kotlin's type system, but the compiler may represent an instance at runtime with the wrapped value.
+
+Value classes solve the problem of several concepts happening to use the same basic type.
+If user IDs and order IDs are both `Long`, ordinary parameters can be transposed without the compiler noticing.
+Declare them as `UserId` and `OrderId`, and that mistake stops at compile time while storage and protocol boundaries can still access the raw `Long` explicitly.
+
+You encounter value classes in identifiers, units of measure, normalized strings, and constrained scalars.
+They fit concepts that one value describes completely.
+When a value needs several data properties, a copyable snapshot, or ordinary object identity, consider a data class or regular class instead of encoding several fields into a collection or string and wrapping that.
+
+### Type aliases don't create new types
+
+`typealias UserId = Long` only adds another source name for `Long`.
+It is assignment-compatible with `Long`, and another alias of `Long` can be passed to a `UserId` parameter.
+Type aliases are useful for shortening complex type signatures, not for preventing confusion among values with the same underlying type.
+
+A value class creates a genuinely new type.
+You cannot pass `UserId(7)` directly to a function expecting `OrderId` or `Long`, and the reverse conversions don't happen either.
+That boundary is the most dependable benefit of a value class; whether a use site boxes the value is a separate concern, not evidence that the type is somehow unreal.
+
+## How it works
+
+### Declaration constraints
+
+A JVM inline value class has exactly one primary-constructor property.
+The property uses `val`, cannot be `vararg`, and the class is always `final`; it cannot be `inner`, `data`, or `enum`, and it cannot extend a regular class.
+A value class may implement interfaces, so it can preserve a domain type while taking on a behavioral contract.
+
+Constructors, `init` blocks, secondary constructors, member functions, and computed properties are all allowed.
+Properties other than the primary-constructor property cannot have backing fields, which rules out `lateinit` and delegated properties.
+A companion object can provide parsing or normalization entry points without adding a field to each instance.
+
+The single primary-constructor property supplies the <Term id="underlying-type">underlying type</Term>.
+It may be a primitive number, a reference type, or a bounded type parameter.
+"One property" constrains the current inline representation; it does not make the referenced object immutable or restrict that object to one field.
+
+### Representation depends on the use site
+
+The compiler keeps a wrapper class for each value class while preferring the underlying value where the use site permits it.
+A JVM function that directly accepts `OrderId` can usually receive its underlying `long`, and a member call can compile to a static method that operates on the underlying value.
+This is a compilation strategy, not a source-level contract for an observable object layout.
+
+An instance usually needs <Term id="boxing">boxing</Term> when it is used as another type.
+Common boundaries include a generic type parameter, an implemented interface, `Any`, and a nullable value class when the underlying value cannot also represent `null`.
+The same source value may use its underlying representation in one place and a wrapper in another.
+
+Changing representation does not cancel Kotlin's static type checking.
+A boxed `UserId` is still not an `OrderId`, and a generic function that unboxes a returned `UserId` does not turn it into `Long`.
+Only the runtime carrier changes, along with possible allocation and calling costs.
+
+### Members, equality, and identity
+
+A value class may declare member functions, implement interface methods, and override `toString()`.
+The compiler supplies `equals()` and `hashCode()` from the sole data property; current rules do not let a value class override those two members itself.
+Using `==` between values of the same value class follows the value-equality semantics of the underlying property.
+
+A value class has no dependable reference identity because one value may be inlined or may appear in distinct wrapper objects.
+Do not use `===` or `!==` to infer whether two value-class values came from the same constructor call.
+The Kotlin compiler rejects many such comparisons, and even a form that compiles does not express domain semantics.
+
+`val` prevents reassignment of the primary-constructor property only.
+If its value is a `MutableList` or another mutable object, the contents can still change and alter the generated equality and hash code.
+A value class is not a deeply immutable container.
+
+## Examples
+
+The four programs below are standalone files.
+Each was compiled with Kotlin 2.4.10 and run on JRE 21; every output block comes from that execution.
+The fences have no browser run marker because codewiki's browser runner does not execute Kotlin.
+
+### Separating identical underlying types
+
+The first example assigns different roles to two `Long` values.
+The `Order` constructor records what each field means instead of relying on argument order and naming conventions.
+
+<Depth level="quick">
+
+```kotlin
+@JvmInline
+value class UserId(val value: Long)
+
+@JvmInline
+value class OrderId(val value: Long)
+
+data class Order(val id: OrderId, val buyerId: UserId)
+
+fun label(order: Order): String =
+    "order=${order.id.value} buyer=${order.buyerId.value}"
+
+fun main() {
+    val order = Order(OrderId(42), UserId(7))
+
+    println(label(order))
+    println("same raw value=${order.id.value == UserId(42).value}")
+
+    // label(Order(OrderId(42), OrderId(7))) would not compile.
+}
+```
+
+```text
+order=42 buyer=7
+same raw value=true
+```
+
+</Depth>
+
+The second output line shows that the raw `Long` values from two wrappers can be equal.
+The wrappers remain different source types, so equal bit patterns do not make `OrderId` assignment-compatible with `UserId`.
+Uncommenting the final call produces a compile-time type mismatch for the second argument.
+
+This boundary also makes refactoring safer.
+Renaming a field or parameter only improves the hint, while a distinct type makes the compiler check each call site.
+Unwrapping at a database, JSON, or URL boundary remains explicit, so review can see where type safety begins and ends.
+
+### Building an invariant at the construction boundary
+
+A value class can give a dedicated type to a string that has been normalized and validated.
+A private primary constructor stops ordinary call sites in the same module from bypassing `parse()`.
+
+```kotlin
+@JvmInline
+value class EmailAddress private constructor(val value: String) {
+    init {
+        require('@' in value) { "email must contain @" }
+        require(value.none(Char::isWhitespace)) { "email must not contain whitespace" }
+    }
+
+    val domain: String
+        get() = value.substringAfter('@')
+
+    companion object {
+        fun parse(raw: String): EmailAddress =
+            EmailAddress(raw.trim().lowercase())
+    }
+}
+
+fun main() {
+    val email = EmailAddress.parse("  ADA@EXAMPLE.COM ")
+    println(email.value)
+    println(email.domain)
+
+    val message = runCatching { EmailAddress.parse("missing-at-sign") }
+        .exceptionOrNull()
+        ?.message
+    println(message)
+}
+```
+
+```text
+ada@example.com
+example.com
+email must contain @
+```
+
+`parse()` trims and normalizes case before `init` checks the constructed result.
+Once it returns an `EmailAddress`, callers do not need to repeat the whitespace or `@` checks.
+Failure is still part of the public API; if invalid input is an ordinary branch, another factory can return null or a domain result type.
+
+These rules are deliberately minimal for the lesson, not a complete email standard.
+A value class does not turn a simple string test into a standards validator, nor does it automatically change the JSON or database format.
+The real boundary still needs an explicit parsing, error-reporting, and serialization policy.
+
+### Observing boxing boundaries
+
+The next value class implements an interface, then crosses generic, nullable, and interface parameters.
+Inside those functions, the JVM class name exposes the wrapper representation.
+
+```kotlin
+interface Renderable {
+    fun render(): String
+}
+
+@JvmInline
+value class CustomerId(val value: Long) : Renderable {
+    override fun render(): String = "customer-$value"
+}
+
+fun <T : Any> describeGeneric(value: T): String =
+    "${value.javaClass.simpleName}:$value"
+
+fun describeNullable(value: CustomerId?): String =
+    "${value?.javaClass?.simpleName}:$value"
+
+fun describeInterface(value: Renderable): String =
+    "${value.javaClass.simpleName}:${value.render()}"
+
+fun main() {
+    val id = CustomerId(7)
+
+    println(id.render())
+    println(describeGeneric(id))
+    println(describeNullable(id))
+    println(describeInterface(id))
+}
+```
+
+```text
+customer-7
+CustomerId:CustomerId(value=7)
+CustomerId:CustomerId(value=7)
+CustomerId:customer-7
+```
+
+The direct `id.render()` call can use the value class's own representation.
+The other three calls require the value to act as `T`, `CustomerId?`, or `Renderable`, so the runtime sees a wrapper class named `CustomerId`.
+The default `toString()` also writes the class name and underlying property to the output.
+
+This output proves that wrappers occur at these call sites, but it is not a microbenchmark.
+The JIT may still eliminate some temporary allocations, and other backends follow different representation rules.
+When cost matters to a target service, measure with the same compiler options, backend, and call shape instead of inferring speed from a class name.
+
+### Giving Java a stable entry point
+
+A value-class parameter participates in JVM name mangling.
+`@JvmName` can give a top-level function using the underlying representation a legal, stable Java name.
+
+```kotlin
+@file:JvmName("OrderQueries")
+
+@JvmInline
+value class OrderId(val value: Long)
+
+@JvmName("findOrderById")
+fun findOrder(id: OrderId): String = "order-${id.value}"
+
+fun main() {
+    println(findOrder(OrderId(42)))
+}
+```
+
+```text
+order-42
+```
+
+Running `javap` on the compiled artifact shows `OrderQueries.findOrderById(long)`.
+A Java caller passes a `long`, and the Kotlin implementation immediately restores the `OrderId` domain boundary.
+This bridge fits a stable Java API that only needs the underlying representation.
+
+Kotlin 2.4.10 also provides the experimental `@JvmExposeBoxed` annotation and module-wide `-Xjvm-expose-boxed` option for generating Java-accessible wrapper constructors and boxed method variants.
+They require opting in to `ExperimentalStdlibApi`.
+Exposing a boxed API is an ABI decision, so do not enable it indiscriminately across a module merely to make a Java call convenient.
+
+## Pitfalls
+
+> [!PITFALL]
+> Describing a value class as "guaranteed zero allocation" turns a compiler preference into a language contract. Generics, interfaces, `Any`, and some nullable positions can all require wrappers.
+
+**Fix:** Design the type-safe API first, then locate real hot paths.
+Use artifacts and profilers from the target Kotlin version to confirm boxing, and use a benchmark that matches production call shapes to decide whether it matters.
+
+> [!PITFALL]
+> Using a mutable collection or mutable domain object as the underlying value does not make it immutable because `value class` surrounds it. Content changes can also change value-class equality and hashing.
+
+**Fix:** Keep the entire equality object graph stable when the value is a hash key or long-lived value.
+Copy mutable input at the construction boundary or wrap a genuinely immutable representation; a read-only interface alone does not prove there are no aliases.
+
+> [!PITFALL]
+> Putting validation only in a companion factory while leaving the primary constructor public lets other Kotlin code construct unnormalized values directly.
+
+**Fix:** Restrict constructor visibility when every value must satisfy one invariant, and route public factories through the same validation path.
+Test case differences, surrounding whitespace, empty input, and boundary values so that every entry point gives consistent results.
+
+> [!PITFALL]
+> Comparing a value class with `===` assumes stable object identity that does not exist. Inlining and boxing can leave a domain value with no object in one place and distinct wrapper objects elsewhere.
+
+**Fix:** Use `==` for value equality and choose the correct equality semantics for the underlying type.
+If the business needs entity identity, put an ID value inside the value class and compare that value instead of wrapper references.
+
+> [!PITFALL]
+> Copying `box-impl`, `unbox-impl`, or hyphenated mangled names from old bytecode examples into Java source usually does not compile. They are compiler-generated details, not a stable Java source API.
+
+**Fix:** Provide an explicit `@JvmName` bridge for the underlying representation, or selectively use `@JvmExposeBoxed` after accepting its experimental ABI.
+Inspect the published artifact with `javap`, then compile a Java test source against the actual entry point.
+
+> [!PITFALL]
+> Putting a token or password in a value class does not redact logs automatically. The default `toString()` displays the class name and underlying property, and a generic logger boxes the value before calling it.
+
+**Fix:** Sensitive values need an allowlisted logging policy, not only a custom display method.
+Overriding `toString()` can reduce accidental leakage, but serialization, debuggers, reflection, and explicit property access still need separate review.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often rewrite "the compiler prefers inlining" as "the runtime never allocates," then keep promising zero cost for `List<UserId>`, generic repository interfaces, or `UserId?`.
+They also generate value classes with two primary-constructor properties, use `var` for the data property, or deduplicate values with `===`.
+Java interop code is especially prone to repeating `box-impl` calls from old articles without checking name mangling, `@JvmName`, or the current experimental boxed-exposure options.
+
+**Ask your AI to check**
+
+- Mark every point where a value-class value crosses a generic, interface, `Any`, nullable, reflection, or collection boundary, and state the expected representation.
+- List every construction and deserialization entry point, then prove that a public constructor cannot bypass normalization or invariants.
+- Extract JVM signatures from the target build and compile a minimal Java caller to verify names and parameter representations.
+
+**Review checklist**
+
+- Call adjacent ID or unit parameters with the wrong type, retaining negative tests that must fail compilation.
+- Mutate contents reachable through the underlying object and verify that hash keys, equality, and caches cannot drift.
+- Search logs, exceptions, serialized output, and debug representations for a sentinel secret to ensure the wrapper has not created false confidence.
+
+**Prompt vocabulary**
+
+Use the exact terms `inline value class`, `underlying type`, `unboxed representation`, `boxed representation`, `name mangling`, `JVM signature`, `class invariant`, and `referential equality`.
+Ask the AI to explain representation per use site and provide a compiler version plus bytecode evidence; "optimize this ID into a zero-cost type" defines neither a boundary nor a verifiable condition.
+
+<Depth level="deep">
+
+## JVM representation and ABI
+
+### The wrapper class always exists
+
+The JVM backend generates a wrapper class because interfaces, generics, and other object positions require a real reference.
+The same artifact contains synthetic functions for operations such as construction, member calls, equality, boxing, and unboxing on the underlying value.
+These functions let the compiler move between representations, but their names and exact shapes belong to the backend ABI.
+
+A direct value-class parameter usually compiles to its underlying JVM type.
+For example, an `OrderId` backed by `Long` can appear as primitive `long` in a method descriptor.
+When the underlying type is already a reference, the unboxed representation remains that reference; "unboxed" does not imply a primitive number.
+
+A source-level constructor call does not guarantee a wrapper allocation either.
+The compiler can compile `OrderId(42)` as an underlying value and box only when it reaches an object boundary.
+Conversely, after a generic function returns and the static type becomes `OrderId` again, the compiler can unbox it for a later direct call.
+
+### Mangling prevents signature clashes
+
+If `OrderId` is represented as `long`, `fun load(id: Long)` and `fun load(id: OrderId)` would otherwise have the same JVM parameter descriptor.
+Kotlin adds a stable hash to functions using value classes so that the declarations do not cause a platform signature clash.
+The hash solves JVM overloading but leaves the default method name unsuitable for direct Java source calls.
+
+`@JvmName` changes the exported JVM name, but it does not automatically turn the value-class wrapper constructor into a Java API.
+A named bridge is usually the smallest and clearest choice when Java only needs to pass the underlying value.
+The bridge should construct the domain type immediately so validation and Kotlin's internal API remain centralized.
+
+Use `@JvmExposeBoxed` when Java must hold a value-class object and needs generated boxed entry points.
+It remains experimental in Kotlin 2.4.10, so recheck generated signatures during compiler upgrades.
+The module-level switch has a wider effect, and library authors also need to treat it as a binary-compatibility commitment.
+
+### Nullable representation depends on the underlying type
+
+For `CustomerId` backed by a non-null primitive, `CustomerId?` must distinguish a valid number from `null`, so it normally uses a wrapper reference.
+The nullable rule cannot be reduced to "a question mark always allocates."
+A nullable underlying value, a generic upper bound, and later inlining all affect available representations, while the JIT may eliminate temporary objects.
+
+Do not introduce a magic number or empty-string sentinel merely to avoid possible boxing.
+That turns a representation question into a data-correctness bug and may let an otherwise illegal value reach a database or protocol.
+Preserve accurate null semantics first, then use measurements to decide whether a hot path needs a different data layout.
+
+A generic underlying type maps to its runtime-available upper bound on the JVM, usually `Any?` when no narrower bound is given.
+That lets `value class Box<T>(val value: T)` preserve a static type distinction, but it does not promise primitive specialization.
+When flat primitive arrays or numeric batch processing matter, inspect the generated representation instead of inferring it from the `value` modifier.
+
+## Invariants, equality, and mutability
+
+### Successful construction establishes the invariant
+
+A <Term id="class-invariant">class invariant</Term> is a rule that holds after successful construction and after every public operation.
+A value class's `init` block can reject an invalid underlying value, while a private constructor can force ordinary Kotlin callers through a named factory.
+Together they work well for trimming, case normalization, range checks, or format parsing.
+
+Factory names should state the failure model.
+`parse()` may throw on malformed input, `parseOrNull()` should represent failure with `null`, and a factory returning a domain result can preserve the reason.
+Generated code often mixes these forms and makes callers both catch exceptions and test for null; a public entry point should choose and document one contract.
+
+Framework boundaries need their own verification.
+Serialization libraries, ORMs, reflection, and Java code do not necessarily follow the construction path used by handwritten Kotlin calls, and support varies by library and plugin version.
+Write a round-trip test for each real adapter and assert the invariant immediately after the boundary restores the domain type.
+
+### Value semantics are not deep immutability
+
+The sole data property determines a value class's `equals()` and `hashCode()`.
+When that property has stable value semantics, this works naturally for map keys: two separately constructed `UserId(7)` values compare equal and have matching hashes.
+There is no need to observe, or rely on, reuse of any wrapper object.
+
+The risk passes through the wrapper when the underlying reference is mutable.
+If a wrapped list is inserted into a `HashMap` and later modified, its hash code can change and leave the original key unreachable in its old bucket.
+The `val` in the declaration fixes only the list reference, not the list elements.
+
+Arrays need additional care because their default `equals()` differs from a list's content equality.
+If the domain contains several components, needs structural copies, or needs explicit control over each field's equality, a data class is usually more honest.
+Encoding data in an array merely to obtain a "single field" hides the modeling problem instead of solving it.
+
+### Value classes, data classes, and regular classes
+
+Choose a value class first when one underlying value describes the domain concept completely and the concept has no object-identity semantics.
+Its benefits are the static type boundary and a potentially compact representation.
+Possible inlining is a benefit, not a reason to omit correct modeling.
+
+A data class fits a value described by several primary-constructor properties and adds `copy()` and destructuring.
+It has an ordinary object representation, while `copy()` remains shallow and does not make the object deeply immutable.
+Changing a data class into a value class changes the source API, equality boundary, and JVM ABI; it is not a mechanical performance refactor.
+
+A regular class fits resource ownership, a mutable lifecycle, or a concept where object identity matters more than content.
+If two instances with the same fields must still count as independent objects, the identity-free value-class model is wrong.
+Model an explicit entity ID in that case instead of making wrapper references carry identity.
+
+Finally, inspect the call boundaries.
+A type used throughout generic collections, reflection frameworks, and Java APIs may box often and still be worthwhile for type safety.
+Keep or remove it based on both error-prevention value and measured cost, not the slogan "zero cost."
+
+</Depth>
+
+<Checkpoint id="kotlin/inline-classes" />
+
+## Further reading
+
+- [Kotlin documentation: Inline value classes](https://kotlinlang.org/docs/inline-classes.html)
+- [Kotlin documentation: Calling Kotlin from Java](https://kotlinlang.org/docs/java-to-kotlin-interop.html#inline-value-classes)
+- [Kotlin language specification: Value class declaration](https://kotlinlang.org/spec/declarations.html#value-class-declaration)
+- [Kotlin documentation: Equality](https://kotlinlang.org/docs/equality.html)
