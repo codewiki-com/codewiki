@@ -17,3 +17,6 @@ export const SITE = {
  * instead of linking into the void; flip it when those pages exist.
  */
 export const P2_NAV = false;
+
+/** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
+export const P2_RULES = false;

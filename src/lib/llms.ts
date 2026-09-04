@@ -20,6 +20,14 @@ export interface LlmsTopic {
   description: string;
 }
 
+/** One localized cheatsheet in the site-wide Markdown index. */
+export interface LlmsCheatsheet {
+  slug: string;
+  lang: Locale;
+  title: string;
+  description: string;
+}
+
 /** One article as `/llms-full.txt` carries it. */
 export interface LlmsEntry {
   title: string;
@@ -44,8 +52,17 @@ export function mdUrl(track: string, slug: string, lang: Locale): string {
   return `${SITE.url}${lang === 'zh' ? '/zh' : ''}/${track}/${slug}.md`;
 }
 
+/** Absolute URL of a cheatsheet's Markdown twin. */
+export function cheatsheetMdUrl(slug: string, lang: Locale): string {
+  return `${SITE.url}${lang === 'zh' ? '/zh' : ''}/cheatsheets/${slug}.md`;
+}
+
 function bullet(topic: LlmsTopic): string {
   return `- [${topic.title}](${mdUrl(topic.track, topic.slug, topic.lang)}): ${topic.description}`;
+}
+
+function cheatsheetBullet(sheet: LlmsCheatsheet): string {
+  return `- [${sheet.title}](${cheatsheetMdUrl(sheet.slug, sheet.lang)}): ${sheet.description}`;
 }
 
 /** The topics of one locale, grouped into `### Track` blocks in registry order. Empty tracks drop out. */
@@ -69,7 +86,12 @@ function document(sections: string[]): string {
  * then the machine-readable extras — the shape llmstxt.org describes, with `## Optional` last so a
  * crawler on a budget can stop before it.
  */
-export function buildLlmsIndex(topics: LlmsTopic[], glossaryCount: number, pathsCount: number): string {
+export function buildLlmsIndex(
+  topics: LlmsTopic[],
+  glossaryCount: number,
+  pathsCount: number,
+  cheatsheets: LlmsCheatsheet[] = [],
+): string {
   const english = byTrack(topics, 'en', (track) => track.name.en);
   const chinese = byTrack(topics, 'zh', (track) => track.name.zh);
 
@@ -84,6 +106,9 @@ export function buildLlmsIndex(topics: LlmsTopic[], glossaryCount: number, paths
     `> ${SUMMARY}`,
     english.length > 0 ? ['## Tracks', ...english].join('\n\n') : '',
     chinese.length > 0 ? ['## Chinese', ...chinese].join('\n\n') : '',
+    cheatsheets.length > 0
+      ? ['## Cheatsheets', cheatsheets.map(cheatsheetBullet).join('\n')].join('\n\n')
+      : '',
     ['## Optional', optional].join('\n\n'),
   ]);
 }

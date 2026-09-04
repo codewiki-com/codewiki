@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { toPlainMarkdown } from '@/lib/markdown-twin';
+import { extractCheatsheetRows, toPlainMarkdown } from '@/lib/markdown-twin';
 
 const page = { locale: 'en', title: 'Closures', url: 'https://codewiki.com/python/closures/' } as const;
 
@@ -71,6 +71,20 @@ describe('toPlainMarkdown', () => {
   it('leaves the checkpoint as a link back to the page', () => {
     const out = toPlainMarkdown('<Checkpoint id="python/closures" />\n', page);
     expect(out).toContain('[Checkpoint: python/closures](https://codewiki.com/python/closures/#checkpoint)');
+  });
+
+  it('converts Sheet and Row components into a cheatsheet heading and bullet', () => {
+    const source = '<Sheet title="Basics">\n<Row code="x: int = 5">annotation is a hint</Row>\n</Sheet>\n';
+    const out = toPlainMarkdown(source, { ...page, title: 'Python cheatsheet' });
+    expect(out).toContain('## Basics\n\n- `x: int = 5` — annotation is a hint');
+    expect(out).not.toContain('<Row');
+  });
+
+  it('extracts section, code and note from cheatsheet source without compiling MDX', () => {
+    const source = '<Sheet title="Comparisons">\n<Row code="0 &lt; x">read left to right</Row>\n</Sheet>\n';
+    expect(extractCheatsheetRows(source)).toEqual([
+      { section: 'Comparisons', code: '0 < x', note: 'read left to right' },
+    ]);
   });
 
   it('drops the fence meta and only names the file inside a code fence', () => {

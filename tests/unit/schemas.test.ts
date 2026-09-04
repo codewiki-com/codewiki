@@ -2,6 +2,7 @@ import { topicSchema } from '@/schemas/topic';
 import { issueKind, quizSchema } from '@/schemas/quiz';
 import { termSchema } from '@/schemas/glossary';
 import { pathSchema } from '@/schemas/path';
+import { cheatsheetSchema } from '@/schemas/cheatsheet';
 
 describe('topic schema', () => {
   const base = {
@@ -164,5 +165,31 @@ describe('path schema', () => {
     expect(() =>
       pathSchema.parse({ ...path, milestones: [{ ...path.milestones[0], topics: ['variables-types'] }] }),
     ).toThrow();
+  });
+});
+
+describe('cheatsheet schema', () => {
+  const sheet = {
+    title: 'Python cheatsheet',
+    description: 'The syntax that belongs on one printed page.',
+    track: 'python',
+    verified: { version: 'Python 3.14', date: '2026-09-04' },
+    reviewed: '2026-09-04',
+    status: 'reviewed',
+  };
+
+  it('parses dates and defaults terms, tags and alignment', () => {
+    const parsed = cheatsheetSchema.parse(sheet);
+    expect(parsed.verified.date).toBeInstanceOf(Date);
+    expect(parsed.reviewed).toBeInstanceOf(Date);
+    expect(parsed.terms).toEqual([]);
+    expect(parsed.tags).toEqual([]);
+    expect(parsed.aligned).toBe(false);
+  });
+
+  it('accepts calibration tags and rejects long descriptions or malformed slugs', () => {
+    expect(cheatsheetSchema.parse({ ...sheet, tags: ['calibration'] }).tags).toEqual(['calibration']);
+    expect(() => cheatsheetSchema.parse({ ...sheet, description: 'x'.repeat(161) })).toThrow();
+    expect(() => cheatsheetSchema.parse({ ...sheet, track: 'Python Core' })).toThrow();
   });
 });

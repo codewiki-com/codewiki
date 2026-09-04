@@ -12,9 +12,9 @@ import { getCollection } from 'astro:content';
 
 import { SITE } from '@/data/site';
 import { TRACKS } from '@/data/tracks';
-import { isPublic, topicMeta, type Topic } from '@/lib/content';
-import { mdUrl, type LlmsTopic } from '@/lib/llms';
-import { topicUrl, type Locale } from '@/lib/urls';
+import { cheatsheetMeta, isPublic, topicMeta, type Cheatsheet, type Topic } from '@/lib/content';
+import { cheatsheetMdUrl, mdUrl, type LlmsCheatsheet, type LlmsTopic } from '@/lib/llms';
+import { localizePath, topicUrl, type Locale } from '@/lib/urls';
 
 const CACHE = 'public, max-age=3600';
 
@@ -44,6 +44,16 @@ export async function publicTopics(): Promise<Topic[]> {
   });
 }
 
+/** Every public cheatsheet, with English before Chinese for the same filename slug. */
+export async function publicCheatsheets(): Promise<Cheatsheet[]> {
+  const sheets: Cheatsheet[] = await getCollection('cheatsheets', isPublic);
+  return sheets.sort((a, b) => {
+    const left = cheatsheetMeta(a);
+    const right = cheatsheetMeta(b);
+    return left.slug.localeCompare(right.slug) || left.lang.localeCompare(right.lang);
+  });
+}
+
 /** The `YYYY-MM-DD` form the topic pages already publish in their JSON-LD. */
 export function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -54,10 +64,24 @@ export function topicLinks(track: string, slug: string, lang: Locale): { url: st
   return { url: `${SITE.url}${topicUrl(track, slug, lang)}`, md: mdUrl(track, slug, lang) };
 }
 
+/** Absolute URLs of a localized cheatsheet page and its plain-Markdown twin. */
+export function cheatsheetLinks(slug: string, lang: Locale): { url: string; md: string } {
+  return {
+    url: `${SITE.url}${localizePath(`/cheatsheets/${slug}/`, lang)}`,
+    md: cheatsheetMdUrl(slug, lang),
+  };
+}
+
 /** A topic reduced to what the llms.txt indexes list. */
 export function toLlmsTopic(topic: Topic): LlmsTopic {
   const { track, slug, lang } = topicMeta(topic);
   return { track, slug, lang, title: topic.data.title, description: topic.data.description };
+}
+
+/** A cheatsheet reduced to what the llms.txt index lists. */
+export function toLlmsCheatsheet(sheet: Cheatsheet): LlmsCheatsheet {
+  const { slug, lang } = cheatsheetMeta(sheet);
+  return { slug, lang, title: sheet.data.title, description: sheet.data.description };
 }
 
 export function json(data: unknown): Response {

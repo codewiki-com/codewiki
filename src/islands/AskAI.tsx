@@ -197,6 +197,17 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
   }, [openWith]);
 
   useEffect(() => {
+    /** Cheatsheet rows are server-rendered buttons. Their event supplies the exact row as scope. */
+    const onAsk = (event: Event) => {
+      if (!(event instanceof CustomEvent) || typeof event.detail?.text !== 'string') return;
+      const from = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      openWith({ section: '', text: event.detail.text }, from);
+    };
+    document.addEventListener('cw:ask', onAsk);
+    return () => document.removeEventListener('cw:ask', onAsk);
+  }, [openWith]);
+
+  useEffect(() => {
     if (!scope) return;
 
     const onKeyDown = (event: KeyboardEvent) => {

@@ -24,6 +24,8 @@ const PATHS = [
   '/practice/interview/python/',
   '/zh/practice/interview/python/',
   '/glossary/',
+  '/cheatsheets/',
+  '/zh/cheatsheets/',
   '/settings/',
   '/paths/python-from-zero/',
   '/zh/paths/python-from-zero/',

@@ -37,6 +37,8 @@ const ALERT = /^> \[!([A-Za-z]+)\][ \t]*(?:\r?\n> ?)?/gm;
 const TERM = /<Term\s+id="[^"]*"\s*>([\s\S]*?)<\/Term>/g;
 const CHECKPOINT = /<Checkpoint\s+id="([^"]*)"\s*\/>/g;
 const DEPTH = /<Depth\s+level="([a-z]+)"\s*>|<\/Depth>/g;
+const SHEET = /<Sheet\s+title="([^"]*)"\s*>([\s\S]*?)<\/Sheet>/g;
+const ROW = /<Row\s+code="([^"]*)"\s*>([\s\S]*?)<\/Row>/g;
 /** A callout or cell label left alone on its line, and the quoted line that should join it. */
 const LABEL_LINE = /^(> (?:\*\*[^\n*]+:\*\*|- \*\*[^\n*]+\*\*:))[ \t]*\n(?:>[ \t]*\n)*> (?!```)/gm;
 
@@ -74,6 +76,21 @@ const SLASH = new Set([
 
 /** Runs of whitespace, including the line breaks a component body was written across. */
 const collapse = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** The handful of entities that are useful inside a quoted MDX attribute. */
+const decodeAttribute = (text: string): string =>
+  text
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+
+/** Picks a long enough inline-code fence when the snippet itself contains a backtick. */
+function inlineCode(code: string): string {
+  const ticks = code.includes('`') ? '``' : '`';
+  return `${ticks}${decodeAttribute(code)}${ticks}`;
+}
 
 /** The label a callout carries in the reader's language. */
 function calloutLabel(type: string, locale: Locale): string {
@@ -116,6 +133,40 @@ function convertTldr(text: string): string {
   return text.replace(TLDR_BLOCK, (_, inner: string) =>
     [...inner.matchAll(TLDR_CELL)].map((cell) => `> - **${cell[1]}**: ${collapse(cell[2] ?? '')}`).join('\n'),
   );
+}
+
+/** `<Sheet>` and `<Row>` become the headings and terse bullets a Markdown reference expects. */
+function convertSheets(text: string): string {
+  const row = (_match: string, code: string, note: string) => `- ${inlineCode(code)} — ${collapse(note)}`;
+  return text
+    .replace(SHEET, (_match, title: string, inner: string) => {
+      const rows = inner.replace(ROW, row).replace(/^[ \t]+(?=- )/gm, '');
+      return `## ${decodeAttribute(title)}\n\n${rows.trim()}`;
+    })
+    .replace(ROW, row);
+}
+
+export interface CheatsheetRow {
+  section: string;
+  code: string;
+  note: string;
+}
+
+/** Reads the authored Sheet/Row grammar without compiling MDX, for the static JSON endpoint. */
+export function extractCheatsheetRows(mdxSource: string): CheatsheetRow[] {
+  const body = mdxSource.replace(FRONTMATTER, '');
+  const rows: CheatsheetRow[] = [];
+  for (const sheet of body.matchAll(SHEET)) {
+    const section = decodeAttribute(sheet[1] ?? '');
+    for (const row of (sheet[2] ?? '').matchAll(ROW)) {
+      rows.push({
+        section,
+        code: decodeAttribute(row[1] ?? ''),
+        note: collapse(row[2] ?? '').replace(COMPONENT, ''),
+      });
+    }
+  }
+  return rows;
 }
 
 /** Both callout spellings — the component and the GitHub-style alert — land on one blockquote. */
@@ -206,7 +257,7 @@ function convertProse(text: string, context: TwinContext, state: TwinState): str
   return (
     convertSpanning(
       convertDepth(
-        convertCallouts(convertTldr(text.replace(IMPORT, '')), locale)
+        convertCallouts(convertTldr(convertSheets(text.replace(IMPORT, ''))), locale)
           .replace(TERM, '$1')
           .replace(
             CHECKPOINT,

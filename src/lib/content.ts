@@ -2,12 +2,13 @@
 // this module imports `astro:content` and therefore only runs inside Astro (not in unit tests).
 import { getCollection, getEntry, type CollectionEntry } from 'astro:content';
 import type { Locale } from '@/lib/urls';
-import { parseTopicId, type TopicId } from '@/lib/content-ids';
+import { parseLocalizedId, parseTopicId, type LocalizedId, type TopicId } from '@/lib/content-ids';
 
 export type Topic = CollectionEntry<'topics'>;
+export type Cheatsheet = CollectionEntry<'cheatsheets'>;
 
 /** Drafts and imports are visible while developing and never published. */
-export function isPublic(t: Topic): boolean {
+export function isPublic<T extends { data: { status: string } }>(t: T): boolean {
   return import.meta.env.DEV || t.data.status === 'reviewed';
 }
 
@@ -40,4 +41,22 @@ export async function listTopics(
 /** `{ track, slug, lang }` of a topic entry. */
 export function topicMeta(t: Topic): TopicId {
   return parseTopicId(t.id);
+}
+
+export async function getCheatsheet(slug: string, lang: Locale): Promise<Cheatsheet | undefined> {
+  return getEntry('cheatsheets', `${slug}/${lang}`);
+}
+
+/** Public cheatsheets in one language, sorted by their reader-facing titles. */
+export async function listCheatsheets(lang: Locale): Promise<Cheatsheet[]> {
+  const sheets: Cheatsheet[] = await getCollection(
+    'cheatsheets',
+    (sheet: Cheatsheet) => parseLocalizedId(sheet.id).lang === lang && isPublic(sheet),
+  );
+  return sheets.sort((a, b) => a.data.title.localeCompare(b.data.title));
+}
+
+/** `{ slug, lang }` of one paired cheatsheet entry. */
+export function cheatsheetMeta(sheet: Cheatsheet): LocalizedId {
+  return parseLocalizedId(sheet.id);
 }

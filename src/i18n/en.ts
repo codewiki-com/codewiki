@@ -432,6 +432,18 @@ export default {
   'interview.noResults': 'No questions match this filter.',
   'interview.noOtherBanks': 'No other interview banks are published yet.',
 
+  'cheatsheets.title': 'Cheatsheets',
+  'cheatsheets.lead': 'Dense, printable references for the syntax and terms you need at a glance.',
+  'cheatsheets.print': 'Print',
+  'cheatsheets.copyMd': 'Copy as Markdown',
+  'cheatsheets.downloadMd': 'Download .md',
+  'cheatsheets.askRow': 'Ask AI about a row',
+  'cheatsheets.vocab': 'Say it precisely to your AI',
+  'cheatsheets.alsoFor': 'also for {track}',
+  'cheatsheets.onePage': '1 page when printed',
+  'cheatsheets.verified': 'verified {date}',
+  'cheatsheets.empty': 'Cheatsheets are being written.',
+
   'glossary.title': 'Glossary',
   'glossary.terms': 'Terms',
 
