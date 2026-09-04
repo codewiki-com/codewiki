@@ -15,6 +15,8 @@ export const pathSchema = z.object({
   id: slug.optional(),
   title: localized,
   description: localized,
+  /** A short explanation of why the milestones appear in this order. */
+  rationale: localized.optional(),
   tracks: z.array(slug).min(1),
   level: z.object({ from: difficulty, to: difficulty }),
   hours: z.number().positive(),

@@ -6,6 +6,7 @@
 import type { APIRoute } from 'astro';
 import { getCollection, type CollectionEntry } from 'astro:content';
 
+import { SITE } from '@/data/site';
 import { json } from '@/lib/api';
 
 export const GET = (async () => {
@@ -17,6 +18,7 @@ export const GET = (async () => {
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((path) => ({
         id: path.id,
+        url: `${SITE.url}/paths/${path.id}/`,
         title: path.data.title,
         description: path.data.description,
         tracks: path.data.tracks,

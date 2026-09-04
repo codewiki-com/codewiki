@@ -1,13 +1,20 @@
 import { useEffect } from 'preact/hooks';
 import {
+  DEFAULT_PREFS,
+  EMPTY_FLASHCARDS,
   EMPTY_PROGRESS,
   KEYS,
+  cardSources,
   flushStore,
   readStore,
+  writeStore,
   writeStoreDebounced,
+  type Flashcards,
+  type Prefs,
   type Progress,
   type TopicProgress,
 } from '@/lib/prefs';
+import { enqueueCards, termCardId } from '@/lib/score';
 import { DEPTH_EVENT } from '@/islands/DepthDial';
 
 export interface ReadTrackerProps {
@@ -81,7 +88,7 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
     const isShown = (element: HTMLElement) => element.getClientRects().length > 0;
     const shownSections = () => [...article.querySelectorAll<HTMLElement>('h2')].filter(isShown);
 
-    let sections = shownSections();
+    let sections: HTMLElement[] = [];
     const seen = new Set<Element>();
     let complete = false;
     /**
@@ -96,16 +103,56 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
       const current = readStore<Progress>(KEYS.progress, EMPTY_PROGRESS);
       const previous = current.topics?.[topicId];
       const now = new Date().toISOString();
+      let termsAdded = previous?.termsAdded;
+
+      if (readPct >= 90 && !termsAdded) {
+        const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
+        if (cardSources(prefs).terms !== false) {
+          const terms = (article.dataset.terms ?? '')
+            .split(',')
+            .map((term) => term.trim())
+            .filter(Boolean);
+          const stored = readStore<Flashcards>(KEYS.flashcards, EMPTY_FLASHCARDS);
+          const deck = Array.isArray(stored?.cards) ? stored : EMPTY_FLASHCARDS;
+          const next = enqueueCards(
+            deck,
+            terms.map((term) => {
+              const ref = termCardId(term);
+              return { id: ref, kind: 'term' as const, ref, source: 'terms' as const };
+            }),
+            new Date(now),
+          );
+          if (next !== deck) {
+            writeStore(KEYS.flashcards, next);
+            document.dispatchEvent(new CustomEvent('cw:flashcards'));
+          }
+          termsAdded = true;
+        }
+      }
+
       const entry: TopicProgress = {
+        ...previous,
         readPct,
         lastAt: now,
         ...(readPct >= 100 || previous?.completedAt ? { completedAt: previous?.completedAt ?? now } : {}),
+        ...(termsAdded ? { termsAdded: true } : {}),
       };
       writeStoreDebounced<Progress>(KEYS.progress, {
         ...current,
         topics: { ...current.topics, [topicId]: entry },
       });
     };
+
+    /* Readers may already have crossed the threshold before this feature shipped. Their first
+       visit with automatic term cards enabled performs the same one-time enrollment. */
+    const storedTopic = progress.topics?.[topicId];
+    if (
+      best >= 90 &&
+      !storedTopic?.termsAdded &&
+      cardSources(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).terms !== false
+    ) {
+      write(best);
+    }
 
     /** How far up the viewport a section has to come before it counts as reached. */
     const REACHED = 0.8;
@@ -136,12 +183,17 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
     const observer = new IntersectionObserver(evaluate, { rootMargin: '0px 0px -20% 0px' });
 
     /** Re-reads which sections the current depth shows and observes exactly those. */
+    let refreshFrame = 0;
     const refresh = () => {
-      sections = shownSections();
-      observer.disconnect();
-      for (const section of sections) observer.observe(section);
-      if (checkpoint) observer.observe(checkpoint);
-      evaluate();
+      if (refreshFrame) return;
+      refreshFrame = requestAnimationFrame(() => {
+        refreshFrame = 0;
+        sections = shownSections();
+        observer.disconnect();
+        for (const section of sections) observer.observe(section);
+        if (checkpoint) observer.observe(checkpoint);
+        evaluate();
+      });
     };
 
     refresh();
@@ -167,6 +219,7 @@ export default function ReadTracker({ topicId }: ReadTrackerProps) {
       observer.disconnect();
       document.removeEventListener(DEPTH_EVENT, refresh);
       removeEventListener('scroll', onScroll);
+      if (refreshFrame) cancelAnimationFrame(refreshFrame);
       if (frame) cancelAnimationFrame(frame);
       removeEventListener('pagehide', flush);
       flush();

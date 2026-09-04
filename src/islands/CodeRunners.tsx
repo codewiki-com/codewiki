@@ -8,27 +8,20 @@ import { isTimeout, normalizeLang, run, runId, type RunEvent, type RunStatus } f
  * empty `.out` slot, so the page reads correctly with no JavaScript at all. This island only
  * patches behaviour onto that markup: it renders no UI of its own beyond the mount sentinel.
  *
- * Localisation comes from `window.__cw_i18n`, published by `Base.astro`. The Reset button is
- * created after that map has already swapped every `data-i18n` node, so it has to read the string
- * itself rather than rely on the swap.
+ * Localisation comes from `window.__cw_i18n`, published by `Base.astro`, with the same localized
+ * values supplied as props in case that map is unavailable. The Reset button is created after the
+ * map has already swapped every `data-i18n` node, so it has to read the string itself.
  */
 
 type Strings = Record<string, string>;
 
-/** Used when the page shell did not publish a map — a runner is still better than a dead button. */
-const FALLBACK: Strings = {
-  'code.run': 'Run',
-  'code.running': 'Running…',
-  'code.reset': 'Reset',
-  'code.loadingPython': 'Loading Python…',
-  'code.exit': 'exit 0',
-  'code.error': 'error',
-  'code.timeout': 'timeout',
-};
+interface CodeRunnersProps {
+  labels: Strings;
+}
 
-function label(key: string): string {
+function label(key: string, fallback: Strings): string {
   const strings = (globalThis as { __cw_i18n?: Strings }).__cw_i18n;
-  return strings?.[key] ?? FALLBACK[key] ?? key;
+  return strings?.[key] ?? fallback[key] ?? key;
 }
 
 /** Appends one output line per newline; a muted marker distinguishes program output from chrome. */
@@ -67,7 +60,7 @@ function readCode(pre: HTMLElement): string {
 }
 
 /** Wires one code box. Returns the undo, so the island leaves the markup as it found it. */
-function wire(figure: HTMLElement): () => void {
+function wire(figure: HTMLElement, labels: Strings): () => void {
   const pre = figure.querySelector('pre');
   const button = figure.querySelector<HTMLButtonElement>('button[data-run]');
   const out = figure.querySelector<HTMLElement>('.out');
@@ -113,7 +106,7 @@ function wire(figure: HTMLElement): () => void {
   reset.className = 'act act-sm';
   reset.dataset.reset = '';
   reset.dataset.i18n = 'code.reset';
-  reset.textContent = label('code.reset');
+  reset.textContent = label('code.reset', labels);
 
   const onReset = () => {
     pre.innerHTML = pristine;
@@ -133,19 +126,19 @@ function wire(figure: HTMLElement): () => void {
     out.replaceChildren();
     out.hidden = false;
     button.disabled = true;
-    button.textContent = label('code.running');
+    button.textContent = label('code.running', labels);
 
     const onStatus = (status: RunStatus) => {
-      button.textContent = label(status === 'loading-python' ? 'code.loadingPython' : 'code.running');
+      button.textContent = label(status === 'loading-python' ? 'code.loadingPython' : 'code.running', labels);
     };
     const onEvent = (event: RunEvent) => {
       if (event.kind === 'stdout' || event.kind === 'stderr') {
         writeLines(out, event.text ?? '', event.kind);
       } else if (event.kind === 'done') {
-        writeFooter(out, `${label('code.exit')} · ${Math.round(event.ms ?? 0)} ms`);
+        writeFooter(out, `${label('code.exit', labels)} · ${Math.round(event.ms ?? 0)} ms`);
       } else {
         if (event.text) writeLines(out, event.text, 'stderr');
-        writeFooter(out, label('code.error'));
+        writeFooter(out, label('code.error', labels));
       }
     };
 
@@ -153,14 +146,14 @@ function wire(figure: HTMLElement): () => void {
       await run({ id: runId(), lang, code: readCode(pre) }, onEvent, { onStatus });
     } catch (error) {
       if (isTimeout(error)) {
-        writeFooter(out, label('code.timeout'));
+        writeFooter(out, label('code.timeout', labels));
       } else {
         writeLines(out, error instanceof Error ? error.message : String(error), 'stderr');
-        writeFooter(out, label('code.error'));
+        writeFooter(out, label('code.error', labels));
       }
     } finally {
       button.disabled = false;
-      button.textContent = label('code.run');
+      button.textContent = label('code.run', labels);
     }
   };
 
@@ -175,16 +168,18 @@ function wire(figure: HTMLElement): () => void {
   };
 }
 
-export default function CodeRunners() {
+export default function CodeRunners({ labels }: CodeRunnersProps) {
   const mount = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const undo = Array.from(document.querySelectorAll<HTMLElement>('figure.codebox[data-run]')).map(wire);
+    const undo = Array.from(document.querySelectorAll<HTMLElement>('figure.codebox[data-run]')).map(
+      (figure) => wire(figure, labels),
+    );
     if (mount.current) mount.current.dataset.ready = 'true';
     return () => {
       for (const step of undo) step();
     };
-  }, []);
+  }, [labels]);
 
   /* `client:visible` observes the island's *children*, so an island that renders nothing would
      never hydrate. This 1px sentinel is taken out of flow, which keeps it out of the article's

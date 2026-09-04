@@ -1,4 +1,4 @@
-import { parseTopicId, topicIdFromPath } from '@/lib/content-ids';
+import { localizedIdFromPath, parseLocalizedId, parseTopicId, topicIdFromPath } from '@/lib/content-ids';
 
 describe('topic ids', () => {
   it('parses', () => {
@@ -13,5 +13,17 @@ describe('topic ids', () => {
     expect(() => parseTopicId('python/closures/fr')).toThrow();
     expect(() => topicIdFromPath('python/closures.mdx')).toThrow();
     expect(() => topicIdFromPath('closures.en.mdx')).toThrow();
+  });
+});
+
+describe('paired collection ids', () => {
+  it('maps a localized filename to its collection id and back', () => {
+    expect(localizedIdFromPath('python.zh.mdx')).toBe('python/zh');
+    expect(parseLocalizedId('python/zh')).toEqual({ slug: 'python', lang: 'zh' });
+  });
+
+  it('rejects malformed filenames and locales', () => {
+    expect(() => localizedIdFromPath('python.mdx')).toThrow();
+    expect(() => parseLocalizedId('python/fr')).toThrow();
   });
 });

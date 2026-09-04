@@ -1,7 +1,8 @@
 import { topicSchema } from '@/schemas/topic';
-import { quizSchema } from '@/schemas/quiz';
+import { issueKind, quizSchema } from '@/schemas/quiz';
 import { termSchema } from '@/schemas/glossary';
 import { pathSchema } from '@/schemas/path';
+import { cheatsheetSchema } from '@/schemas/cheatsheet';
 
 describe('topic schema', () => {
   const base = {
@@ -74,7 +75,7 @@ describe('quiz schema', () => {
         type: 'review',
         code: 'x = 1',
         lang: 'python',
-        issues: [{ line: 1, kind: 'bug', note: { en: 'n', zh: '注' } }],
+        issues: [{ line: 1, kind: 'correctness', note: { en: 'n', zh: '注' } }],
       }),
     ).not.toThrow();
     expect(() => parse({ ...shared, id: 'q4', type: 'predict', code: 'x', lang: 'python' })).toThrow();
@@ -82,6 +83,34 @@ describe('quiz schema', () => {
   });
   it('requires at least one item', () => {
     expect(() => quizSchema.parse({ id: 'a/b', topic: 'a/b', items: [] })).toThrow();
+  });
+  it('accepts review metadata, issue spans, tests and positive minutes', () => {
+    const review = quizSchema.parse({
+      id: 'a/b',
+      topic: 'a/b',
+      items: [
+        {
+          id: 'review',
+          type: 'review',
+          prompt: item.prompt,
+          explanation: item.explanation,
+          difficulty: 'intermediate',
+          code: 'x = 1',
+          lang: 'python',
+          issues: [{ line: 1, lines: 2, kind: 'readability', note: { en: 'Name it', zh: '修改命名' } }],
+          right: { en: 'Small function', zh: '函数简短' },
+          checklist: [{ en: 'Check names', zh: '检查命名' }],
+          task: { en: 'Review this function.', zh: '审查此函数。' },
+          tests: 'assert x == 1',
+          minutes: 3,
+        },
+      ],
+    });
+    expect(review.items[0]).toMatchObject({ minutes: 3, checklist: [{ en: 'Check names' }] });
+  });
+  it('restricts issue kinds to the content-pipeline vocabulary', () => {
+    expect(issueKind.options).toEqual(['security', 'correctness', 'edge-case', 'readability', 'performance']);
+    expect(() => issueKind.parse('bug')).toThrow();
   });
 });
 
@@ -126,10 +155,41 @@ describe('path schema', () => {
   it('parses a path and defaults its edges', () => {
     expect(pathSchema.parse(path).edges).toEqual([]);
   });
+  it('accepts a localized rationale', () => {
+    expect(
+      pathSchema.parse({ ...path, rationale: { en: 'Why this order.', zh: '为何采用这个顺序。' } }).rationale,
+    ).toEqual({ en: 'Why this order.', zh: '为何采用这个顺序。' });
+  });
   it('rejects unknown levels and malformed topic ids', () => {
     expect(() => pathSchema.parse({ ...path, level: { from: 'expert', to: 'god' } })).toThrow();
     expect(() =>
       pathSchema.parse({ ...path, milestones: [{ ...path.milestones[0], topics: ['variables-types'] }] }),
     ).toThrow();
+  });
+});
+
+describe('cheatsheet schema', () => {
+  const sheet = {
+    title: 'Python cheatsheet',
+    description: 'The syntax that belongs on one printed page.',
+    track: 'python',
+    verified: { version: 'Python 3.14', date: '2026-09-04' },
+    reviewed: '2026-09-04',
+    status: 'reviewed',
+  };
+
+  it('parses dates and defaults terms, tags and alignment', () => {
+    const parsed = cheatsheetSchema.parse(sheet);
+    expect(parsed.verified.date).toBeInstanceOf(Date);
+    expect(parsed.reviewed).toBeInstanceOf(Date);
+    expect(parsed.terms).toEqual([]);
+    expect(parsed.tags).toEqual([]);
+    expect(parsed.aligned).toBe(false);
+  });
+
+  it('accepts calibration tags and rejects long descriptions or malformed slugs', () => {
+    expect(cheatsheetSchema.parse({ ...sheet, tags: ['calibration'] }).tags).toEqual(['calibration']);
+    expect(() => cheatsheetSchema.parse({ ...sheet, description: 'x'.repeat(161) })).toThrow();
+    expect(() => cheatsheetSchema.parse({ ...sheet, track: 'Python Core' })).toThrow();
   });
 });

@@ -3,7 +3,19 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import { DEPTHS, type Depth } from '@/lib/depth';
 import { clearAll, exportAll, importAll, type ImportMode } from '@/lib/export';
-import { DEFAULT_PREFS, KEYS, readStore, writeStore, type FontSize, type Prefs } from '@/lib/prefs';
+import {
+  cardSources,
+  DEFAULT_PREFS,
+  EMPTY_FLASHCARDS,
+  EMPTY_PROGRESS,
+  KEYS,
+  readStore,
+  writeStore,
+  type FontSize,
+  type Prefs,
+  type Progress,
+  type RevealMode,
+} from '@/lib/prefs';
 import { applyThemePreference, readThemePref, THEME_EVENT, type ThemePref } from '@/lib/theme';
 
 /** Localised copy. Islands never import `t`: the locale is a page-level fact. */
@@ -16,6 +28,16 @@ export interface SettingsLabels {
   bilingualOff: string;
   bilingualSoon: string;
   soon: string;
+  interviewReveal: string;
+  revealModes: Record<RevealMode, string>;
+  cardSources: string;
+  sourceLabels: Record<CardSource, string>;
+  sourceOn: string;
+  sourceOff: string;
+  practiceData: string;
+  practiceDataHint: string;
+  resetPractice: string;
+  confirmResetPractice: string;
   fontSize: string;
   fonts: Record<FontSize, string>;
   data: string;
@@ -38,6 +60,10 @@ export interface SettingsFormProps {
 const THEMES: ThemePref[] = ['system', 'light', 'dark'];
 const FONTS: FontSize[] = ['s', 'm', 'l'];
 const MODES: ImportMode[] = ['merge', 'replace'];
+const REVEAL_MODES: RevealMode[] = ['one', 'all'];
+type CardSources = ReturnType<typeof cardSources>;
+type CardSource = keyof CardSources;
+const CARD_SOURCES: CardSource[] = ['terms', 'quiz', 'manual'];
 
 /**
  * A WAI-ARIA radio group in the shape of the mockups' segmented control: one option is tabbable,
@@ -138,6 +164,8 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
   const [theme, setTheme] = useState<ThemePref>(DEFAULT_PREFS.theme);
   const [depth, setDepth] = useState<Depth>(DEFAULT_PREFS.depth);
   const [font, setFont] = useState<FontSize>(DEFAULT_PREFS.fontSize);
+  const [reveal, setReveal] = useState<RevealMode>(DEFAULT_PREFS.interviewReveal ?? 'one');
+  const [sources, setSources] = useState<CardSources>(() => cardSources(DEFAULT_PREFS));
   const [mode, setMode] = useState<ImportMode>('merge');
   const [error, setError] = useState('');
   const file = useRef<HTMLInputElement | null>(null);
@@ -149,6 +177,8 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     setTheme(readThemePref());
     setDepth(prefs.depth ?? DEFAULT_PREFS.depth);
     setFont(prefs.fontSize ?? DEFAULT_PREFS.fontSize);
+    setReveal(prefs.interviewReveal ?? 'one');
+    setSources(cardSources(prefs));
   }, []);
 
   const selectTheme = useCallback((next: ThemePref) => {
@@ -170,6 +200,22 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     setFont(next);
     writeStore<Prefs>(KEYS.prefs, { ...readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS), fontSize: next });
     document.documentElement.setAttribute('data-font', next);
+  }, []);
+
+  const selectReveal = useCallback((next: RevealMode) => {
+    setReveal(next);
+    writeStore<Prefs>(KEYS.prefs, {
+      ...readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS),
+      interviewReveal: next,
+    });
+  }, []);
+
+  const toggleSource = useCallback((source: CardSource) => {
+    const prefs = readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS);
+    const current = cardSources(prefs);
+    const next = { ...current, [source]: !current[source] };
+    setSources(next);
+    writeStore<Prefs>(KEYS.prefs, { ...prefs, cardSources: next });
   }, []);
 
   /** A download of a Blob the page just built: an `<a download>` clicked once and thrown away. */
@@ -221,6 +267,14 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
     location.reload();
   }, [labels.confirmClear]);
 
+  const onResetPractice = useCallback(() => {
+    const local = store();
+    if (!local || !confirm(labels.confirmResetPractice)) return;
+    const progress = readStore<Progress>(KEYS.progress, EMPTY_PROGRESS);
+    writeStore<Progress>(KEYS.progress, { ...progress, quizzes: {}, paths: {} });
+    writeStore(KEYS.flashcards, EMPTY_FLASHCARDS);
+  }, [labels.confirmResetPractice]);
+
   return (
     <div class="settings">
       <Row label={labels.theme}>
@@ -264,6 +318,49 @@ export default function SettingsForm({ labels }: SettingsFormProps) {
           </button>
         </span>
         <span class="tag">{labels.soon}</span>
+      </Row>
+
+      <Row label={labels.interviewReveal}>
+        <OptionGroup
+          name="interview-reveal"
+          label={labels.interviewReveal}
+          options={REVEAL_MODES}
+          value={reveal}
+          labels={labels.revealModes}
+          onSelect={selectReveal}
+        />
+      </Row>
+
+      <Row label={labels.cardSources}>
+        <div class="set-source-list" data-setting="card-sources">
+          {CARD_SOURCES.map((source) => (
+            <button
+              key={source}
+              type="button"
+              class="set-source"
+              data-value={source}
+              aria-pressed={sources[source]}
+              onClick={() => toggleSource(source)}
+            >
+              <span>{labels.sourceLabels[source]}</span>
+              <span class="seg" aria-hidden="true">
+                <span class={sources[source] ? 'on' : undefined}>{labels.sourceOn}</span>
+                <span class={!sources[source] ? 'on' : undefined}>{labels.sourceOff}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <Row label={labels.practiceData} hint={labels.practiceDataHint}>
+        <button
+          type="button"
+          class="btn btn-g set-danger"
+          data-action="reset-practice"
+          onClick={onResetPractice}
+        >
+          {labels.resetPractice}
+        </button>
       </Row>
 
       <Row label={labels.data} hint={labels.dataHint}>

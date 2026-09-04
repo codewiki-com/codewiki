@@ -2,11 +2,12 @@
 /**
  * The row of actions under a topic — the `.act` strip of docs/design/mockups/Topic.dc.html.
  *
- * The Ask-AI action opens the prompt panel (`AskAI`, hydrated on idle); flashcards belong to P2 and
- * are rendered inert rather than omitted, so the page has the shape it will keep. "Was this clear?"
- * writes a single flag into this browser's progress store; nothing is sent anywhere.
+ * The Ask-AI action opens the prompt panel (`AskAI`, hydrated on idle); the flashcard action adds
+ * this page's terms to the browser-local deck. "Was this clear?" writes a single flag into this
+ * browser's progress store; nothing is sent anywhere.
  */
 import AskAI from '@/islands/AskAI';
+import Clarity from '@/components/Clarity.astro';
 import { t } from '@/i18n';
 import { SITE } from '@/data/site';
 import type { Locale } from '@/lib/urls';
@@ -27,17 +28,19 @@ interface Props {
   language: string;
   /** What this topic assumes the reader knows; the "explain simpler" preset builds on it. */
   prerequisite?: string;
+  /** Glossary ids named by this topic's frontmatter. */
+  terms: string[];
 }
 
-const { locale, topicId, path, filePath, title, url, language, prerequisite } = Astro.props;
+const { locale, topicId, path, filePath, title, url, language, prerequisite, terms } = Astro.props;
 
 /** The Markdown twin of this page (Task 16): `/python/closures/` → `/python/closures.md`. */
 const markdownUrl = `${path.replace(/\/$/, '')}.md`;
 const editUrl = `${SITE.repo}/edit/main/src/content/topics/${filePath}`;
-const soon = t(locale, 'track.comingSoon');
+const addedTemplate = t(locale, 'topic.addedToFlashcards', { count: '{count}' });
 ---
 
-<div class="act-row" data-topic-id={topicId} data-thanks={t(locale, 'topic.thanks')}>
+<div class="act-row">
   <AskAI
     client:idle
     labels={{
@@ -63,52 +66,20 @@ const soon = t(locale, 'track.comingSoon');
     context={{ locale, title, url, language, prerequisite }}
   />
   <a class="act" href={markdownUrl}>{t(locale, 'topic.copyMd')}</a>
-  <button type="button" class="act" data-add-flashcards disabled title={soon}>
+  <button
+    type="button"
+    class="act"
+    data-add-flashcards
+    data-terms={terms.join(',')}
+    data-locale={locale}
+    disabled={terms.length === 0}
+  >
     {t(locale, 'topic.addFlash')}
   </button>
+  <span class="lbl flashcard-confirm" data-flashcards-confirm data-template={addedTemplate} hidden></span>
   <a class="act" href={editUrl} rel="noopener">{t(locale, 'topic.edit')}</a>
-  <span class="lbl clarity" data-clarity-row>
-    {t(locale, 'topic.clear')}
-    <button type="button" class="link" data-clarity="yes">{t(locale, 'topic.yes')}</button>
-    <span aria-hidden="true">·</span>
-    <button type="button" class="link" data-clarity="not-quite">{t(locale, 'topic.notQuite')}</button>
-  </span>
+  <Clarity locale={locale} id={topicId} />
 </div>
-
-<script>
-  /* "Was this clear?" — one flag per topic, in this browser only. Without JavaScript the two
-     buttons do nothing, which is why they are buttons and not links to a form. */
-  import {
-    EMPTY_PROGRESS,
-    KEYS,
-    flushStore,
-    readStore,
-    writeStore,
-    type Clarity,
-    type Progress,
-  } from '@/lib/prefs';
-
-  const row = document.querySelector<HTMLElement>('[data-clarity-row]');
-  const host = row?.closest<HTMLElement>('[data-topic-id]');
-  const id = host?.dataset.topicId;
-
-  if (row && id) {
-    for (const button of row.querySelectorAll<HTMLButtonElement>('[data-clarity]')) {
-      button.addEventListener('click', () => {
-        const value = button.dataset.clarity as Clarity;
-        // The reading tracker may be holding a debounced write; commit it before reading.
-        flushStore(KEYS.progress);
-        const progress = readStore<Progress>(KEYS.progress, EMPTY_PROGRESS);
-        writeStore<Progress>(KEYS.progress, {
-          ...progress,
-          feedback: { ...progress.feedback, [id]: value },
-        });
-        // The answer is the whole interaction: say it landed and stop offering the choice.
-        row.textContent = host?.dataset.thanks ?? '';
-      });
-    }
-  }
-</script>
 
 <style>
   .act-row {
@@ -129,31 +100,59 @@ const soon = t(locale, 'track.comingSoon');
     cursor: default;
   }
 
-  .clarity {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  /* A button that reads as a link: it changes local state, so it cannot be an anchor. */
-  .link {
-    border: 0;
-    background: none;
-    padding: 0;
-    font-family: inherit;
-    font-size: inherit;
-    color: var(--acc);
-  }
-
-  .link:hover {
-    color: var(--acc-h);
-  }
-
-  @media (max-width: 767px) {
-    .clarity {
-      margin-left: 0;
-      width: 100%;
-    }
+  .flashcard-confirm {
+    color: var(--ok);
   }
 </style>
+
+<script>
+  import { formatCount } from '@/i18n';
+  import { EMPTY_FLASHCARDS, KEYS, flushStore, readStore, writeStore, type Flashcards } from '@/lib/prefs';
+  import { enqueueCards, termCardId } from '@/lib/score';
+
+  const safeDeck = (): Flashcards => {
+    const stored = readStore<Flashcards>(KEYS.flashcards, EMPTY_FLASHCARDS);
+    return Array.isArray(stored?.cards) ? stored : EMPTY_FLASHCARDS;
+  };
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-add-flashcards]')) {
+    const terms = (button.dataset.terms ?? '')
+      .split(',')
+      .map((term) => term.trim())
+      .filter(Boolean);
+    const updateDisabled = () => {
+      const ids = new Set(safeDeck().cards.map((card) => card.id));
+      button.disabled = terms.length === 0 || terms.every((term) => ids.has(termCardId(term)));
+    };
+
+    button.addEventListener('click', () => {
+      const deck = safeDeck();
+      const next = enqueueCards(
+        deck,
+        terms.map((term) => {
+          const ref = termCardId(term);
+          return { id: ref, kind: 'term' as const, ref, source: 'manual' as const };
+        }),
+        new Date(),
+      );
+      writeStore(KEYS.flashcards, next);
+      flushStore(KEYS.flashcards);
+
+      const confirmation = button.parentElement?.querySelector<HTMLElement>('[data-flashcards-confirm]');
+      if (confirmation) {
+        const added = next.cards.length - deck.cards.length;
+        const locale = button.dataset.locale === 'zh' ? 'zh' : 'en';
+        confirmation.textContent = (confirmation.dataset.template ?? '').replace(
+          '{count}',
+          formatCount(locale, added, 'unit.card', 'unit.cards'),
+        );
+        confirmation.hidden = false;
+      }
+      updateDisabled();
+    });
+
+    document.addEventListener('cw:flashcards', updateDisabled);
+    updateDisabled();
+    button.dataset.ready = 'true';
+  }
+</script>

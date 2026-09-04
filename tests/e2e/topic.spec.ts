@@ -280,6 +280,23 @@ test('the action row opens the six Ask-AI presets for the page', async ({ page }
   await expect(dialog).toBeHidden();
 });
 
+test('the action row adds every page term to flashcards once', async ({ page }) => {
+  await openTopic(page);
+  const button = page.locator('[data-add-flashcards]');
+  await expect(button).toHaveAttribute('data-ready', 'true');
+  await expect(button).toBeEnabled();
+  await button.click();
+
+  const cards = await page.evaluate(
+    () => JSON.parse(localStorage.getItem('cw:v1:flashcards') ?? '{}').cards ?? [],
+  );
+  const terms = ((await button.getAttribute('data-terms')) ?? '').split(',').filter(Boolean);
+  expect(cards).toHaveLength(terms.length);
+  expect(cards.every((card: { source: string }) => card.source === 'manual')).toBe(true);
+  await expect(page.locator('[data-flashcards-confirm]')).toHaveText(`Added ${terms.length} cards`);
+  await expect(button).toBeDisabled();
+});
+
 test('the Markdown twin serves the page as plain Markdown', async ({ page }) => {
   const response = await page.request.get('/python/closures.md');
   expect(response.status()).toBe(200);

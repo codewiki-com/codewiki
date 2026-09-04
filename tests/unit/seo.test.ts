@@ -6,7 +6,9 @@ import {
   courseLd,
   definedTermLd,
   definedTermSetLd,
+  faqPageLd,
 } from '@/lib/seo';
+import { stripMarkdown } from '@/lib/md';
 
 describe('buildHead', () => {
   it('formats titles per locale', () => {
@@ -66,6 +68,27 @@ describe('buildHead', () => {
     expect(buildHead({ locale: 'zh', path: '/zh/', title: '', description: 'd', kind: 'home' }).title).toBe(
       'codewiki · 在 AI 时代精通编程',
     );
+  });
+
+  it('formats practice titles with the localized practice label', () => {
+    expect(
+      buildHead({
+        locale: 'en',
+        path: '/practice/predict/python/closures/loop/',
+        title: 'What does this print?',
+        description: 'd',
+        kind: 'practice',
+      }).title,
+    ).toBe('What does this print? · Practice · codewiki');
+    expect(
+      buildHead({
+        locale: 'zh',
+        path: '/zh/practice/predict/python/closures/loop/',
+        title: '会输出什么？',
+        description: 'd',
+        kind: 'practice',
+      }).title,
+    ).toBe('会输出什么？ · 练习 · codewiki');
   });
 
   it('omits the middle segment when no track name is given', () => {
@@ -256,5 +279,31 @@ describe('content json-ld builders', () => {
     };
     expect(set['@type']).toBe('DefinedTermSet');
     expect(set['@id']).toBe('https://codewiki.com/glossary/');
+  });
+
+  it('builds an FAQPage with accepted answers', () => {
+    const faq = faqPageLd([
+      { question: 'What is a closure?', answer: 'A function with retained bindings.' },
+      { question: 'What is late binding?', answer: 'A name is read when the closure runs.' },
+    ]) as {
+      '@type': string;
+      mainEntity: Array<{
+        '@type': string;
+        name: string;
+        acceptedAnswer: { '@type': string; text: string };
+      }>;
+    };
+
+    expect(faq['@type']).toBe('FAQPage');
+    expect(faq.mainEntity).toHaveLength(2);
+    expect(faq.mainEntity[0]).toEqual({
+      '@type': 'Question',
+      name: 'What is a closure?',
+      acceptedAnswer: { '@type': 'Answer', text: 'A function with retained bindings.' },
+    });
+  });
+
+  it('strips Markdown formatting to visible text', () => {
+    expect(stripMarkdown('**a** `b`')).toBe('a b');
   });
 });

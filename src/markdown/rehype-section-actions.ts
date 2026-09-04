@@ -11,10 +11,25 @@
  * `astro.config.mjs` therefore runs it once before this one. It skips headings that already have
  * an id, so Astro's own later pass is a no-op and the ids stay the ones the anchors use.
  *
- * The label is English and tagged with a `data-i18n` key, like every other string the markdown
- * pipeline emits: `Base.astro` swaps it on Chinese pages.
+ * The label is localized while the Markdown is rendered and retains its `data-i18n` key so the
+ * page shell can update legacy output too.
  */
 import type { Element, Root } from 'hast';
+
+import { t } from '@/i18n';
+import type { Locale } from '@/lib/urls';
+
+interface Options {
+  locale?: Locale;
+}
+
+interface MarkdownFile {
+  path?: string;
+}
+
+function localeFor(options: Options, file: MarkdownFile): Locale {
+  return options.locale ?? (/\.zh\.mdx?$/u.test(file.path ?? '') ? 'zh' : 'en');
+}
 
 /** A hast or MDX-JSX node, seen loosely enough to walk both. */
 interface AnyNode {
@@ -24,12 +39,10 @@ interface AnyNode {
   children?: AnyNode[];
 }
 
-const LABEL = 'Ask AI about this section';
-
 /** Marks the dashed row a deep section leaves behind at lower depths; it gets no action of its own. */
 const TEASER = 'depth-teaser';
 
-function askButton(section: string): Element {
+function askButton(section: string, label: string): Element {
   return {
     type: 'element',
     tagName: 'button',
@@ -38,9 +51,9 @@ function askButton(section: string): Element {
       className: ['sec-ask'],
       'data-section': section,
       'data-i18n': 'ai.section',
-      'aria-label': LABEL,
+      'aria-label': label,
     },
-    children: [{ type: 'text', value: LABEL }],
+    children: [{ type: 'text', value: label }],
   };
 }
 
@@ -50,24 +63,24 @@ function isTeaser(node: AnyNode): boolean {
   return Array.isArray(className) && className.includes(TEASER);
 }
 
-function walk(node: AnyNode): void {
+function walk(node: AnyNode, label: string): void {
   const children = node.children;
   if (!children || isTeaser(node)) return;
 
   for (let index = 0; index < children.length; index += 1) {
     const child = children[index]!;
-    walk(child);
+    walk(child, label);
 
     const id = child.properties?.id;
     if (child.type !== 'element' || child.tagName !== 'h2' || typeof id !== 'string' || !id) continue;
 
-    children.splice(index + 1, 0, askButton(id) as unknown as AnyNode);
+    children.splice(index + 1, 0, askButton(id, label) as unknown as AnyNode);
     index += 1;
   }
 }
 
-export function rehypeSectionActions() {
-  return (tree: Root): void => {
-    walk(tree as unknown as AnyNode);
+export function rehypeSectionActions(options: Options = {}) {
+  return (tree: Root, file: MarkdownFile = {}): void => {
+    walk(tree as unknown as AnyNode, t(localeFor(options, file), 'ai.section'));
   };
 }

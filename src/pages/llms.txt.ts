@@ -5,14 +5,17 @@
 import type { APIRoute } from 'astro';
 import { getCollection } from 'astro:content';
 
-import { publicTopics, text, toLlmsTopic } from '@/lib/api';
+import { publicCheatsheets, publicTopics, text, toLlmsCheatsheet, toLlmsTopic } from '@/lib/api';
 import { buildLlmsIndex } from '@/lib/llms';
 
 export const GET = (async () => {
-  const [topics, glossary, paths] = await Promise.all([
+  const [topics, glossary, paths, cheatsheets] = await Promise.all([
     publicTopics(),
     getCollection('glossary'),
     getCollection('paths'),
+    publicCheatsheets(),
   ]);
-  return text(buildLlmsIndex(topics.map(toLlmsTopic), glossary.length, paths.length));
+  return text(
+    buildLlmsIndex(topics.map(toLlmsTopic), glossary.length, paths.length, cheatsheets.map(toLlmsCheatsheet)),
+  );
 }) satisfies APIRoute;

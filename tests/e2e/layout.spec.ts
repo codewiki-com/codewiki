@@ -11,8 +11,25 @@ const VIEWPORTS = [
   { name: 'desktop', width: 1440, height: 900 },
 ] as const;
 
-/** One page per shape: home, track hub, topic in both locales, glossary, settings. */
-const PATHS = ['/', '/python/', '/python/closures/', '/zh/python/closures/', '/glossary/', '/settings/'];
+/** One page per shape: home, track hub, topic, practice hub, glossary and settings. */
+const PATHS = [
+  '/',
+  '/python/',
+  '/python/closures/',
+  '/zh/python/closures/',
+  '/practice/',
+  '/zh/practice/',
+  '/practice/flashcards/',
+  '/zh/practice/flashcards/',
+  '/practice/interview/python/',
+  '/zh/practice/interview/python/',
+  '/glossary/',
+  '/cheatsheets/',
+  '/zh/cheatsheets/',
+  '/settings/',
+  '/paths/python-from-zero/',
+  '/zh/paths/python-from-zero/',
+];
 
 for (const viewport of VIEWPORTS) {
   for (const path of PATHS) {

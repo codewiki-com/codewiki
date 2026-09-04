@@ -1,4 +1,12 @@
-import { buildLlmsFull, buildLlmsIndex, buildLlmsTrack, mdUrl, type LlmsTopic } from '@/lib/llms';
+import {
+  buildLlmsFull,
+  buildLlmsIndex,
+  buildLlmsTrack,
+  cheatsheetMdUrl,
+  mdUrl,
+  type LlmsCheatsheet,
+  type LlmsTopic,
+} from '@/lib/llms';
 import { getTrack } from '@/data/tracks';
 
 const closuresEn: LlmsTopic = {
@@ -25,6 +33,13 @@ const eventLoopEn: LlmsTopic = {
   description: 'How JavaScript decides what runs next.',
 };
 
+const pythonSheet: LlmsCheatsheet = {
+  slug: 'python',
+  lang: 'en',
+  title: 'Python cheatsheet',
+  description: 'Python on one page.',
+};
+
 describe('mdUrl', () => {
   it('points at the Markdown twin of a topic, per locale', () => {
     expect(mdUrl('python', 'closures', 'en')).toBe('https://codewiki.com/python/closures.md');
@@ -32,8 +47,15 @@ describe('mdUrl', () => {
   });
 });
 
+describe('cheatsheetMdUrl', () => {
+  it('points at the localized Markdown twin', () => {
+    expect(cheatsheetMdUrl('python', 'en')).toBe('https://codewiki.com/cheatsheets/python.md');
+    expect(cheatsheetMdUrl('python', 'zh')).toBe('https://codewiki.com/zh/cheatsheets/python.md');
+  });
+});
+
 describe('buildLlmsIndex', () => {
-  const index = buildLlmsIndex([closuresEn, eventLoopEn, closuresZh], 7, 1);
+  const index = buildLlmsIndex([closuresEn, eventLoopEn, closuresZh], 7, 1, [pythonSheet]);
 
   it('opens with the site name and a blockquote summary', () => {
     const lines = index.split('\n');
@@ -70,6 +92,13 @@ describe('buildLlmsIndex', () => {
 
   it('leaves out tracks that have nothing written yet', () => {
     expect(index).not.toContain('### Rust');
+  });
+
+  it('lists public cheatsheets with their Markdown twins', () => {
+    expect(index).toContain('## Cheatsheets');
+    expect(index).toContain(
+      '- [Python cheatsheet](https://codewiki.com/cheatsheets/python.md): Python on one page.',
+    );
   });
 
   it('ends with the optional resources, counted', () => {
