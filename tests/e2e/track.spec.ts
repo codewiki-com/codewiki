@@ -32,3 +32,17 @@ test('sections with nothing written yet say so', async ({ page }) => {
   await page.goto('/python/');
   await expect(page.locator('.quick', { hasText: 'Concurrency' })).toContainText('coming soon');
 });
+
+test('the difficulty filter is a keyboard radio group', async ({ page }) => {
+  await page.goto('/python/');
+  const group = page.locator('[data-filter-group="difficulty"]');
+  await group.locator('[data-value="all"]').focus();
+  await page.keyboard.press('ArrowRight');
+
+  const beginner = group.locator('[data-value="beginner"]');
+  await expect(beginner).toHaveAttribute('aria-checked', 'true');
+  await expect(beginner).toBeFocused();
+  await expect(group.locator('[data-value="all"]')).toHaveAttribute('aria-checked', 'false');
+  // The one written Python topic is intermediate, so filtering to beginner hides it.
+  await expect(page.locator('.topic[data-topic-id="python/closures"]')).toBeHidden();
+});
