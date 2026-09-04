@@ -30,11 +30,12 @@ Read this first in any new session. Update it at every milestone and before star
 
 ## Active work (updated 2026-09-04 23:40 local)
 - **Routing:** Opus for insight-heavy content, reviews, complex merges; Codex for bulk mechanical work; running jobs never re-routed.
-- Running (3): Opus whole-site review on `main` (root checkout; report → `docs/superpowers/ledgers/2026-09-04-site-review.md`); Codex UI fixes on branch `fix-ui-real-content` (hero mock capped, wrapping track filter, path-map label clipping; design notes in `ledgers/2026-09-04-real-content-design-notes.md`); Opus content taxonomy pass on branch `fix-content-taxonomy` (sections, titles, duplicates; report → `ledgers/2026-09-04-taxonomy-pass.md`). Merge both fix branches into `main` after review, then act on the site-review findings, then deploy.
+- Running (4): Opus PWA offline feature on branch `feat-pwa` (manifest, service worker with shell precache + visited pages + per-track 'save for offline', opt-in runtimes, update prompt); Opus whole-site review on `main` (root checkout; report → `docs/superpowers/ledgers/2026-09-04-site-review.md`); Codex UI fixes on branch `fix-ui-real-content` (hero mock capped, wrapping track filter, path-map label clipping; design notes in `ledgers/2026-09-04-real-content-design-notes.md`); Opus content taxonomy pass on branch `fix-content-taxonomy` (sections, titles, duplicates; report → `ledgers/2026-09-04-taxonomy-pass.md`). Merge both fix branches into `main` after review, then act on the site-review findings, then deploy.
 - Branches: `p0-content-pipeline` (worktree kept for future tier-2 runs), `p2-learning-layer`, `p1-site-foundation` are merged; `p0-generate` worktree removed.
 - Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`.
 
 ## TODO (deferred by the user)
+- **MCP server: dropped** by the user on 2026-09-04 (do not build). P3 keeps compare pages, visualizer tools and the daily kata surface.
 - **Tier 2 polish (423 topics)** — decided 2026-09-04 by the user: not now. Estimate at 10-way parallelism: ~6 h wall, ~79 M Codex tokens (tier 1 averaged 187 k per topic). Command when the time comes: `pnpm content:polish --tier 2 --n 10 --max 100` per batch from `.worktrees/p0-content-pipeline`.
 - **Tier 3 polish (238 topics)** — same, after tier 2.
 - Codex usage so far (2026-09-04, logs on disk): ~48 M polish, ~3 M generation, ~4 M code tasks ≈ 55 M.
