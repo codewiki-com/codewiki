@@ -154,6 +154,11 @@ describe('path schema', () => {
   it('parses a path and defaults its edges', () => {
     expect(pathSchema.parse(path).edges).toEqual([]);
   });
+  it('accepts a localized rationale', () => {
+    expect(
+      pathSchema.parse({ ...path, rationale: { en: 'Why this order.', zh: '为何采用这个顺序。' } }).rationale,
+    ).toEqual({ en: 'Why this order.', zh: '为何采用这个顺序。' });
+  });
   it('rejects unknown levels and malformed topic ids', () => {
     expect(() => pathSchema.parse({ ...path, level: { from: 'expert', to: 'god' } })).toThrow();
     expect(() =>

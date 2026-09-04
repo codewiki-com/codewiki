@@ -21,6 +21,8 @@ const PATHS = [
   '/zh/practice/',
   '/glossary/',
   '/settings/',
+  '/paths/python-from-zero/',
+  '/zh/paths/python-from-zero/',
 ];
 
 for (const viewport of VIEWPORTS) {

@@ -49,6 +49,7 @@ test('the glossary and paths APIs are readable JSON', async ({ request }) => {
 
   const paths = await (await request.get('/api/paths.json')).json();
   expect(paths[0].milestones.length).toBeGreaterThan(0);
+  expect(paths[0].url).toBe('https://codewiki.com/paths/python-from-zero/');
 });
 
 test('each locale has its own feed', async ({ request }) => {

@@ -6,7 +6,7 @@ import { t } from '@/i18n';
 import { alternates, localizePath, stripLocale, type Locale } from '@/lib/urls';
 
 /** Page archetypes. They pick the title shape, `og:type` and the automatic JSON-LD. */
-export type PageKind = 'home' | 'track' | 'topic' | 'glossary' | 'practice' | 'page';
+export type PageKind = 'home' | 'track' | 'topic' | 'glossary' | 'practice' | 'path' | 'page';
 
 export interface HeadInput {
   locale: Locale;
