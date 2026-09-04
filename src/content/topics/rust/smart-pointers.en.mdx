@@ -1,0 +1,400 @@
+---
+title: Smart pointers
+description: Rust smart pointers combine indirection with ownership, sharing, and destruction; understand the real boundaries of Deref, Drop, and wrappers.
+track: rust
+section: ownership-borrowing
+difficulty: intermediate
+tags: [smart-pointers, deref, drop, ownership, indirection]
+prerequisites: [rust/ownership, rust/borrowing-rules]
+related: [rust/box-rc-arc, rust/refcell-cell, rust/pin, rust/raw-pointers]
+terms: [smart-pointer, reference-counting, interior-mutability, deref-coercion, drop-trait]
+verified: { version: 'Rust 1.98', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: rust/smart-pointers
+sources:
+  - { title: 'The Rust Programming Language — Smart Pointers', url: 'https://doc.rust-lang.org/book/ch15-00-smart-pointers.html' }
+  - { title: 'The Rust Programming Language — Treating Smart Pointers Like Regular References with Deref', url: 'https://doc.rust-lang.org/book/ch15-02-deref.html' }
+  - { title: 'The Rust Programming Language — Running Code on Cleanup with Drop', url: 'https://doc.rust-lang.org/book/ch15-03-drop.html' }
+  - { title: 'Rust standard library — Deref', url: 'https://doc.rust-lang.org/std/ops/trait.Deref.html' }
+  - { title: 'Rust standard library — Drop', url: 'https://doc.rust-lang.org/std/ops/trait.Drop.html' }
+  - { title: 'The Rust Reference — Destructors', url: 'https://doc.rust-lang.org/reference/destructors.html' }
+origin: old/src/content/docs/rust/smart-pointers.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A <Term id="smart-pointer">smart pointer</Term> is a pointer-like type with ownership or resource-management semantics. `Box<T>` expresses single ownership, `Rc<T>` and `Arc<T>` express shared ownership, and `Weak<T>` observes a value without extending its lifetime.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A wrapper solves only the layer it declares. `Arc<T>` doesn't automatically make `T` thread-safe, `Deref` doesn't make a wrapper a subtype, and reference counting doesn't collect strong-reference cycles.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Draw the ownership and thread boundaries first, then choose the smallest wrapper. Select an ordinary mutable borrow, `RefCell`, a lock, or an atomic separately when mutation is required, and check that destruction remains reachable.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Ordinary references, `&T` and `&mut T`, borrow a value owned elsewhere and can't outlive its owner. A smart pointer usually owns or co-owns its target and stores the state needed to do that work. That state may be only a heap address, or it may include reference counts, allocator information, or other metadata.
+
+"Smart pointer" is a design category, not a Rust marker trait that every such type must implement. Standard-library documentation often explains these types through `Deref` and `Drop`, which provide reference-like access and lifetime-end cleanup respectively, but implementing `Deref` is not a complete definition. The API's ownership contract is what matters.
+
+`Box<T>` exclusively owns a target and fits recursive types, owned trait objects, and values that genuinely need heap indirection. `Rc<T>` maintains several strong owners on one thread, while `Arc<T>` uses atomic counts to carry the same ownership model between threads. `Rc::downgrade()` and `Arc::downgrade()` produce `Weak<T>` handles that don't own the target and must be upgraded before use.
+
+Shared ownership and permission to mutate are separate questions. `Rc<T>` and `Arc<T>` let several handles keep one value alive but normally provide only shared access. For mutation, `Rc<RefCell<T>>` checks borrows at runtime on one thread, while `Arc<Mutex<T>>` or another synchronization primitive coordinates threads; each composition introduces its own failure modes.
+
+You meet smart pointers in recursive syntax trees, GUI object graphs, callback registries, thread-shared configuration, and resource guards. A function that only reads a value during the call should usually accept `&T` instead of forcing callers to hand over or clone a particular smart pointer. Put the wrapper in the signature only when the function must retain, downgrade, or transfer the handle.
+
+The table chooses ownership first and leaves mutation as a separate decision. It deliberately doesn't describe `Cell<T>` and `RefCell<T>` as reference-counting pointers: they provide <Term id="interior-mutability">interior mutability</Term>, not more owners.
+
+| Need | Usual type | What it guarantees | What it does not guarantee |
+| --- | --- | --- | --- |
+| One owner needs indirection | `Box<T>` | Owns the target and runs destruction | A pinned address or faster code |
+| Several owners on one thread | `Rc<T>` | Non-atomic strong and weak counts | Cross-thread sharing or mutable access |
+| Several owners across threads | `Arc<T>` | Atomic strong and weak counts | Synchronization inside `T` |
+| A link that does not own the target | `Weak<T>` | Can attempt to obtain a strong handle | That the target is alive when used |
+| Mutation through shared access | `Cell<T>`, `RefCell<T>` | Controlled internal mutation | Several owners or thread synchronization |
+
+## How it works
+
+### Ownership, access, and destruction
+
+Moving a `Box<T>` transfers its sole ownership. For an ordinary non-zero-sized `T`, moving the wrapper usually moves only a pointer while the heap target remains in its allocation; `Box<T>` itself still doesn't promise a pinned address because safe code may replace or move out an eligible target. Use `Pin` when the type needs a fixed-address contract instead of inferring one from an address that happens not to change.
+
+Cloning an `Rc<T>` or `Arc<T>` clones an owning handle and increments the strong count; it doesn't clone the inner `T`. When the final strong handle is destroyed, the target begins destruction. If `Weak<T>` handles remain, the control information stays allocated so a later `upgrade()` reliably returns `None`; the rest can be released after the final weak handle disappears.
+
+This mechanism is <Term id="reference-counting">reference counting</Term>. It responds precisely to handle creation and destruction, but it doesn't discover a cycle made entirely of strong edges. If a parent strongly owns a child and the child strongly owns its parent, the counts inside the cycle never reach zero after the external root handle disappears.
+
+`Arc`'s atomic operations protect only the reference-counting protocol. Whether `Arc<T>` implements `Send` and `Sync` still depends on the corresponding bounds of `T`, so `Arc<RefCell<T>>` does not become a valid cross-thread shared-mutation design. Plain `Arc<T>` is often enough for immutable read-only data; adding a lock unconditionally changes the interface and failure modes without helping.
+
+### `Deref` and `Drop`
+
+Implementing `Deref<Target = U>` makes `deref(&self)` return `&U`. An explicit `*pointer` expression uses that method, while method lookup and some contexts expecting a reference may also apply <Term id="deref-coercion">deref coercion</Term>. The operation borrows the target; it doesn't move or clone it, and it doesn't increment a reference count.
+
+Deref coercion can proceed through several layers, such as `&NamedBox<String>` to `&String` and then to `&str`. This implicit behavior expands a type's effective public API, so a custom type shouldn't implement `Deref` merely to save a few characters. It fits when the wrapper should transparently behave like its target and that relationship will remain stable.
+
+The <Term id="drop-trait">`Drop` trait</Term> lets a type run cleanup when a value's lifetime ends. You can't call `value.drop()` directly because the compiler still controls destruction at scope exit; to end the lifetime early, move the value into `std::mem::drop(value)`. The old binding has been moved after `drop()` and cannot be used again.
+
+`Drop::drop(&mut self)` returns no value, so it cannot report a fallible close operation that the business logic must handle. Database commits, file flushes, and remote acknowledgements need an explicit `finish()`, `flush()`, or `close()` result. `Drop` should be the fallback for cleanup that can no longer be handed back to the caller.
+
+## Examples
+
+The four programs cover owning indirection, shared lifetime, cross-thread sharing, and a custom wrapper. Each output block comes from compiling and running the file locally with `rustc 1.94.0`; the APIs used remain stable in the target Rust 1.98 release.
+
+### Ending recursive size calculation with `Box`
+
+If `Plan::Sequence` stored two `Plan` values directly, the compiler couldn't calculate a finite enum size. `Box<Plan>` turns each recursive position into a fixed-size owning pointer while preserving a clear parent-to-child ownership relationship.
+
+<Depth level="quick">
+
+```rust title="boxed_plan.rs"
+#[derive(Debug)]
+enum Plan {
+    Task(&'static str),
+    Sequence(Box<Plan>, Box<Plan>),
+}
+
+impl Plan {
+    fn task_count(&self) -> usize {
+        match self {
+            Plan::Task(_) => 1,
+            Plan::Sequence(left, right) => left.task_count() + right.task_count(),
+        }
+    }
+
+    fn first_task(&self) -> &'static str {
+        match self {
+            Plan::Task(name) => name,
+            Plan::Sequence(left, _) => left.first_task(),
+        }
+    }
+}
+
+fn main() {
+    let release = Plan::Sequence(
+        Box::new(Plan::Task("build")),
+        Box::new(Plan::Sequence(
+            Box::new(Plan::Task("test")),
+            Box::new(Plan::Task("deploy")),
+        )),
+    );
+
+    println!("first: {}", release.first_task());
+    println!("tasks: {}", release.task_count());
+}
+```
+
+```text
+first: build
+tasks: 3
+```
+
+<TryToBreak items={['removing one Box layer', 'adding an empty-plan variant', 'moving release after evaluation']} />
+
+</Depth>
+
+The match operates on `&self`, so `left` and `right` are borrows of boxed child nodes. Method lookup automatically dereferences them to `Plan`; you don't need to write `(**left).task_count()`. The boxes express structure here, not a micro-optimization.
+
+When the root leaves scope, the subtrees owned by the two boxes are destroyed recursively. There is no reference count because every child has one owning path. If the domain later requires one sub-plan to belong to several releases, the ownership model must be redesigned rather than patched with another borrow.
+
+### Observing the final `Rc` owner
+
+`owner` and `worker` are two strong owners of one allocation, while `observer` is a weak observer. The program explicitly drops both strong handles to show exactly when the target runs `Drop`.
+
+```rust title="rc_lifetime.rs"
+use std::rc::Rc;
+
+struct Session {
+    name: &'static str,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        println!("drop: {}", self.name);
+    }
+}
+
+fn main() {
+    let owner = Rc::new(Session { name: "checkout" });
+    let observer = Rc::downgrade(&owner);
+    let worker = Rc::clone(&owner);
+
+    println!("strong: {}", Rc::strong_count(&owner));
+    println!("weak: {}", Rc::weak_count(&owner));
+
+    drop(owner);
+    println!("alive after owner: {}", observer.upgrade().is_some());
+
+    drop(worker);
+    println!("alive after worker: {}", observer.upgrade().is_some());
+}
+```
+
+```text
+strong: 2
+weak: 1
+alive after owner: true
+drop: checkout
+alive after worker: false
+```
+
+`Rc::clone(&owner)` changes only the strong count. After `owner` is dropped, `worker` still keeps the `Session` alive. Dropping `worker` reduces the strong count to zero, so the destructor output appears before the second liveness result; the weak handle remains but cannot revive a destroyed value.
+
+`strong_count()` is fine for this controlled single-thread observation, but it shouldn't become a business precondition. Code that needs the target alive should hold the `Rc<T>` returned by a successful upgrade. Reading a count before doing something else only creates brittle check-then-use logic.
+
+### Sharing read-only data across threads with `Arc`
+
+Each thread owns one `Arc<Vec<i32>>` handle and only reads the vector. Workers return their results, and the main thread prints in handle-creation order, so scheduling can't change the output order.
+
+```rust title="arc_reports.rs"
+use std::sync::Arc;
+use std::thread;
+
+fn main() {
+    let readings = Arc::new(vec![4, 6, 9, 12]);
+
+    let handles: Vec<_> = [2, 3]
+        .into_iter()
+        .map(|divisor| {
+            let readings = Arc::clone(&readings);
+            thread::spawn(move || {
+                let total: i32 = readings
+                    .iter()
+                    .copied()
+                    .filter(|value| value % divisor == 0)
+                    .sum();
+                (divisor, total)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (divisor, total) = handle.join().unwrap();
+        println!("divisible by {divisor}: {total}");
+    }
+
+    println!("owners: {}", Arc::strong_count(&readings));
+}
+```
+
+```text
+divisible by 2: 22
+divisible by 3: 27
+owners: 1
+```
+
+The thread closures use `move` to take ownership of their respective handles, not independent copies of the vector. Those handles are destroyed after all threads finish, leaving one strong owner in the main thread. The inner data is never mutated, so a `Mutex` would add a different interface and failure modes without adding needed semantics.
+
+If the threads must update one state, first decide whether direct sharing is better than message passing or per-thread results. When it is, select a lock or atomic type and define poisoning, blocking, and critical-section boundaries. `Arc` answers how long the state lives, not who may write it and when.
+
+### Implementing `Deref` and `Drop` for a transparent wrapper
+
+`NamedBox<T>` stores a label and one value. It forwards shared dereferencing to its inner `T` and logs the wrapper label during destruction; `announce(&customer)` demonstrates two consecutive deref coercions.
+
+```rust title="named_box.rs"
+use std::ops::Deref;
+
+struct NamedBox<T> {
+    label: &'static str,
+    value: T,
+}
+
+impl<T> NamedBox<T> {
+    fn new(label: &'static str, value: T) -> Self {
+        Self { label, value }
+    }
+}
+
+impl<T> Deref for NamedBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T> Drop for NamedBox<T> {
+    fn drop(&mut self) {
+        println!("drop: {}", self.label);
+    }
+}
+
+fn announce(value: &str) {
+    println!("value: {value}");
+}
+
+fn main() {
+    let customer = NamedBox::new("customer", String::from("Ada"));
+    announce(&customer);
+    println!("bytes: {}", customer.len());
+    drop(customer);
+    println!("after explicit drop");
+}
+```
+
+```text
+value: Ada
+bytes: 3
+drop: customer
+after explicit drop
+```
+
+`&NamedBox<String>` first becomes `&String` through the custom `Deref`, then becomes `&str` through `String`'s implementation. Method lookup for `customer.len()` also uses automatic dereferencing. Both operations borrow; neither takes ownership of the `String`.
+
+`drop(customer)` moves the wrapper into the standard-library `drop()` function, so destruction happens before the next line. A real resource type shouldn't write to standard output unconditionally during destruction; the example does so only to expose the order. Production code must also keep `drop()` from panicking and put recoverable failures in an explicit API.
+
+## Pitfalls
+
+### Stacking wrappers instead of designing ownership
+
+> [!PITFALL]
+> Generated code often turns a borrow error into `Arc<Mutex<Rc<RefCell<Box<T>>>>>`. The result may still fail to cross a thread boundary, while introducing dynamic borrowing, lock poisoning, deadlocks, and more indirection.
+
+**Fix:** Write down who owns `T`, whether sharing crosses threads, and whether in-place mutation is necessary. Every wrapper layer must answer one independent need. Remove layers without a role, and use domain identifiers or message passing instead of an unnecessarily shared object graph.
+
+### Mistaking a handle clone for a deep copy
+
+> [!PITFALL]
+> `Rc::clone()` and `Arc::clone()` create another owner of the same allocation. If the target is changed through interior mutability or a lock, the other handles observe that same change; they aren't independent snapshots.
+
+**Fix:** Decide whether the code needs shared identity or a copied value. For sharing, spell `Rc::clone(&handle)` or `Arc::clone(&handle)` to show that an owner is being added. For an independent value, clone the inner `T` and state whether the required copy is shallow, deep, or reconstructed from domain data.
+
+### Building a cycle from strong references
+
+> [!PITFALL]
+> `Rc` and `Arc` don't include cycle detection. If a tree stores strong parent and child links, or a registry and subscriber own each other, none of the cycle's targets is destroyed after the external handles disappear.
+
+**Fix:** Draw the owning edges according to the domain, then change parent links, cached observers, and other non-owning back edges to `Weak`. Tests should drop the external root owner and assert that a retained weak handle no longer upgrades instead of observing only one count snapshot.
+
+### Overusing `Deref` on domain wrappers
+
+> [!PITFALL]
+> Implementing `Deref<Target = String>` for `UserId`, `ValidatedPath`, or `Secret` implicitly exposes the entire string API on the wrapper. Callers may bypass domain operations, and source code no longer makes automatic dereferencing obvious.
+
+**Fix:** Prefer an explicitly named method such as `as_str()`, `expose()`, or a constrained domain operation. Implement `Deref` only when the wrapper should transparently substitute for the target, method-conflict behavior is acceptable, and the relationship won't change.
+
+### Treating `Drop` as a reliable business commit
+
+> [!PITFALL]
+> `Drop::drop()` can't return an error, and strong-reference cycles, `mem::forget()`, process aborts, and leaks can prevent or delay expected cleanup. A transaction commit, persistence step, or remote acknowledgement hidden only in a destructor loses failure information.
+
+**Fix:** Provide an explicit method returning `Result` for any action whose success must be confirmed, and let `Drop` perform idempotent local fallback cleanup. Test early `drop()`, ordinary scope exit, and error paths; don't treat process exit as a resource protocol.
+
+### Using `Box::leak` to patch a lifetime error
+
+> [!PITFALL]
+> A model may use `Box::leak` to turn an owned value into a `'static` reference merely to stop a lifetime error. Unless the program has a bounded process-lifetime allocation design, that changes an ownership problem into permanent memory growth.
+
+**Fix:** Give the long-lived task ownership of a `Box`, `Arc`, or domain object, or shorten the borrow. Consider `Box::leak` only when the target should truly live until process exit, the number of allocations is bounded, and leaking is part of the API contract.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models tend to treat `Arc<Mutex<_>>` as a universal compilation fix and then carry the lock guard across a callback or `.await`. They also generate `Arc<RefCell<T>>` and claim the inner value is now thread-safe, or store strong handles on both ends of parent-child and subscription relationships. Custom wrappers often get an indiscriminate `Deref`, a direct `.drop()` call, logging of sensitive inner values, or `Box::leak` used to fake a `'static` lifetime.
+
+**Ask your AI to check**
+
+- State the specific requirement solved by every `Box`, `Rc`, `Arc`, `Weak`, and mutability wrapper, and mark all thread boundaries.
+- Draw every strong and weak edge, then prove that each destructor remains reachable after external root handles disappear.
+- List every implicit dereference, explicit `drop()`, `Box::leak`, and guard lifetime that crosses a callback or `.await`.
+
+**Review checklist**
+
+- Remove wrappers with no independent semantics, then recheck the `Send`, `Sync`, and mutable-access requirements.
+- Expire weak handles and destroy the final strong handle; observe both upgrade results and resource cleanup.
+- Check that `Drop` performs only infallible fallback cleanup and that sensitive values aren't logged, cloned, or leaked.
+
+**Prompt vocabulary**
+
+Use the exact terms `owning pointer`, `shared ownership`, `strong reference cycle`, `weak back edge`, `deref coercion`, `drop glue`, `guard lifetime`, and `interior mutability`. Ask for an ownership graph and a proof of destructor reachability; "fix the borrow checker error" is too vague to constrain wrapper choice.
+
+<Depth level="deep">
+
+## Boundaries of deref coercion
+
+`Deref`'s associated `Target` type determines the target of shared dereferencing. When the compiler sees a position expecting `&U`, it can convert `&T` along `T: Deref<Target = U>` and continue if the next layer also implements `Deref`. `DerefMut` supplies the corresponding capability for exclusive borrowing, but a shared reference can never become a mutable reference through this mechanism.
+
+| Starting point | Required implementation | Available reference |
+| --- | --- | --- |
+| `&T` | `T: Deref<Target = U>` | `&U` |
+| `&mut T` | `T: DerefMut<Target = U>` | `&mut U` |
+| `&mut T` | `T: Deref<Target = U>` | `&U` |
+| `&T` | Any safe `Deref` implementation | Never `&mut U` |
+
+Function arguments are the easiest place to observe this. When a function accepts `&str`, its caller can pass `&String`, `&Box<str>`, or the example's `&NamedBox<String>`. The conversion operates on a reference and the caller retains its original wrapper. If the function must retain shared ownership, its signature should explicitly accept `Rc<T>` or `Arc<T>`.
+
+Method calls also perform automatic dereferencing and borrowing, which is why `customer.len()` finds a method on `String` or `str`. Associated functions don't become wrapper methods in the same way: call `Rc::downgrade()`, `Arc::get_mut()`, and `Box::into_raw()` through the container type. That distinction helps a reviewer tell whether code operates on the target or on its ownership container.
+
+A custom `Deref` should be cheap, predictable, and free of business side effects because the call site may not reveal that it runs. It shouldn't take a lock and perform lengthy work, trigger network access, or change domain state. Even when the type system permits such behavior, it makes ordinary-looking method calls difficult to reason about.
+
+`DerefMut` is stronger because it projects an exclusive borrow of the wrapper into an exclusive borrow of the target. If a wrapper must preserve validation, normalization, or auditing invariants, exposing `DerefMut` often lets callers bypass those boundaries. Provide controlled mutation methods or an explicit edit-and-revalidate API instead.
+
+## Destruction order and cleanup boundaries
+
+Rust runs a value's destructor when its destruction scope ends. If the type implements `Drop`, its `drop(&mut self)` method runs first, after which compiler-generated destruction continues through the fields. Application code shouldn't manually destroy fields and then let the default path process them again; complicated partial initialization or manual destruction usually belongs to unsafe abstractions involving tools such as `MaybeUninit`.
+
+Local variables are destroyed in reverse declaration order, while struct fields are destroyed in declaration order. Building correctness on the implicit ordering of adjacent locals is usually brittle. When order matters, use nested scopes or explicit `drop()` calls to put the boundary in control flow, and test the required sequence.
+
+A move transfers destruction responsibility. After a non-`Copy` resource wrapper moves to a new binding, the old binding can't be used and the value is eventually destroyed only once from its new place. Every `Rc<T>` and `Arc<T>` handle is destroyed separately, but the inner `T` is destroyed once when the final strong owner disappears.
+
+A panic during destruction is dangerous, especially when the thread is already unwinding from another panic, because a second panic may abort the process. Keep `Drop` implementations short and independent of external services, and avoid `unwrap()` on conditions that can fail during ordinary operation. A destructor may record a broken invariant, but it shouldn't be the primary error-reporting channel.
+
+Safe Rust also permits deliberately skipping destruction: `mem::forget(value)` consumes a value without running `Drop`. A memory-safe `Drop` implementation therefore can't assume that destruction always happens as part of its safety argument; unsafe resource abstractions must account for leaks too. Business code should likewise treat destruction as a common cleanup path, not an inviolable delivery guarantee.
+
+Every resource relationship should ultimately answer two questions: who initiates normal close, and what remains if close is missed. File handles and lock guards fit RAII release at scope exit. A persistence action whose failure must reach the caller needs explicit completion; a smart pointer can connect lifetime to cleanup, but it can't define business success for you.
+
+</Depth>
+
+<Checkpoint id="rust/smart-pointers" />
+
+## Further reading
+
+- [The Rust Programming Language: Smart Pointers](https://doc.rust-lang.org/book/ch15-00-smart-pointers.html)
+- [The Rust Programming Language: treating smart pointers like references with `Deref`](https://doc.rust-lang.org/book/ch15-02-deref.html)
+- [The Rust Programming Language: running cleanup code with `Drop`](https://doc.rust-lang.org/book/ch15-03-drop.html)
+- [Rust standard library: `Deref`](https://doc.rust-lang.org/std/ops/trait.Deref.html)
+- [Rust standard library: `Drop`](https://doc.rust-lang.org/std/ops/trait.Drop.html)
+- [The Rust Reference: destructors](https://doc.rust-lang.org/reference/destructors.html)

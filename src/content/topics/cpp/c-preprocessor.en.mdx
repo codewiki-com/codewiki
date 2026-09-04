@@ -1,0 +1,401 @@
+---
+title: C preprocessor
+description: The C preprocessor expands macros, includes headers, and selects code before compilation; learn token replacement, configuration boundaries, and verifiable macros.
+track: cpp
+section: memory-ownership
+difficulty: intermediate
+tags: [c, preprocessor, macros, conditional-compilation, headers]
+prerequisites: [cpp/c-basics]
+related: [cpp/cmake, cpp/templates, cpp/cpp20]
+terms: [macro, preprocessing-directive, include-guard, translation-unit, undefined-behavior]
+verified: { version: 'C23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/c-preprocessor
+sources:
+  - { title: 'WG14 N3096: C23 working draft', url: 'https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf' }
+  - { title: 'GCC 13.3: The C preprocessor', url: 'https://gcc.gnu.org/onlinedocs/gcc-13.3.0/cpp/' }
+  - { title: 'GCC 13.3: Preprocessor options', url: 'https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Preprocessor-Options.html' }
+  - { title: 'cppreference: C preprocessor', url: 'https://en.cppreference.com/w/c/preprocessor.html' }
+origin: old/src/content/docs/cpp/c-preprocessor.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    The C preprocessor handles source files before the compiler analyzes types and expressions. It includes files, selects conditional code, and replaces macros, producing the translation unit the compiler sees.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    Macros operate on preprocessing tokens, not typed values. Missing parentheses, repeated parameters, or testing a zero-valued switch with `#ifdef` can all produce code that compiles with the wrong meaning.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    Reserve macros for work that requires preprocessing, and prefer functions or language constants for value computation. Inspect expansions, then build and test every supported configuration.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+The C preprocessor reads source files and handles <Term id="preprocessing-directive">preprocessing directives</Term> introduced by `#` before normal compilation. `#include` brings in file contents, `#if` selects tokens to keep, and `#define` creates a <Term id="macro">macro</Term>. The preprocessor doesn't understand C object types, scopes, or runtime values.
+
+Preprocessing solves composition and configuration problems that exist before compilation. Public declarations can live in headers, platform adapters can select an implementation at build time, and macros can generate repeated token patterns. You'll meet it in public library headers, `-D` definitions from build systems, logging and assertion wrappers, and platform-detection code.
+
+"Text substitution" is a useful approximation, but it isn't precise enough. Macros operate on preprocessing tokens: they don't replace characters inside string literals, and they can't freely join half of one token to half of another. The `#` and `##` operators have specific stringification and token-pasting rules.
+
+Preprocessor output still isn't an executable program. After includes and macro replacement, one `.c` file forms a <Term id="translation-unit">translation unit</Term>. Only then does the compiler analyze declarations, types, and expressions before assembly and linking. `gcc -E` lets you inspect this boundary.
+
+| Need | Suitable mechanism | What a macro can't pretend to do |
+|---|---|---|
+| Share declarations | `#include` and include guards | Manage runtime object ownership |
+| Select a build variant | `#if`, `defined`, and build definitions | Branch on runtime data |
+| Generate repeated declarations | Function-like macros or X macros | Provide type checking |
+| Report a source location | `__FILE__` and `__LINE__` | Prove a call is safe |
+| Compute values | Prefer functions, enums, or language constants | Imitate function semantics with macro arguments |
+
+## How it works
+
+This flow shows only the boundaries needed for everyday code. The standard specifies several translation phases; an implementation may combine them as long as the result follows the required behavior.
+
+```mermaid
+flowchart LR
+  S["source file"] --> P["line splicing, comments, and token recognition"]
+  P --> D["#include, conditionals, and macro replacement"]
+  D --> T["translation unit"]
+  T --> C["compile, assemble, and link"]
+```
+
+### Before directives are handled
+
+A backslash immediately followed by a newline joins two physical lines into one logical line. Source characters are then recognized as preprocessing tokens and whitespace, with each comment replaced by one space during that process. Nothing can trail a multiline macro's backslash if it would stop that splice from occurring.
+
+The `#` in a preprocessing directive must be the first preprocessing token on a logical line, although whitespace may precede it. Directives control preprocessing only; indenting `#if` inside a normal C block doesn't make it a runtime `if`. A group excluded by conditionals never reaches the later compilation stage.
+
+`#include` makes the implementation locate a named file and continue processing it as input at that point. Quoted and angle-bracket forms use different implementation-defined search sequences. Exact directories come from compiler defaults and options such as `-I`, so punctuation alone doesn't reveal the full path on every toolchain.
+
+### Object-like and function-like macros
+
+An object-like macro replaces its name with its replacement list. A function-like macro expands only when its name is followed by an invocation parenthesis; its parameters receive argument token sequences, not values that already have C types.
+
+| Definition | Use | First replacement result |
+|---|---|---|
+| `#define LIMIT 8` | `int a[LIMIT];` | `int a[8];` |
+| `#define TWICE(x) ((x) + (x))` | `TWICE(3 + 1)` | `((3 + 1) + (3 + 1))` |
+| `#define NAME(x) #x` | `NAME(red)` | `"red"` |
+| `#define JOIN(a, b) a ## b` | `JOIN(item, 7)` | `item7` |
+
+Ordinary parameters are macro-expanded before substitution into the replacement list. A parameter next to `#` or `##` isn't expanded first on that pass, which is why stringifying an expanded value usually needs an indirection macro. The replacement is rescanned afterward, allowing newly exposed macro names to expand.
+
+A macro currently being expanded is temporarily unavailable for replacement at the corresponding points in that scan. This prevents direct or indirect self-reference from recursing forever, but the leftover macro name will usually make invalid C code. Macro recursion isn't a general looping facility.
+
+### Conditionals and definition state
+
+`#ifdef NAME` asks only whether the name is defined; it doesn't care whether its replacement list is `0`. `#if NAME` expands its expression first, and remaining ordinary identifiers take the value zero in the preprocessing constant expression. Combine `defined(NAME)` with a numeric check when "not supplied" and "explicitly disabled" must differ.
+
+Build systems commonly provide definitions with `-DNAME=value`, while a header supplies a default with `#ifndef NAME`. Configuration needs one clear owner. If command-line options, a generated header, and an ordinary header define the same macro independently, the result can depend on include order and may produce a redefinition diagnostic.
+
+`#error` fails the current preprocessing operation, which suits unsupported or contradictory configurations. C23 also standardizes `#warning`, but a warning shouldn't enforce a condition that must stop the build. Use `#error` or a compilation-stage static assertion for mandatory constraints.
+
+### Predefined names and macro lifetime
+
+The implementation supplies a set of standard predefined macros before it processes user source. They suit source-location reporting and checks on the language environment, but they don't replace product configuration owned by a build system. `__func__` is a predefined identifier inside a function body, not a preprocessing macro.
+
+| Name | Meaning | Boundary |
+|---|---|---|
+| `__FILE__` | String for the currently reported file name | May be affected by `#line` |
+| `__LINE__` | Integer for the currently reported line | May be affected by `#line` |
+| `__STDC__` | The implementation claims C conformance | Doesn't identify a particular version |
+| `__STDC_VERSION__` | The implementation's claimed C version number | May be undefined in older language modes |
+| `__STDC_HOSTED__` | `1` for hosted, `0` for freestanding | Doesn't identify an operating system |
+
+When checking a version, first use `defined(__STDC_VERSION__)` to handle modes without that macro, then compare the required version number. Compiler identity macros only describe the current implementation. Treating `__GNUC__` as sufficient proof of one feature can misclassify compatible compilers or other versions.
+
+`#undef NAME` ends later macro replacement for that name. It can retire a local helper or permit controlled reconfiguration. Defining the same name again with a different replacement list while it remains defined normally requires a diagnostic; relying on the result turns include order into a hidden input.
+
+The standard reserves several classes of identifiers for implementations, especially file-scope names beginning with an underscore and double-underscore forms. Project code should use an explicit prefix instead of copying the naming style of predefined macros.
+
+### Include guards
+
+A header can arrive in one translation unit along several include paths. An <Term id="include-guard">include guard</Term> wraps its contents in a unique macro so later inclusions see the definition and skip the body.
+
+```c
+#ifndef ACME_NET_PACKET_H
+#define ACME_NET_PACKET_H
+
+struct packet;
+int packet_size(const struct packet *value);
+
+#endif
+```
+
+The guard name must be unique across the project. If two unrelated headers happen to use the same guard, whichever is included first silently hides the other. `#pragma once` is supported by mainstream toolchains, but it isn't a directive in the C23 language standard.
+
+An include guard only prevents the same header body from being processed repeatedly in one translation unit. It doesn't resolve mutual dependencies on complete types, and it doesn't make an ordinary external definition in a header unique across the program. Break dependencies with forward declarations and put definitions that need one storage instance in a source file.
+
+## Examples
+
+These four programs cover indirect stringification, statement macros, build switches, and X macros in that order. I compiled every file with GCC 13.3.0 using `-std=c2x -Wall -Wextra -Wconversion -Wpedantic -Werror`; the displayed text is the actual output.
+
+### Expand, then stringify
+
+Writing `STRINGIFY_RAW(API_MAJOR)` directly produces `"API_MAJOR"` because `#` suppresses prescan for that parameter. The outer `STRINGIFY` expands the argument first, then passes the result to the inner macro that performs stringification.
+
+<Depth level="quick">
+
+```c title="version_string.c"
+#include <stdio.h>
+
+#define API_MAJOR 4
+#define API_MINOR 2
+#define STRINGIFY_RAW(value) #value
+#define STRINGIFY(value) STRINGIFY_RAW(value)
+#define API_VERSION STRINGIFY(API_MAJOR) "." STRINGIFY(API_MINOR)
+
+int main(void) {
+    printf("version: %s\n", API_VERSION);
+    printf("raw: %s\n", STRINGIFY_RAW(API_MAJOR));
+    printf("expanded: %s\n", STRINGIFY(API_MAJOR));
+    return 0;
+}
+```
+
+```text
+version: 4.2
+raw: API_MAJOR
+expanded: 4
+```
+
+</Depth>
+
+The compiler concatenates adjacent string literals, so `API_VERSION` becomes one string. The two macro layers aren't decoration: removing the outer one changes the observable result.
+
+This pattern also puts build definitions into diagnostic text. If a numeric value is needed in a C expression, keep using `API_MAJOR` itself instead of parsing the stringified form back into a number.
+
+### Wrap statements and optional arguments
+
+The statement macro uses `do { ... } while (0)`, so its call site can supply one semicolon like an ordinary statement. C23's `__VA_OPT__` inserts the comma only when the variadic arguments are nonempty.
+
+```c title="audit_log.c"
+#include <stdio.h>
+
+#define AUDIT(format, ...)                                      \
+    do {                                                        \
+        printf("[audit] " format __VA_OPT__(,) __VA_ARGS__);   \
+        putchar('\n');                                         \
+    } while (0)
+
+static void record_login(int accepted) {
+    if (accepted)
+        AUDIT("login accepted");
+    else
+        AUDIT("login rejected for user %d", 17);
+}
+
+int main(void) {
+    record_login(1);
+    record_login(0);
+    return 0;
+}
+```
+
+```text
+[audit] login accepted
+[audit] login rejected for user 17
+```
+
+<TryToBreak items={['pass zero optional arguments', 'put the call in an if/else without braces', 'include a comma in the format arguments']} />
+
+The outer wrapper turns the expansion into one statement and prevents the caller's `else` from binding to an `if` inside the macro. The definition doesn't end with a semicolon; that punctuation belongs to the call syntax.
+
+This macro still provides no format type safety by itself. A compiler may diagnose mismatches using its knowledge of `printf`, but the macro doesn't validate the format string and arguments. Put richer logging policy in a function, leaving only source locations or conditional removal in a thin macro layer.
+
+### Select an implementation with a build definition
+
+This file represents feature state with a numeric macro and rejects values other than zero and one. The output below comes from a build that also passes `-DENABLE_METRICS=1`.
+
+```c title="feature_switch.c"
+#include <stdio.h>
+
+#ifndef ENABLE_METRICS
+#define ENABLE_METRICS 0
+#endif
+
+#if ENABLE_METRICS != 0 && ENABLE_METRICS != 1
+#error "ENABLE_METRICS must be 0 or 1"
+#endif
+
+#if ENABLE_METRICS
+static void record_metric(const char *name, int value) {
+    printf("metric %s=%d\n", name, value);
+}
+#else
+#define record_metric(name, value) ((void)0)
+#endif
+
+int main(void) {
+    record_metric("requests", 3);
+    printf("metrics: %s\n", ENABLE_METRICS ? "enabled" : "disabled");
+    return 0;
+}
+```
+
+```text
+metric requests=3
+metrics: enabled
+```
+
+Changing the condition to `#ifdef ENABLE_METRICS` would also select the enabled branch when the default definition is zero. Use `#if ENABLE_METRICS` for a numeric switch; reserve `#ifdef` for flags whose presence is the whole meaning.
+
+The disabled branch replaces the call with `((void)0)`, so it doesn't evaluate `name` or `value`. If an argument has a side effect, enabled and disabled builds behave differently at runtime. Calling code shouldn't depend on side effects in logging or metrics arguments.
+
+### Generate consistent declarations from one list
+
+An X macro separates a data list from the action used on each traversal. The same status table generates enum members and `switch` arms here, avoiding two manually maintained lists that can drift apart.
+
+```c title="status_table.c"
+#include <stdio.h>
+
+#define STATUS_LIST(X)  \
+    X(PENDING, 10)      \
+    X(RUNNING, 20)      \
+    X(COMPLETE, 30)
+
+#define DECLARE_STATUS(name, code) STATUS_##name = code,
+enum status {
+    STATUS_LIST(DECLARE_STATUS)
+};
+#undef DECLARE_STATUS
+
+static const char *status_name(int value) {
+    switch (value) {
+#define STATUS_CASE(name, code) case STATUS_##name: return #name;
+        STATUS_LIST(STATUS_CASE)
+#undef STATUS_CASE
+    default:
+        return "UNKNOWN";
+    }
+}
+
+int main(void) {
+    printf("%d %s\n", STATUS_RUNNING, status_name(STATUS_RUNNING));
+    printf("%d %s\n", 99, status_name(99));
+    return 0;
+}
+```
+
+```text
+20 RUNNING
+99 UNKNOWN
+```
+
+Undefining each action macro after use limits how long it can affect later source. `STATUS_LIST` can remain as the public generation entry point, but its line format and argument count now form an interface that must be maintained.
+
+This technique fits a small, stable declaration table. If the list needs conditionals, nested data, or consumption by external tools, one YAML or JSON input and a generator is usually easier to verify. Don't stretch the preprocessor into a data language.
+
+## Pitfalls
+
+### Treating parentheses as a single-evaluation guarantee
+
+> [!PITFALL]
+> Parentheses fix precedence in `#define MAX(a, b) ((a) > (b) ? (a) : (b))`, but the winning argument may still be evaluated twice. `MAX(index++, limit)` can increment `index` twice; other replacement lists can put repeated modifications in unsequenced operands and cause undefined behavior.
+
+**Fix:** prefer a `static inline` function for value computation, which evaluates each argument once before the call. If a macro truly must accept several types, document the "no side effects in arguments" contract and enforce its call sites with diagnostics and tests.
+
+### Reading a numeric switch with `#ifdef`
+
+> [!PITFALL]
+> After `#define FEATURE_X 0`, `#ifdef FEATURE_X` is still true. Generated code often mixes presence tests with Boolean value tests, compiling an enabled path into a disabled configuration.
+
+**Fix:** use `#if FEATURE_X` for a zero-or-one switch and supply its default with `#ifndef`. When an omitted state must remain distinct, first check `defined(FEATURE_X)`, then validate the permitted numeric values separately.
+
+### Letting a statement macro leak control flow
+
+> [!PITFALL]
+> A bare `{ ... }` block or several unwrapped statements can change which `if` owns an `else` when the caller omits braces. Putting a semicolon in the macro definition also creates an empty statement and can be a syntax error in some control-flow positions.
+
+**Fix:** wrap a statement macro in `do { ... } while (0)` and omit the final semicolon from its definition. Caller code should still brace `if` and `else`; any `return`, `break`, or `continue` hidden inside the macro must remain conspicuous and documented.
+
+### Colliding macro and guard names
+
+> [!PITFALL]
+> Macros don't obey C block scope or namespaces. Short names, reserved forms that begin with underscores, and duplicate include-guard names can rewrite unrelated code or silently suppress a complete header.
+
+**Fix:** prefix public macros with the project and component, derive guards from a stable project path, and `#undef` temporary helpers immediately after use. Don't define implementation-reserved identifiers or leak generic names from public headers.
+
+### Depending on compiler extensions by default
+
+> [!PITFALL]
+> `typeof`, statement expressions, `, ##__VA_ARGS__`, and vendor-specific pragmas may work in the current compiler without belonging to the target C23 interface. Models often copy these forms from older projects without naming the dialect.
+
+**Fix:** start with functions, `__VA_OPT__`, and ordinary directives supplied by the target standard. When an extension is necessary, isolate it in an adapter header, guard it by compiler and version, and make CI build every toolchain the project promises to support.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate `#if sizeof(void *) == 8`, although a preprocessing constant expression can't use `sizeof`, or apply `#ifdef FEATURE` to a switch whose value is zero. Other outputs pass an `i++` argument into a multiple-evaluation macro, omit parentheses around a macro parameter or whole expression, or copy `##__VA_ARGS__` from old GNU code. When generating several headers, a model may also reuse one guard macro and make every later declaration disappear.
+
+**Ask your AI to check**
+
+- List how many times each macro parameter appears in its replacement list, then flag every call argument with a side effect.
+- For every conditional name, state whether it represents definition presence or a numeric state, and enumerate all valid build combinations.
+- Show the expansion of important calls from `gcc -E -P`, then identify each nonstandard extension and the condition that guards it.
+
+**Review checklist**
+
+- Build feature-on and feature-off configurations with strict warnings and run both test sets; reading the `#if` arms isn't enough.
+- Confirm that every public header compiles when included alone, has a unique guard, and contains no ordinary external definition or leaked helper macro.
+- Review every value-macro call as token replacement, checking precedence, repeated evaluation, control flow, and empty variadic arguments.
+
+**Prompt vocabulary**
+
+Use the exact terms `object-like macro`, `function-like macro`, `replacement list`, `macro argument prescan`, `stringification`, `token pasting`, `include guard`, `conditional inclusion`, and `translation unit`. Ask for the "expanded token sequence" and a "configuration build matrix"; "check this macro" is too vague to expose these bugs.
+
+<Depth level="deep">
+
+## Expansion order and boundaries
+
+A function-like invocation first collects complete argument token sequences. Nested parentheses take part in grouping, and only a comma at the outer level ends the current argument. The preprocessor doesn't check whether those tokens will later form an expression compatible with a parameter type, because no function parameter type exists at this stage.
+
+An argument not adjacent to `#` or `##` is fully macro-expanded before it enters the replacement list. Stringification joins its argument tokens into a string, collapses whitespace between tokens, and escapes quotes and backslashes within them. It records source token spelling, not the runtime text produced by evaluating an expression.
+
+Token pasting combines the token on each side into one new preprocessing token, and that result must be valid. Add an indirection macro when inputs must expand before pasting, letting the outer layer perform prescan. Names generated by `##` are harder for ordinary search tools to find, so use the technique only when the generation relationship is clearer than explicit declarations.
+
+The replacement sequence is rescanned, expanding newly exposed names that are eligible at that point. A self-reference is suppressed at the relevant scan location during its own expansion, so `#define LOOP LOOP` doesn't run forever. It only leaves `LOOP`, which the C compiler probably can't interpret.
+
+C23's `__VA_OPT__(tokens)` can appear only in the replacement list of a variadic macro. It retains `tokens` when the argument corresponding to `...` is nonempty and produces nothing when that argument is empty. This solves the optional-comma case for logging macros without GNU's comma-swallowing extension.
+
+## Include boundaries and configuration ownership
+
+Headers are input to translation units, not runtime modules. An include guard goes through its definition process afresh when each translation unit is preprocessed, so it suppresses duplicates only within that translation unit. Separate source files each have their own macro state.
+
+A public header should compile when directly `#include`d from an otherwise empty source file. It must include or declare the types it needs instead of relying on the caller to include another header first. This test finds include-order dependencies and makes generated headers easier to verify in isolation.
+
+Quoted includes are commonly used for project headers, while angle brackets commonly use include directories supplied by the implementation or build, but the standard leaves search details to the implementation. A portable interface shouldn't depend on the current working directory, one same-named file winning by accident, or system-directory order. Pass directories explicitly in the build and diagnose the actual include chain with `gcc -H` or dependency output.
+
+Keep the default, valid range, and source of a feature switch in one place. When the build system chooses a deployment variant, it can provide the macro while a header only supplies a default and validates the range. A source file shouldn't quietly redefine the switch after including the configuration header, or translation units in one program may see contradictory interface layouts.
+
+When conditional compilation changes structure members, function signatures, or calling conventions, every affected translation unit must use a consistent configuration. Recompiling only one source file may still link while leaving the two sides with different layout assumptions. Configuration macros are therefore part of the build's ABI contract, not merely local implementation details.
+
+## Diagnostics and portability
+
+`gcc -E file.c` emits preprocessor output, `-P` removes line markers, and `-dM -E` lists macro definitions present at the end of processing. These outputs answer "what did the compiler actually see?", but they are often large. Search a minimal reproducer around the relevant declaration instead of treating an entire system-header dump as review material.
+
+Among standard predefined macros, `__FILE__` and `__LINE__` describe the current source location, while `__DATE__` and `__TIME__` describe translation time. The latter pair makes identical source produce different bytes across builds, so it doesn't suit reproducible artifact identification. Take release versions from explicit build inputs instead of the compiler clock.
+
+`#line` changes the values subsequently reported by `__LINE__` and `__FILE__`, mainly so generators can map diagnostics back to original input. A generator must keep that mapping accurate; casual use makes logs and errors point investigators to the wrong place. It doesn't change physical lines in the file system.
+
+The implementation defines what a `#pragma` does, while `_Pragma("tokens")` allows macro replacement to produce a pragma operation. Warning suppression should use a narrow push, local disable, and pop structure with named compiler branches. Disabling a diagnostic globally can hide new defects in later generated code.
+
+The preprocessor guarantees only the token transformations in its scope; it doesn't guarantee that the generated C program has defined behavior. Once an expansion "looks right," it still needs type checking, strict warnings, static analysis, tests, and suitable sanitizers. Crossing a macro boundary weakens none of those requirements.
+
+</Depth>
+
+<Checkpoint id="cpp/c-preprocessor" />
+
+## Further reading
+
+Start with the C23 working draft for preprocessing directives and replacement rules, then use the GCC manuals for local options and extensions. cppreference is useful for quick syntax lookup, but the draft and compiler documentation decide the final answer.
+
+- [WG14 N3096: C23 working draft](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf)
+- [GCC 13.3: The C preprocessor](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/cpp/)
+- [GCC 13.3: Preprocessor options](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Preprocessor-Options.html)
+- [cppreference: C preprocessor](https://en.cppreference.com/w/c/preprocessor.html)

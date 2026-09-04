@@ -1,0 +1,401 @@
+---
+title: C 预处理器
+description: C 预处理器在编译前展开宏、包含头文件并选择条件代码；掌握词元替换、配置边界与可验证的宏写法。
+track: cpp
+section: memory-ownership
+difficulty: intermediate
+tags: [c, preprocessor, macros, conditional-compilation, headers]
+prerequisites: [cpp/c-basics]
+related: [cpp/cmake, cpp/templates, cpp/cpp20]
+terms: [macro, preprocessing-directive, include-guard, translation-unit, undefined-behavior]
+verified: { version: 'C23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/c-preprocessor
+sources:
+  - { title: 'WG14 N3096: C23 working draft', url: 'https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf' }
+  - { title: 'GCC 13.3: The C preprocessor', url: 'https://gcc.gnu.org/onlinedocs/gcc-13.3.0/cpp/' }
+  - { title: 'GCC 13.3: Preprocessor options', url: 'https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Preprocessor-Options.html' }
+  - { title: 'cppreference: C preprocessor', url: 'https://en.cppreference.com/w/c/preprocessor.html' }
+origin: old/src/content/docs/cpp/c-preprocessor.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    C 预处理器在编译器分析类型和表达式之前处理源文件。它执行文件包含、条件选择和宏替换，结果成为编译器看到的翻译单元。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    宏操作的是预处理词元，不是带类型的值。缺少括号、重复使用参数或把值为 `0` 的开关交给 `#ifdef`，都可能产生能编译却语义错误的代码。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    让宏只完成预处理器才能完成的工作，值计算优先使用函数或语言常量。检查展开结果，并对每组编译配置分别构建和测试。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+C 预处理器读取源文件，在正式编译前处理以 `#` 引导的 <Term id="preprocessing-directive">预处理指令</Term>。`#include` 引入文件内容，`#if` 选择保留的词元，`#define` 创建 <Term id="macro">宏</Term>。预处理器不理解 C 对象的类型、作用域或运行时值。
+
+预处理解决的是编译前的组合与配置问题。公共声明可以放在头文件中，平台适配层可以在构建时选择实现，重复的词元模式也可以由宏生成。你会在库的公共头文件、构建系统传入的 `-D` 定义、日志和断言封装、平台检测代码中遇到它。
+
+「文本替换」是方便的近似说法，但不够精确。宏按预处理词元工作，不会替换字符串字面量内部的字符，也不会随意拼接出半个词元。`#` 和 `##` 有专门的字符串化与词元粘贴规则。
+
+预处理器的输出仍不是可执行程序。一个 `.c` 文件经过包含和宏替换后形成< Term id="translation-unit">翻译单元</Term>，随后才由编译器检查声明、类型与表达式，再交给汇编和链接步骤。用 `gcc -E` 可以观察这个边界。
+
+| 需求 | 合适的机制 | 不应由宏假装完成的事 |
+|---|---|---|
+| 共享声明 | `#include` 与头文件防重复包含 | 管理运行时对象所有权 |
+| 选择构建变体 | `#if`、`defined` 与构建定义 | 根据运行时数据分支 |
+| 生成重复声明 | 函数式宏或 X macro | 提供类型检查 |
+| 报告源码位置 | `__FILE__`、`__LINE__` | 证明调用安全 |
+| 表达值计算 | 优先使用函数、枚举或语言常量 | 靠宏参数模拟函数语义 |
+
+## 工作原理
+
+下面的流程只画出理解日常代码所需的边界。标准规定多项翻译阶段；实现可以合并这些阶段，只要结果符合规定。
+
+```mermaid
+flowchart LR
+  S["source file"] --> P["line splicing, comments, and token recognition"]
+  P --> D["#include, conditionals, and macro replacement"]
+  D --> T["translation unit"]
+  T --> C["compile, assemble, and link"]
+```
+
+### 指令出现之前
+
+反斜杠紧接换行会先把两行拼成一个逻辑行。源字符随后被识别为预处理词元和空白，每条注释在这个过程中替换为一个空格。因此，多行宏末尾的反斜杠后面不能夹入会阻止拼接的字符。
+
+预处理指令中的 `#` 必须是逻辑行上的第一个预处理词元，前面可以有空白。指令只控制预处理阶段；在普通 C 语句块里缩进 `#if` 不会让它变成运行时 `if`。被条件指令排除的组不会进入后续编译。
+
+`#include` 使实现找到指定文件，并把它当作该指令处的输入继续处理。双引号形式与尖括号形式使用不同的实现定义搜索序列；具体目录来自编译器默认值和 `-I` 等选项，不能仅凭标点推断任意工具链的完整路径。
+
+### 对象式宏与函数式宏
+
+对象式宏在名称出现时替换为其替换列表。函数式宏只有在宏名后跟调用括号时才展开，形参接收的是实参词元序列，不是已经带有 C 类型的值。
+
+| 定义 | 调用 | 首轮替换结果 |
+|---|---|---|
+| `#define LIMIT 8` | `int a[LIMIT];` | `int a[8];` |
+| `#define TWICE(x) ((x) + (x))` | `TWICE(3 + 1)` | `((3 + 1) + (3 + 1))` |
+| `#define NAME(x) #x` | `NAME(red)` | `"red"` |
+| `#define JOIN(a, b) a ## b` | `JOIN(item, 7)` | `item7` |
+
+普通形参在代入替换列表前会先完成宏展开。形参若紧邻 `#` 或 `##`，这一轮不会先展开，所以字符串化已展开值通常需要一层间接宏。替换结果还会重新扫描，允许新出现的宏名继续展开。
+
+正在展开的宏会在这次扫描的相应位置暂时禁止再次替换。这条规则阻止直接或间接自引用无限递归，但残留的宏名往往会形成无效 C 代码。宏递归不是通用的循环机制。
+
+### 条件指令与定义状态
+
+`#ifdef NAME` 只询问名称是否已定义，不关心替换列表是不是 `0`。`#if NAME` 会先展开表达式；剩余的普通标识符按 `0` 参与预处理常量表达式计算。需要区分「未提供」与「显式关闭」时，应组合 `defined(NAME)` 与数值检查。
+
+构建系统常用 `-DNAME=value` 提供定义，头文件则用 `#ifndef NAME` 给出默认值。配置应有一个明确的所有者；命令行、生成头文件和普通头文件若分别定义同名宏，结果会依赖包含顺序并可能触发重定义诊断。
+
+`#error` 会让当前预处理失败，适合拒绝不支持或自相矛盾的配置。C23 还标准化了 `#warning`，但警告通常不应承担必须阻止构建的约束。必须满足的条件应使用 `#error` 或编译阶段的静态断言。
+
+### 预定义名称与宏生命周期
+
+实现会在处理用户源码前提供一组标准预定义宏。它们适合报告源码位置和判断语言实现环境，但不能替代构建系统拥有的产品配置。`__func__` 是函数体中的预定义标识符，不是预处理宏。
+
+| 名称 | 含义 | 使用边界 |
+|---|---|---|
+| `__FILE__` | 当前报告文件名的字符串 | 可能受 `#line` 影响 |
+| `__LINE__` | 当前报告行号的整数 | 可能受 `#line` 影响 |
+| `__STDC__` | 实现声明符合 C 标准 | 不表示具体版本 |
+| `__STDC_VERSION__` | 实现声明的 C 版本编号 | 旧语言模式中可能未定义 |
+| `__STDC_HOSTED__` | 托管实现为 `1`，独立实现为 `0` | 不等同于某个操作系统 |
+
+检查版本时，应先用 `defined(__STDC_VERSION__)` 处理没有该宏的模式，再比较所需版本编号。编译器名称宏只能描述当前实现；把 `__GNUC__` 当成某项具体功能的充分证明，可能误判兼容编译器或不同版本。
+
+`#undef NAME` 结束名称后续的宏替换，可用于收回局部辅助宏或允许受控的重新配置。同一名称若在仍已定义时获得不同替换列表，通常会触发诊断；依赖这种重定义结果会让包含顺序变成隐藏输入。
+
+标准保留了多类标识符供实现使用，尤其是文件作用域下划线开头名称和双下划线形式。项目代码应使用明确前缀，而不是模仿预定义宏的命名样式。
+
+### 头文件防重复包含
+
+头文件可能沿多条包含路径到达同一个翻译单元。<Term id="include-guard">头文件防重复包含</Term>用一个唯一宏包住文件内容，使后续包含看到宏已定义并跳过正文。
+
+```c
+#ifndef ACME_NET_PACKET_H
+#define ACME_NET_PACKET_H
+
+struct packet;
+int packet_size(const struct packet *value);
+
+#endif
+```
+
+保护宏必须在项目范围内足够唯一。两个无关头文件若碰巧使用同一个保护名，先包含的文件会让另一个文件悄悄消失。`#pragma once` 被主流工具链支持，但它不是 C23 语言标准中的指令。
+
+防重复包含只防止同一头文件正文在一个翻译单元中重复处理。它不会解决互相依赖的完整类型，也不会把头文件中的普通外部定义变成整个程序唯一的定义。应通过前向声明拆开依赖，并把需要唯一存储的定义放进一个源文件。
+
+## 示例
+
+下面四个程序依次展示间接字符串化、语句式宏、构建开关和 X macro。每个文件都用 GCC 13.3.0 的 `-std=c2x -Wall -Wextra -Wconversion -Wpedantic -Werror` 编译，显示的是实际运行输出。
+
+### 展开后再字符串化
+
+直接写 `STRINGIFY_RAW(API_MAJOR)` 会得到 `"API_MAJOR"`，因为 `#` 抑制该形参的预展开。外层 `STRINGIFY` 先展开实参，再把结果传给执行字符串化的内层宏。
+
+<Depth level="quick">
+
+```c title="version_string.c"
+#include <stdio.h>
+
+#define API_MAJOR 4
+#define API_MINOR 2
+#define STRINGIFY_RAW(value) #value
+#define STRINGIFY(value) STRINGIFY_RAW(value)
+#define API_VERSION STRINGIFY(API_MAJOR) "." STRINGIFY(API_MINOR)
+
+int main(void) {
+    printf("version: %s\n", API_VERSION);
+    printf("raw: %s\n", STRINGIFY_RAW(API_MAJOR));
+    printf("expanded: %s\n", STRINGIFY(API_MAJOR));
+    return 0;
+}
+```
+
+```text
+version: 4.2
+raw: API_MAJOR
+expanded: 4
+```
+
+</Depth>
+
+相邻字符串字面量由编译器连接，所以 `API_VERSION` 最终形成一个字符串。这里的两层宏不是装饰；去掉外层就会改变可观察结果。
+
+这个模式也用于把构建定义写进诊断文本。若需要保存数值供 C 表达式使用，应继续使用 `API_MAJOR` 本身，不要把字符串化结果再解析回来。
+
+### 包住多条语句与可选参数
+
+语句式宏采用 `do { ... } while (0)`，因此调用处可以像普通语句一样写一个分号。C23 的 `__VA_OPT__` 只在可变参数非空时插入逗号。
+
+```c title="audit_log.c"
+#include <stdio.h>
+
+#define AUDIT(format, ...)                                      \
+    do {                                                        \
+        printf("[audit] " format __VA_OPT__(,) __VA_ARGS__);   \
+        putchar('\n');                                         \
+    } while (0)
+
+static void record_login(int accepted) {
+    if (accepted)
+        AUDIT("login accepted");
+    else
+        AUDIT("login rejected for user %d", 17);
+}
+
+int main(void) {
+    record_login(1);
+    record_login(0);
+    return 0;
+}
+```
+
+```text
+[audit] login accepted
+[audit] login rejected for user 17
+```
+
+<TryToBreak items={['pass zero optional arguments', 'put the call in an if/else without braces', 'include a comma in the format arguments']} />
+
+外层结构把宏展开变成一条语句，避免调用者的 `else` 绑定到宏内部的 `if`。宏定义结尾不带分号；分号属于调用语法。
+
+这个宏仍没有格式类型安全。编译器可能依据 `printf` 属性给出诊断，但宏本身不会验证格式串与实参。更复杂的日志策略应交给函数，只把源码位置或条件删除留给薄宏层。
+
+### 用构建定义选择实现
+
+此文件用数值宏表示功能状态，并拒绝 `0` 和 `1` 之外的值。下面的输出来自额外传入 `-DENABLE_METRICS=1` 的构建。
+
+```c title="feature_switch.c"
+#include <stdio.h>
+
+#ifndef ENABLE_METRICS
+#define ENABLE_METRICS 0
+#endif
+
+#if ENABLE_METRICS != 0 && ENABLE_METRICS != 1
+#error "ENABLE_METRICS must be 0 or 1"
+#endif
+
+#if ENABLE_METRICS
+static void record_metric(const char *name, int value) {
+    printf("metric %s=%d\n", name, value);
+}
+#else
+#define record_metric(name, value) ((void)0)
+#endif
+
+int main(void) {
+    record_metric("requests", 3);
+    printf("metrics: %s\n", ENABLE_METRICS ? "enabled" : "disabled");
+    return 0;
+}
+```
+
+```text
+metric requests=3
+metrics: enabled
+```
+
+若改成 `#ifdef ENABLE_METRICS`，默认定义 `0` 也会选择启用分支。数值开关应使用 `#if ENABLE_METRICS`；只表达存在性的标记才适合 `#ifdef`。
+
+关闭分支把调用替换为 `((void)0)`，也就不会求值 `name` 和 `value`。如果实参带副作用，启用与关闭构建会有不同运行时行为；调用代码不应依赖日志或指标实参的副作用。
+
+### 用一张列表生成一致声明
+
+X macro 把数据列表与每次遍历时的动作分开。这里同一张状态表生成枚举成员和 `switch` 分支，避免手工维护两个顺序容易漂移的列表。
+
+```c title="status_table.c"
+#include <stdio.h>
+
+#define STATUS_LIST(X)  \
+    X(PENDING, 10)      \
+    X(RUNNING, 20)      \
+    X(COMPLETE, 30)
+
+#define DECLARE_STATUS(name, code) STATUS_##name = code,
+enum status {
+    STATUS_LIST(DECLARE_STATUS)
+};
+#undef DECLARE_STATUS
+
+static const char *status_name(int value) {
+    switch (value) {
+#define STATUS_CASE(name, code) case STATUS_##name: return #name;
+        STATUS_LIST(STATUS_CASE)
+#undef STATUS_CASE
+    default:
+        return "UNKNOWN";
+    }
+}
+
+int main(void) {
+    printf("%d %s\n", STATUS_RUNNING, status_name(STATUS_RUNNING));
+    printf("%d %s\n", 99, status_name(99));
+    return 0;
+}
+```
+
+```text
+20 RUNNING
+99 UNKNOWN
+```
+
+每次使用后 `#undef` 动作宏，缩短它污染后续源码的时间。`STATUS_LIST` 本身可以保留为公共生成入口，但它的行格式和参数数量已经构成需要维护的接口。
+
+这种技术适合一个小而稳定的声明清单。若列表需要条件、嵌套数据或外部工具也要读取，同一份 YAML、JSON 或生成脚本通常更容易验证；不要把预处理器硬扩展成数据语言。
+
+## 陷阱
+
+### 把括号当成单次求值保证
+
+> [!PITFALL]
+> `#define MAX(a, b) ((a) > (b) ? (a) : (b))` 的括号修复了优先级，却仍可能对胜出的实参求值两次。`MAX(index++, limit)` 会让 `index` 递增两次；其他替换列表还可能把重复修改放进无顺序保证的操作数，从而触发未定义行为。
+
+**修复：** 值计算优先使用 `static inline` 函数，让每个实参只在调用前求值一次。宏确实必须接受多种类型时，也要把「实参不得有副作用」写进契约并用诊断和测试约束调用点。
+
+### 用 `#ifdef` 读取数值开关
+
+> [!PITFALL]
+> `#define FEATURE_X 0` 后，`#ifdef FEATURE_X` 仍为真。生成代码常把存在性检查和布尔值检查混在一起，使关闭配置编译进了启用路径。
+
+**修复：** 用 `#if FEATURE_X` 读取 `0` 或 `1` 开关，并通过 `#ifndef` 提供默认值。必须区分缺省状态时，先用 `defined(FEATURE_X)` 检查是否提供，再单独校验允许的数值。
+
+### 让多语句宏泄漏控制流
+
+> [!PITFALL]
+> 裸 `{ ... }` 或多条无包装语句在无花括号的 `if/else` 中可能改变 `else` 的归属。把分号写进宏定义还会制造空语句，在某些控制流位置直接导致语法错误。
+
+**修复：** 用 `do { ... } while (0)` 包住语句式宏，定义末尾不放分号。更稳妥的调用代码仍应给 `if` 与 `else` 使用花括号，并保持宏内部的 `return`、`break` 与 `continue` 可见且有文档。
+
+### 让宏名和保护名互相碰撞
+
+> [!PITFALL]
+> 宏不遵守 C 的块作用域或命名空间。短名字、以下划线开头的保留形式，以及重复的头文件保护名，都可能改写无关代码或静默跳过整个头文件。
+
+**修复：** 公共宏使用项目与组件前缀，头文件保护名包含稳定的项目路径信息，内部辅助宏用后立即 `#undef`。不要定义实现保留的标识符，也不要在公共头文件中留下通用名称。
+
+### 默认依赖编译器扩展
+
+> [!PITFALL]
+> `typeof`、语句表达式、`, ##__VA_ARGS__` 和特定厂商 `#pragma` 可能在当前编译器工作，却不属于目标 C23 接口。模型常从旧项目复制这些写法而不标注方言。
+
+**修复：** 先用目标标准提供的函数、`__VA_OPT__` 和普通指令。确需扩展时，把它隔离在一个适配头文件中，以编译器与版本条件保护，并在 CI 中实际构建承诺支持的每套工具链。
+
+## AI 时代
+
+**生成代码在这里容易犯什么错**
+
+模型常生成 `#if sizeof(void *) == 8`，但预处理常量表达式不能使用 `sizeof`；也会把 `#ifdef FEATURE` 用在值为 `0` 的开关上。另一些输出把带 `i++` 的实参传给重复求值宏，漏掉宏形参或整体表达式的括号，或者从旧 GNU 代码复制 `##__VA_ARGS__`。自动生成多个头文件时，模型还会复用同一个保护宏，使后包含的声明整块消失。
+
+**让 AI 检查什么**
+
+- 列出每个宏形参在替换列表中出现的次数，并标记所有带副作用的调用实参。
+- 对每个条件编译名称说明它表达「是否定义」还是数值状态，并列出所有有效构建组合。
+- 展示关键调用经 `gcc -E -P` 得到的展开结果，再指出使用的每项非标准扩展及其保护条件。
+
+**审查清单**
+
+- 用严格警告分别构建功能开启和关闭的配置，并运行两套测试，而不是只阅读 `#if` 分支。
+- 确认公共头文件可单独包含，保护宏唯一，且没有普通外部定义或泄漏的辅助宏。
+- 把值计算宏的每个调用当作词元替换审查，检查优先级、重复求值、控制流和空可变参数。
+
+**提示词词汇**
+
+使用准确术语 `object-like macro`（对象式宏）、`function-like macro`（函数式宏）、`replacement list`（替换列表）、`macro argument prescan`（宏实参预扫描）、`stringification`（字符串化）、`token pasting`（词元粘贴）、`include guard`（头文件防重复包含）、`conditional inclusion`（条件包含）和 `translation unit`（翻译单元）。要求给出「展开后的词元序列」和「配置构建矩阵」，比笼统地说「检查这个宏」更容易暴露问题。
+
+<Depth level="deep">
+
+## 展开顺序与边界
+
+函数式宏调用先收集完整实参词元，括号嵌套会参与分隔，只有最外层的逗号才结束当前实参。预处理器并不检查这些词元以后能否组成符合形参类型的表达式，因为此时根本没有函数形参类型。
+
+不邻接 `#` 或 `##` 的实参会先完整展开，再代入替换列表。字符串化会把实参的词元拼成字符串，折叠词元之间的空白，并转义其中的引号与反斜杠。它保存的是源码词元拼写，不是表达式求值后的运行时文本。
+
+词元粘贴把两侧词元组合成一个新的预处理词元；组合结果必须是有效词元。需要先展开再粘贴时，应增加一层间接宏，让外层完成预展开。用 `##` 生成标识符会隐藏普通搜索工具可见的名称，因此只应在生成关系确实比显式声明更清楚时使用。
+
+替换后的序列会重新扫描，继续展开新出现且当前允许展开的宏名。自引用名称在这次展开的相关扫描位置受到抑制，所以 `#define LOOP LOOP` 不会无限运行；它只会把无法由 C 编译器理解的 `LOOP` 留在输出中。
+
+C23 的 `__VA_OPT__(tokens)` 只能出现在可变参数宏的替换列表中。当 `...` 对应的实参非空时保留 `tokens`，为空时不产生这些词元。这解决了日志宏可选逗号问题，不需要依赖 GNU 的逗号吞并扩展。
+
+## 包含边界与配置所有权
+
+头文件是多个翻译单元的输入，不是运行时模块。保护宏会在每次翻译单元预处理开始时重新经历定义过程，因此它只抑制当前翻译单元内的重复包含。不同源文件各自获得自己的宏状态。
+
+一个公共头文件应在空源文件中直接 `#include` 后仍能编译。所需类型必须由它自己包含或声明，不能依赖调用者碰巧先包含另一个头文件。这个测试能发现包含顺序依赖，也能让自动生成的头文件更容易独立验证。
+
+双引号包含常用于项目头文件，尖括号常用于实现或构建配置提供的包含目录，但标准把搜索细节留给实现。可移植接口不应依赖当前工作目录、同名文件恰好先被找到，或系统目录顺序。用构建命令明确传入目录，并用 `gcc -H` 或依赖输出诊断实际包含关系。
+
+功能开关的默认值、允许值与来源应集中定义。构建系统决定部署变体时，可以由命令行提供宏，头文件只补默认值和验证值域。源文件不应在包含配置头之后偷偷重定义开关，否则同一程序的翻译单元可能看到互相矛盾的接口布局。
+
+条件编译改变结构体成员、函数签名或调用约定时，所有相关翻译单元必须使用一致配置。只重新编译一个源文件可能让链接成功却使两边对布局理解不同。配置宏因此属于构建 ABI 契约，而不只是局部实现细节。
+
+## 诊断与可移植性
+
+`gcc -E file.c` 输出预处理结果，`-P` 去掉行标记，`-dM -E` 列出处理结束时的宏定义。这些输出适合回答「编译器究竟看到了什么」，但通常很大；应围绕一个最小复现搜索相关声明，而不是把整个系统头输出当作评审材料。
+
+标准预定义宏中，`__FILE__` 和 `__LINE__` 描述当前源码位置，`__DATE__` 与 `__TIME__` 描述翻译时间。后两者会让相同源码在不同构建时产生不同字节，不适合要求可复现的制品标识。版本号应来自明确的发布输入，而不是编译时钟。
+
+`#line` 能改变后续 `__LINE__` 和 `__FILE__` 的报告值，主要供代码生成器把诊断映射回原始输入。生成器必须保持映射准确；随意使用会让日志与错误位置误导排查。它不改变文件系统中的真实行号。
+
+`#pragma` 的效果由实现规定，`_Pragma("tokens")` 则允许从宏替换中产生 pragma 操作。警告压制应使用 push、局部压制、pop 的窄范围结构，并注明编译器分支。全局关闭某类诊断会掩盖后续生成代码中的新问题。
+
+预处理器只保证它负责的词元转换，不保证生成的 C 程序有定义良好的行为。看到展开结果「像正确代码」后，仍要经过类型检查、严格警告、静态分析、测试和适合的 sanitizer；宏边界不会削弱这些要求。
+
+</Depth>
+
+<Checkpoint id="cpp/c-preprocessor" />
+
+## 延伸阅读
+
+先查 C23 工作草案中的预处理指令与宏替换规则，再用 GCC 手册确认本地工具链的选项和扩展。cppreference 适合快速定位指令语法，但标准草案和编译器文档决定最终判断。
+
+- [WG14 N3096：C23 工作草案](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3096.pdf)
+- [GCC 13.3：C 预处理器](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/cpp/)
+- [GCC 13.3：预处理选项](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Preprocessor-Options.html)
+- [cppreference：C 预处理器](https://en.cppreference.com/w/c/preprocessor.html)

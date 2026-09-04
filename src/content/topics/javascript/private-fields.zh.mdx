@@ -1,0 +1,404 @@
+---
+title: JavaScript 私有字段
+description: '使用 # 私有字段、方法与品牌检查封装类状态，并正确处理继承、代理、序列化和生成代码中的接收者错误。'
+track: javascript
+section: core
+difficulty: intermediate
+tags: [classes, private-fields, encapsulation, brand-checks]
+prerequisites: [javascript/classes, javascript/objects-prototypes]
+related: [javascript/proxy-reflect, javascript/weakmap-weakset, javascript/closures]
+terms: [private-field, encapsulation, private-brand]
+verified: { version: 'Node 24', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: javascript/private-fields
+sources:
+  - { title: 'ECMAScript language specification - Field definitions', url: 'https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-field-definitions' }
+  - { title: 'MDN - Private elements', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements' }
+  - { title: 'V8 - Private brand checks', url: 'https://v8.dev/features/private-brand-checks' }
+  - { title: 'MDN - Proxy', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy' }
+origin: old/src/content/docs/javascript/private-fields.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    以 `#` 开头的私有字段、方法和访问器只能在声明它们的类体内使用。访问时，引擎还会检查接收者是否带有该类的私有标记。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    私有元素不是普通属性，不参与反射、展开或自动序列化。它们也不跟随原型链，错误的 `this`、`Proxy` 或派生类都可能触发 `TypeError`。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把私有状态留在类内，通过经过校验的公开方法返回投影；测试真实的回调、代理与继承调用路径，并显式设计序列化边界。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="private-field">私有字段（private field）</Term>是名称以 `#` 开头的类元素，例如 `#balance`。同一套语法也能声明私有方法、getter、setter 和静态成员。它们给类提供语言层面的<Term id="encapsulation">封装（encapsulation）</Term>边界，不必再把 `_balance` 这样的命名约定当成访问控制。
+
+私有名称只能写在声明它的类体内。`account.#balance` 若出现在类外，整个脚本会在解析阶段产生 `SyntaxError`，因此外层 `try...catch` 也接不到这个错误。`account['#balance']` 虽然语法合法，却访问的是名为 `"#balance"` 的普通公开属性，与真正的私有字段无关。
+
+你会在需要维护不变量的类中遇到私有元素，例如余额只能经过金额校验后修改，缓存内部索引不能由调用方替换。私有边界还能让实现者在不改变公开 API 的情况下调整内部表示。不过，它不是加密、权限检查或秘密存储机制；类自己的代码仍能公开其值，调试器和进程内攻击面也不受它约束。
+
+私有字段适合由一个类完整拥有的状态。如果框架必须枚举字段、通用序列化器必须复制它们，或者子类需要直接扩展该状态，普通属性配合明确的公开契约往往更合适。应先决定谁能读取和修改状态，再选择语法。
+
+## 工作原理
+
+解析类定义时，引擎会建立一组词法私有名称。每个 `#name` 必须能在当前类体中解析到声明；同名字符串或 `Symbol` 都不能替代它。这个静态关系让拼错的私有名称在代码运行前就失败。
+
+创建实例时，类会把自己的私有元素安装到对象上。随后执行 `object.#name` 时，引擎先做<Term id="private-brand">私有标记（private brand）</Term>检查：接收者必须经过该类的初始化。检查依据不是 `instanceof`、构造函数名称或原型形状，所以伪造相同公开属性不会通过。
+
+### 声明与初始化
+
+私有字段必须在类体中声明，可以在声明处初始化，也可以先取得 `undefined`，再由构造函数赋值。字段初始化器按源码顺序执行。较早的初始化器能读到已经初始化的字段，却不能提前读取尚未安装的后续私有字段。
+
+实例字段属于各个实例，静态字段属于定义它们的类构造函数。私有方法与访问器使用同样的词法访问限制。`delete this.#name` 是语法错误；需要表示「没有值」时，应把字段设为 `undefined`、`null` 或业务定义的哨兵值。
+
+### 标记与接收者
+
+私有访问检查的是表达式左侧的实际对象。类方法可以读取另一个同类实例的私有字段，因为访问代码仍位于声明类体内，而且另一个实例带有相同标记。把该方法脱离实例调用，则会让 `this` 变成 `undefined` 或其他对象，并在访问私有字段时抛出 `TypeError`。
+
+在声明类体内，`#name in value` 可以检查对象是否带有相应标记。它不会搜索原型链，也不会等同于 `'#name' in value`。右侧若是 `null` 或其他非对象值，该运算仍会抛出 `TypeError`，所以面向未知输入的检查应先排除这些值。
+
+### 私有元素不是属性
+
+普通属性由字符串键或 `Symbol` 键标识，并有可写、可枚举、可配置等属性描述符。私有元素不属于这套属性模型，所以 `Object.keys()`、`Reflect.ownKeys()`、`Object.getOwnPropertyDescriptors()` 和 `for...in` 都看不到它们。对象展开、`Object.assign()` 与 `JSON.stringify()` 也不会自动复制或输出它们。
+
+这种不可见性避免了意外暴露，却不会自动保护字段引用的可变对象。如果公开 getter 直接返回私有数组，调用方仍能修改同一个数组。真正的封装取决于公开 API 是否返回只读视图、必要的副本或经过筛选的数据，而不只取决于 `#`。
+
+## 示例
+
+下面四个示例依次展示基础封装、标记检查、代理接收者和静态私有继承。所有输出都由本地 Node 24.14.0 执行对应文件得到。
+
+### 用公开 API 维护余额
+
+`Wallet` 只允许整数分币值进入状态，并通过 `toJSON()` 明确选择可公开的数据。反射只能看到普通属性，因此这个实例没有可枚举的自有键。
+
+<Depth level="quick">
+
+```javascript run title="wallet.js"
+class Wallet {
+  #cents;
+
+  constructor(openingCents = 0) {
+    this.#checkAmount(openingCents);
+    this.#cents = openingCents;
+  }
+
+  #checkAmount(cents) {
+    if (!Number.isInteger(cents) || cents < 0) {
+      throw new RangeError('amount must be a non-negative integer');
+    }
+  }
+
+  deposit(cents) {
+    this.#checkAmount(cents);
+    this.#cents += cents;
+    return this.#cents;
+  }
+
+  toJSON() {
+    return { balanceCents: this.#cents };
+  }
+}
+
+const wallet = new Wallet(2000);
+console.log(wallet.deposit(500));
+console.log(Reflect.ownKeys(wallet));
+console.log(JSON.stringify(wallet));
+```
+
+```text
+2500
+[]
+{"balanceCents":2500}
+```
+
+<TryToBreak items={['零元初始余额', '负数存款', '小数分币值']} />
+
+</Depth>
+
+`#cents` 没有因为不可枚举而神秘地进入 JSON。输出余额来自显式的 `toJSON()` 方法；删除这个方法后，实例会序列化成 `{}`。因此，序列化内容是公开 API 的决定，而不是私有字段的自动行为。
+
+校验方法也是私有元素。调用方只能通过构造函数和 `deposit()` 改变余额，这让「分币值必须是非负整数」这一不变量集中在类内。若其他公开方法也写入余额，它们仍须走同一套校验。
+
+### 检查标记并区分同名字段
+
+私有性按声明类区分，而不是按文本名称区分。`GuestPass` 可以再次声明 `#code`；它与 `AccessPass` 的 `#code` 是两个独立元素。
+
+```javascript run title="access-pass.js"
+class AccessPass {
+  #code;
+
+  constructor(code) {
+    this.#code = code;
+  }
+
+  static hasBrand(value) {
+    return typeof value === 'object' && value !== null && #code in value;
+  }
+
+  readCodeOf(other) {
+    return other.#code;
+  }
+}
+
+class GuestPass extends AccessPass {
+  #code = 'lobby';
+
+  codes() {
+    return [this.readCodeOf(this), this.#code].join(',');
+  }
+}
+
+const first = new AccessPass('A-17');
+const second = new AccessPass('B-42');
+const guest = new GuestPass('G-07');
+
+console.log(AccessPass.hasBrand(first));
+console.log(AccessPass.hasBrand({ code: 'A-17' }));
+console.log(first.readCodeOf(second));
+console.log(guest.codes());
+```
+
+```text
+true
+false
+B-42
+G-07,lobby
+```
+
+`first` 能读取 `second`，说明这里是类级私有，而不是「只有当前实例自己能读」。对象字面量即使保存相同字符串，也没有 `AccessPass` 的标记。通常不应把标记检查当成完整输入校验，它只说明对象经过了该类的初始化。
+
+派生实例在 `super()` 期间取得基类私有元素，所以继承来的基类方法可以正常读取基类的 `#code`。但 `GuestPass` 的源码不能直接写基类的私有名称；它在自己的类体中写出的 `#code` 只会解析到派生类声明。
+
+### 代理不会转移私有标记
+
+`Proxy` 包装目标对象后，方法调用中的默认接收者是代理。代理能转发普通属性读取，但不会继承目标对象的私有标记。
+
+```javascript run title="proxy-receiver.js"
+class Meter {
+  #value = 0;
+
+  add(step) {
+    this.#value += step;
+    return this.#value;
+  }
+
+  read() {
+    return this.#value;
+  }
+
+  static hasBrand(value) {
+    return #value in value;
+  }
+}
+
+const target = new Meter();
+const directProxy = new Proxy(target, {});
+
+try {
+  directProxy.add(1);
+} catch (error) {
+  console.log(`direct proxy: ${error.name}`);
+}
+
+const boundProxy = new Proxy(target, {
+  get(targetObject, property) {
+    const value = Reflect.get(targetObject, property, targetObject);
+    return typeof value === 'function' ? value.bind(targetObject) : value;
+  },
+});
+
+console.log(boundProxy.add(2));
+console.log(Meter.hasBrand(target), Meter.hasBrand(boundProxy));
+```
+
+```text
+direct proxy: TypeError
+2
+true false
+```
+
+绑定后的包装器让方法在 `target` 上运行，所以示例可以工作，但它并没有把标记复制到代理。这个通用 `get` trap 每次还可能创建新的绑定函数，并改变方法标识。生产代码通常应为需要代理的操作写明确的转发方法，而不是假设包装器完全透明。
+
+同一种故障也会出现在脱离实例的方法中，例如把 `meter.add` 直接交给回调 API。应传入 `(step) => meter.add(step)`，或在注册时绑定一次接收者。测试时必须走真实回调路径，单独测试 `meter.add(1)` 看不到问题。
+
+### 静态私有字段属于声明类
+
+静态公开方法会被派生类继承，但基类的静态私有字段不会成为派生类自己的私有字段。使用多态的 `this.#next` 时，调用方选择的接收者会影响标记检查。
+
+```javascript run title="static-private.js"
+class IdSource {
+  static #next = 100;
+
+  static takeViaThis() {
+    return this.#next++;
+  }
+
+  static takeFromBase() {
+    return IdSource.#next++;
+  }
+}
+
+class RegionalSource extends IdSource {
+  static #next = 900;
+
+  static takeRegional() {
+    return this.#next++;
+  }
+}
+
+console.log(IdSource.takeViaThis());
+try {
+  RegionalSource.takeViaThis();
+} catch (error) {
+  console.log(`derived receiver: ${error.name}`);
+}
+console.log(RegionalSource.takeFromBase());
+console.log(RegionalSource.takeRegional());
+```
+
+```text
+100
+derived receiver: TypeError
+101
+900
+```
+
+`RegionalSource.takeViaThis()` 中的 `this` 是派生类构造函数，它没有基类的静态私有标记。派生类恰好也声明了 `#next` 并不会改变结果，因为基类方法中的私有名称在词法上绑定到 `IdSource` 的声明。
+
+如果计数器必须由整个继承层次共享，基类方法应明确使用 `IdSource.#next`，并接受它不再多态这一点。如果每个派生类都需要独立计数器，则应设计公开的注册表或让各类各自实现方法，不要试图让一个私有名称同时满足两种所有权。
+
+## 陷阱
+
+### 把语法错误放进 `try...catch`
+
+> [!PITFALL]
+> 类外的 `instance.#secret` 在脚本解析时就失败，控制流尚未开始。生成代码常把这行包进 `try...catch`，结果整个测试文件都无法加载。
+
+**修复方法：** 通过类提供的公开方法测试行为。若确实要验证非法语法，应把源码字符串交给隔离的解析器或 `Function` 构造器，并断言它在编译阶段失败，不要把非法表达式直接写进当前文件。
+
+### 返回私有可变对象
+
+> [!PITFALL]
+> `get items() { return this.#items; }` 暴露的是同一个数组引用。调用方可以执行 `push()`，绕开类中的校验；字段名称私有并没有让数组变成只读。
+
+**修复方法：** 按 API 契约返回投影、迭代器或必要深度的副本。若元素对象本身也可变，只复制外层数组仍不够；应说明哪些层允许共享，并对修改路径编写测试。
+
+### 假设子类能直接访问
+
+> [!PITFALL]
+> 派生类不能直接读取基类的私有字段，即使两个类声明了拼写相同的 `#value`。静态方法里的 `this.#value` 还可能在派生类接收者上失败。
+
+**修复方法：** 基类若有意提供扩展点，应暴露范围明确的公开或受控方法。静态状态要明确属于基类还是各个派生类，再选择基类名称、公开注册表或派生类自己的实现。
+
+### 丢失方法接收者
+
+> [!PITFALL]
+> 把实例方法作为裸函数传给 `map()`、事件注册器或测试桩，会丢失原来的 `this`。空 `Proxy` 也把代理而非目标作为接收者，普通属性看似正常，首次私有访问却抛出 `TypeError`。
+
+**修复方法：** 在 API 边界使用明确的包装箭头函数，或者只绑定一次方法。代理应逐项设计转发语义，并测试方法标识、getter、setter 与私有访问，而不是只检查一个普通属性读取。
+
+### 把冻结和克隆当成私有状态操作
+
+> [!PITFALL]
+> `Object.freeze(instance)` 只处理对象属性，类方法仍可修改私有字段。对象展开、`structuredClone()` 和默认 JSON 序列化则会遗漏私有状态，克隆结果也没有原类的私有标记。
+
+**修复方法：** 不可变性应由类的公开修改接口保证。持久化或跨线程传输时，定义显式的数据格式与重建函数，并测试往返结果；不要把通用对象工具的成功返回当成完整类实例复制。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型会在类外生成 `obj.#token`，再用 `try...catch` 期待运行时兜底，导致文件直接无法解析。它也常用 `obj['#token']`、`Object.hasOwn()` 或对象展开来「检查」私有字段，这些操作只处理普通属性。重构回调或加入 `Proxy` 时，模型容易保留方法体却改变接收者；生成静态工厂时，它还会在可继承方法中写 `this.#counter`，只测试基类调用。另一类错误是公开 getter 返回私有数组本体，或在 `toJSON()` 中把原本不应出边界的令牌重新暴露。
+
+**让 AI 检查**
+
+- 列出每个私有名称的声明类和所有访问点，并说明每个访问点预期接收者具有什么私有标记。
+- 按实际路径运行脱离实例的回调、代理调用和派生类静态调用，报告准确的接收者与异常类型。
+- 审查展开、克隆、冻结和序列化边界，分别说明遗漏的私有状态与泄漏的可变引用。
+
+**审查清单**
+
+- 确认类外没有不可解析的 `#name` 访问，也没有把字符串键 `"#name"` 误当私有字段。
+- 用错误接收者、代理和派生类执行方法，确认绑定策略与状态所有权符合设计。
+- 检查每个公开返回值和序列化结果是否泄漏秘密或内部可变对象，并测试重建后的标记。
+
+**提示词词汇**
+
+使用准确术语：`private element`（私有元素）、`private field`（私有字段）、`private name`（私有名称）、`private brand`（私有标记）、`brand check`（标记检查）、`receiver`（接收者）、`wrong receiver`（错误接收者）、`lexical access`（词法访问）、`static private field`（静态私有字段）。要求模型给出「声明类、访问位置、实际接收者、预期标记」表，而不是只让它检查封装。
+
+<Depth level="deep">
+
+## 初始化、标记与对象边界
+
+### 初始化发生的时点
+
+基类实例字段在基类构造函数体开始前初始化。派生类实例字段则在 `super()` 返回后、派生构造函数余下语句执行前初始化。因此，基类构造函数能看到自己的私有字段，却看不到派生类尚未安装的字段或公开字段。
+
+同一个类中的字段初始化器按声明顺序运行。较早初始化器读取后续公开字段通常得到 `undefined`，读取尚未安装的后续私有字段则会因标记检查失败而抛出 `TypeError`。把有依赖关系的字段按顺序声明，复杂校验放进构造函数，可让初始化顺序更清楚。
+
+| 元素 | 初始化时点 | 所有者 |
+| --- | --- | --- |
+| 基类实例私有字段 | 基类构造函数体之前 | 每个实例 |
+| 派生类实例私有字段 | `super()` 返回之后 | 每个派生实例 |
+| 静态私有字段 | 求值类定义时 | 声明它的类构造函数 |
+
+字段初始化器中的 `this` 是正在构造的实例，静态字段初始化器中的 `this` 是当前类。初始化器可以调用方法，但被调用代码可能读取尚未初始化的后续字段。构造测试应覆盖真实的继承路径，而不只实例化叶子类或基类中的一种。
+
+### 类私有不等于实例私有
+
+私有名称的可见范围是声明类体，因此类代码能访问任何带相应标记的对象，而不局限于当前 `this`。这允许比较两个实例的内部状态，也意味着接收任意对象的类方法必须自己处理标记不匹配。直接访问会抛 `TypeError`；需要布尔结果时，先验证输入是对象，再使用 `#name in value`。
+
+正常构造的派生实例同时带有基类和派生类各自安装的标记。基类方法因此可以在派生实例上运行，但派生类源码仍看不到基类私有名称。私有访问不沿原型链搜索，改变原型也不能添加或移除标记。
+
+代理是新的对象标识。即使其目标带有标记，代理本身也不会因此通过检查，而且私有访问不触发 `get`、`set` 或 `has` trap。若库依赖代理观察所有状态变化，`#` 私有字段会形成这个观察机制看不到的通道。
+
+### 反射、完整性与复制
+
+下面这些 API 回答的是不同问题，不能互换：
+
+| 操作 | 能否处理私有元素 | 实际结果 |
+| --- | --- | --- |
+| `Reflect.ownKeys(value)` | 否 | 只返回字符串键和 `Symbol` 键 |
+| `Object.hasOwn(value, '#x')` | 否 | 检查同名普通字符串属性 |
+| 类体内的 `#x in value` | 是 | 检查声明类的私有标记 |
+| `Object.freeze(value)` | 否 | 限制普通自有属性，不阻止方法修改私有字段 |
+| `{ ...value }` 与 `Object.assign()` | 否 | 只复制符合条件的普通属性 |
+| `JSON.stringify(value)` | 否 | 除非公开 `toJSON()` 主动输出相应数据 |
+| `structuredClone(value)` | 否 | 不复制私有元素，结果不带原类标记 |
+
+私有字段没有属性描述符，也没有可枚举或可配置标志。把它们称为「不可枚举属性」容易让人误以为 `Object.getOwnPropertyNames()` 仍能找到它们；更准确的说法是，它们根本不是属性。相应地，属性完整性 API 也不管理这部分状态。
+
+`Object.freeze()` 后，访问私有字段的类方法仍可给字段重新赋值或修改其引用的对象。这不违反冻结规则，因为规则只覆盖自有属性描述符。若类型承诺逻辑不可变，就不要提供修改私有状态的方法，并确保返回值不会泄漏可变引用。
+
+序列化需要独立契约。可以用 `toJSON()`、`toRecord()` 或明确的传输对象选择字段，再由静态工厂验证并重建实例。不要直接序列化秘密，也不要假设反序列化后的普通对象自动恢复私有标记、方法或不变量。
+
+### 方法、访问器与静态状态
+
+私有方法适合不属于公开协议的校验与状态转换。私有 getter 和 setter 可以组织内部访问，但它们不会比字段多提供一层安全边界；声明类中的其他代码仍可调用它们。若简单字段已经清楚，就不必为了形式统一增加访问器。
+
+实例私有字段通常由每个对象独立拥有。静态私有字段只有声明类能直接访问，适合真正属于类定义的注册信息或计数器。只要公开静态方法允许派生类调用，就必须决定其内部使用固定基类名还是多态 `this`，两者表达不同所有权。
+
+用固定基类名访问会让所有派生类共享一份基类状态。用 `this.#field` 则要求实际接收者带有声明类的静态标记，派生类构造函数通常不满足。不要根据公开静态方法会被继承，就推断私有静态字段也以同样方式继承。
+
+### 构建产物与测试契约
+
+转译器可能把 `#` 语法降级为 `WeakMap`、辅助函数或普通属性，具体结果取决于工具、版本和目标配置。源码层面的语义承诺必须与实际部署产物核对，尤其是仍面向旧运行环境的库。不要仅凭编辑器接受源码，就断言生产构建保留完全相同的反射或错误行为。
+
+测试应优先断言公开行为和不变量，同时覆盖失败边界。至少要用同类实例、伪造对象、派生实例、代理和脱离方法的调用各走一次关键路径。若类支持持久化，还应测试「实例转记录、记录再重建」的完整往返，而不是比较对象展开结果。
+
+如果某个框架以代理跟踪字段、按键枚举模型或自动把实例复制成数据记录，先验证它对私有元素的明确支持。框架要求和类封装目标冲突时，公开只读访问器、显式快照方法或组合式数据对象往往比绕过私有语法更容易维护。
+
+</Depth>
+
+<Checkpoint id="javascript/private-fields" />
+
+## 延伸阅读
+
+- [ECMAScript 语言规范：字段定义](https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-field-definitions)
+- [MDN：私有元素](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/Private_elements)
+- [V8：私有标记检查](https://v8.dev/features/private-brand-checks)
+- [MDN：`Proxy`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)
