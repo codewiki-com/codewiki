@@ -1,5 +1,6 @@
 import { useEffect } from 'preact/hooks';
 
+import { formatCount } from '@/i18n';
 import { exportAll } from '@/lib/export';
 import { nextStep, pathProgress, weeksLeft, type ProgressPath } from '@/lib/paths';
 import {
@@ -14,6 +15,7 @@ import {
   type QuizProgress,
   type TopicProgress,
 } from '@/lib/prefs';
+import type { Locale } from '@/lib/urls';
 
 export interface PathStateTopic {
   title: string;
@@ -50,6 +52,7 @@ export interface PathStateLabels {
 }
 
 export interface PathStateProps {
+  locale: Locale;
   path: PathStatePath;
   topics: Record<string, PathStateTopic>;
   labels: PathStateLabels;
@@ -157,7 +160,7 @@ function updateList(root: HTMLElement, path: PathStatePath, progress: Progress):
  * Adds local progress to server markup. It renders no UI and never reconstructs the SVG; every
  * update is an attribute, a text value or an ordinary link destination on markup Astro emitted.
  */
-export default function PathState({ path, topics, labels, mode = 'detail' }: PathStateProps) {
+export default function PathState({ locale, path, topics, labels, mode = 'detail' }: PathStateProps) {
   useEffect(() => {
     const root = rootFor(path.id);
     if (!root) return;
@@ -190,8 +193,8 @@ export default function PathState({ path, topics, labels, mode = 'detail' }: Pat
       const line = root.querySelector<HTMLElement>('[data-weeks]');
       if (line)
         line.textContent = fill(labels.remaining, {
-          h: Math.ceil(minutesLeft / 60),
-          w: weeksLeft(minutesLeft, plan),
+          hours: formatCount(locale, Math.ceil(minutesLeft / 60), 'unit.hour', 'unit.hours'),
+          weeks: formatCount(locale, weeksLeft(minutesLeft, plan), 'unit.week', 'unit.weeks'),
         });
       planButtons.forEach((button) => {
         const on = Number(button.dataset.plan) === plan;
@@ -248,7 +251,7 @@ export default function PathState({ path, topics, labels, mode = 'detail' }: Pat
       if (summary)
         summary.textContent = fill(labels.progress, {
           done: state.done,
-          total: state.total,
+          topics: formatCount(locale, state.total, 'unit.topic', 'unit.topics'),
           milestone: state.milestone,
           milestones: path.milestones.length,
         });
@@ -271,8 +274,8 @@ export default function PathState({ path, topics, labels, mode = 'detail' }: Pat
           const minutes = milestone.topics.reduce((sum, id) => sum + (topics[id]?.minutes ?? 10), 0);
           meta.textContent = fill(labels.milestoneMeta, {
             done,
-            total: milestone.topics.length,
-            min: minutes,
+            topics: formatCount(locale, milestone.topics.length, 'unit.topic', 'unit.topics'),
+            minutes: formatCount(locale, minutes, 'unit.minute', 'unit.minutes'),
           });
         }
       }
@@ -307,8 +310,13 @@ export default function PathState({ path, topics, labels, mode = 'detail' }: Pat
           const pct = readPercent(progress, id);
           meta.textContent =
             authored && pct > 0 && rowState !== 'done'
-              ? fill(labels.readPct, { min, pct })
-              : fill(labels.minutes, { min });
+              ? fill(labels.readPct, {
+                  count: formatCount(locale, min, 'unit.minute', 'unit.minutes'),
+                  pct,
+                })
+              : fill(labels.minutes, {
+                  count: formatCount(locale, min, 'unit.minute', 'unit.minutes'),
+                });
         }
       }
 
@@ -375,7 +383,7 @@ export default function PathState({ path, topics, labels, mode = 'detail' }: Pat
     apply();
 
     return () => cleanups.forEach((cleanup) => cleanup());
-  }, [labels, mode, path, topics]);
+  }, [labels, locale, mode, path, topics]);
 
   return null;
 }

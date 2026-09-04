@@ -3,6 +3,7 @@ import {
   DEFAULT_MINUTES,
   ITEM_TYPES,
   kataOfTheDay,
+  practiceItemTitle,
   practiceUrl,
   stripAnswers,
   typeLabelKey,
@@ -78,6 +79,7 @@ describe('practice catalogue', () => {
           {
             ...shared,
             id: 'z-item',
+            title: localized('A named prediction'),
             type: 'predict',
             code: 'print(1)',
             lang: 'python',
@@ -101,6 +103,7 @@ describe('practice catalogue', () => {
         type: 'fill',
         difficulty: 'beginner',
         minutes: 7,
+        title: undefined,
         prompt: localized('Question'),
         tags: [],
         lang: undefined,
@@ -113,11 +116,27 @@ describe('practice catalogue', () => {
         type: 'predict',
         difficulty: 'beginner',
         minutes: DEFAULT_MINUTES.predict,
+        title: localized('A named prediction'),
         prompt: localized('Question'),
         tags: [],
         lang: 'python',
       },
     ]);
+  });
+
+  it('uses an authored title or derives a compact one from the prompt', () => {
+    expect(
+      practiceItemTitle(
+        { title: localized('Named kata'), prompt: localized('Prompt that is not the title.') },
+        'en',
+      ),
+    ).toBe('Named kata');
+    expect(practiceItemTitle({ prompt: localized('A short prompt.') }, 'en')).toBe('A short prompt');
+
+    const long = `${'x'.repeat(94)}.`;
+    const derived = practiceItemTitle({ prompt: localized(long) }, 'en');
+    expect(Array.from(derived)).toHaveLength(90);
+    expect(derived.endsWith('…')).toBe(true);
   });
 });
 

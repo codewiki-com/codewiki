@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { formatCount } from '@/i18n';
 import {
   dueFlashcards,
   getContinue,
@@ -9,6 +10,7 @@ import {
   type Flashcards,
   type Progress,
 } from '@/lib/prefs';
+import type { Locale } from '@/lib/urls';
 
 /** What the page knows about one topic, so the island never touches the content collections. */
 export interface TopicRef {
@@ -19,6 +21,7 @@ export interface TopicRef {
 }
 
 export interface PersonalStripProps {
+  locale: Locale;
   /** Localised copy. Islands never import `t`, because the locale is a page-level fact. */
   labels: {
     continue: string;
@@ -47,7 +50,7 @@ export interface PersonalStripProps {
  * The daily kata is selected at build time and passed in as plain data; the visitor-specific
  * cards are read only after hydration.
  */
-export default function PersonalStrip({ labels, titles, kata, reviewUrl }: PersonalStripProps) {
+export default function PersonalStrip({ locale, labels, titles, kata, reviewUrl }: PersonalStripProps) {
   const [state, setState] = useState<{ progress: Progress; cards: Flashcards } | null>(null);
 
   useEffect(() => {
@@ -96,13 +99,21 @@ export default function PersonalStrip({ labels, titles, kata, reviewUrl }: Perso
           <span class="pstrip-text">
             <strong>{kata.title}</strong>
           </span>
-          <span class="pstrip-link">{labels.minutes.replace('{min}', String(kata.minutes))} →</span>
+          <span class="pstrip-link">
+            {labels.minutes.replace(
+              '{count}',
+              formatCount(locale, kata.minutes, 'unit.minute', 'unit.minutes'),
+            )}{' '}
+            →
+          </span>
         </a>
       ) : null}
       {due > 0 ? (
         <div class="cont">
           <span class="lbl">{labels.recall}</span>
-          <span class="pstrip-text">{labels.due.replace('{count}', String(due))}</span>
+          <span class="pstrip-text">
+            {labels.due.replace('{count}', formatCount(locale, due, 'unit.card', 'unit.cards'))}
+          </span>
           <a class="pstrip-link" href={reviewUrl}>
             {labels.review} →
           </a>

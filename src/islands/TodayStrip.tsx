@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 
+import { formatCount, plural } from '@/i18n';
 import {
   dueFlashcards,
   EMPTY_FLASHCARDS,
@@ -10,12 +11,13 @@ import {
   type Progress,
   type QuizProgress,
 } from '@/lib/prefs';
+import type { Locale } from '@/lib/urls';
 
 export interface TodayKata {
   href: string;
   type: string;
   track: string;
-  prompt: string;
+  title: string;
   description: string;
   minutes: string;
 }
@@ -32,6 +34,7 @@ export interface TodayPath {
 }
 
 export interface TodayStripProps {
+  locale: Locale;
   kata?: TodayKata;
   paths: TodayPath[];
   flashcardsUrl: string;
@@ -43,11 +46,13 @@ export interface TodayStripProps {
     cardDue: string;
     cardsDue: string;
     flashcardsDesc: string;
+    flashcardsPlaceholder: string;
     review: string;
     checkpoint: string;
     pathMilestone: string;
     checkpointReady: string;
     checkpointDesc: string;
+    checkpointPlaceholder: string;
     take: string;
     passMark: string;
     done: string;
@@ -153,7 +158,7 @@ function personalToday(progress: Progress, cards: Flashcard[], paths: TodayPath[
 }
 
 /** The build-time kata plus the two cards derived from this browser's local learning data. */
-export default function TodayStrip({ kata, paths, flashcardsUrl, labels }: TodayStripProps) {
+export default function TodayStrip({ locale, kata, paths, flashcardsUrl, labels }: TodayStripProps) {
   const [personal, setPersonal] = useState<PersonalToday>({ ready: false, due: 0 });
 
   useEffect(() => {
@@ -177,6 +182,10 @@ export default function TodayStrip({ kata, paths, flashcardsUrl, labels }: Today
   }, [labels.daysShort, paths]);
 
   const checkpoint = personal.checkpoint;
+  const dueCount = formatCount(locale, personal.due, 'unit.card', 'unit.cards');
+  const dueTitle = (
+    locale === 'en' ? plural(personal.due, labels.cardDue, labels.cardsDue) : labels.cardsDue
+  ).replace('{count}', dueCount);
 
   return (
     <section class="wrap today" data-today aria-label={labels.today}>
@@ -188,7 +197,7 @@ export default function TodayStrip({ kata, paths, flashcardsUrl, labels }: Today
               {kata.type} · {kata.track}
             </span>
           </span>
-          <span class="ttl">{kata.prompt}</span>
+          <span class="ttl">{kata.title}</span>
           <span class="sub">{kata.description}</span>
           <span class="today-card-action">
             <span class="btn btn-p">
@@ -200,50 +209,48 @@ export default function TodayStrip({ kata, paths, flashcardsUrl, labels }: Today
         <div class="card today-card" hidden />
       )}
 
-      <a
-        class="card today-card"
-        href={flashcardsUrl}
-        data-today-flashcards
-        hidden={!personal.ready || personal.due === 0}
-      >
-        <span class="today-card-top">
-          <span class="tag">{labels.flashcards}</span>
-          <span class="lbl">{labels.due.replace('{count}', String(personal.due))}</span>
-        </span>
-        <span class="ttl">
-          {personal.due === 1 ? labels.cardDue : labels.cardsDue.replace('{count}', String(personal.due))}
-        </span>
-        <span class="sub">{labels.flashcardsDesc}</span>
-        <span class="today-card-action">
-          <span class="btn btn-g">{labels.review}</span>
-        </span>
-      </a>
+      {personal.ready && personal.due > 0 ? (
+        <a class="card today-card" href={flashcardsUrl} data-today-flashcards>
+          <span class="today-card-top">
+            <span class="tag">{labels.flashcards}</span>
+            <span class="lbl">{labels.due.replace('{count}', String(personal.due))}</span>
+          </span>
+          <span class="ttl">{dueTitle}</span>
+          <span class="sub">{labels.flashcardsDesc}</span>
+          <span class="today-card-action">
+            <span class="btn btn-g">{labels.review}</span>
+          </span>
+        </a>
+      ) : (
+        <div class="card muted today-card" data-today-flashcards-placeholder>
+          <span class="lbl">{labels.flashcards}</span>
+          <span class="sub">{labels.flashcardsPlaceholder}</span>
+        </div>
+      )}
 
-      <a
-        class="card today-card"
-        href={checkpoint?.href ?? '#'}
-        data-today-checkpoint
-        hidden={!personal.ready || !checkpoint}
-      >
-        <span class="today-card-top">
-          <span class="tag">{labels.checkpoint}</span>
-          {checkpoint ? (
+      {personal.ready && checkpoint ? (
+        <a class="card today-card" href={checkpoint.href} data-today-checkpoint>
+          <span class="today-card-top">
+            <span class="tag">{labels.checkpoint}</span>
             <span class="lbl">
               {labels.pathMilestone
                 .replace('{path}', checkpoint.path)
                 .replace('{number}', String(checkpoint.number))}
             </span>
-          ) : null}
-        </span>
-        <span class="ttl">
-          {checkpoint ? labels.checkpointReady.replace('{milestone}', checkpoint.milestone) : ''}
-        </span>
-        <span class="sub">{labels.checkpointDesc}</span>
-        <span class="today-card-action">
-          <span class="btn btn-g">{labels.take}</span>
-          <span class="lbl">{labels.passMark}</span>
-        </span>
-      </a>
+          </span>
+          <span class="ttl">{labels.checkpointReady.replace('{milestone}', checkpoint.milestone)}</span>
+          <span class="sub">{labels.checkpointDesc}</span>
+          <span class="today-card-action">
+            <span class="btn btn-g">{labels.take}</span>
+            <span class="lbl">{labels.passMark}</span>
+          </span>
+        </a>
+      ) : (
+        <div class="card muted today-card" data-today-checkpoint-placeholder>
+          <span class="lbl">{labels.checkpoint}</span>
+          <span class="sub">{labels.checkpointPlaceholder}</span>
+        </div>
+      )}
     </section>
   );
 }

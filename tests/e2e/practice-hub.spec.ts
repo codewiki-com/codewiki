@@ -9,6 +9,13 @@ test('the practice hub lists the server-rendered catalogue and kata of the day',
     'href',
     /\/practice\/review\/[^/]+\/[^/]+\/[^/]+\/$/,
   );
+  await expect(page.locator('[data-today-flashcards-placeholder]')).toContainText(
+    'Cards you miss or add appear here',
+  );
+  await expect(page.locator('[data-today-checkpoint-placeholder]')).toContainText(
+    'Start a path to see your next checkpoint',
+  );
+  await expect(page.locator('[data-practice-card][data-type="review"] .tag.acc2')).toHaveCount(2);
 });
 
 test('the type query hides cards outside the selected practice type', async ({ page }) => {

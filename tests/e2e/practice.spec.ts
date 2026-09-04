@@ -61,6 +61,8 @@ test('number keys select a prediction and Enter answers it', async ({ page }) =>
 test('a review kata walks through four steps and compares with a score ring', async ({ page }) => {
   await page.goto(REVIEW);
   const shell = page.locator('[data-quiz="python/closures#review-config-loader"]');
+  await expect(page.locator('h1')).toHaveText('Review a generated config loader');
+  await expect(page.locator('.crumbs .tag.acc2')).toHaveText('Review AI code');
   await expect(shell.locator('[data-quiz-controller="review"]')).toHaveAttribute('data-ready', 'true');
   await expect(shell.locator('[data-review-steps] .step')).toHaveCount(4);
 

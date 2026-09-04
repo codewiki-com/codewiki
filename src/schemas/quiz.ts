@@ -14,6 +14,7 @@ const issue = z.object({
 
 const base = {
   id: z.string().min(1),
+  title: localized.optional(),
   prompt: localized,
   explanation: localized,
   difficulty,

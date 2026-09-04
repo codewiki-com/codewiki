@@ -1,5 +1,6 @@
 import { useSignal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
+import { formatCount } from '@/i18n';
 import { enqueueCards, quizCardId } from '@/lib/score';
 import { EMPTY_FLASHCARDS, KEYS, readStore, writeStore, type Flashcards } from '@/lib/prefs';
 import {
@@ -240,7 +241,7 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       score.className = 'panel review-score';
       const scoreLabel = fillSlots(labels.score ?? '', {
         score: grade.score,
-        total: grade.total,
+        count: formatCount(locale, grade.total, 'unit.issue', 'unit.issues'),
       });
       score.append(scoreRing(grade.score, grade.total, scoreLabel));
       const summary = document.createElement('strong');

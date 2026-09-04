@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
+import { formatCount, plural } from '@/i18n';
 import {
   faceOf,
   parseRef,
@@ -47,6 +48,12 @@ export interface FlashcardsLabels {
   deck: string;
   cards: string;
   terms: string;
+  units: {
+    card: string;
+    cards: string;
+    term: string;
+    terms: string;
+  };
   missedQuiz: string;
   nextSeven: string;
   sources: string;
@@ -197,11 +204,11 @@ function DeckRail(props: {
         <div class="flashcards-stats">
           <div class="stat">
             <b>{activeCards.length}</b>
-            <span class="lbl">{labels.cards}</span>
+            <span class="lbl">{plural(activeCards.length, labels.units.card, labels.units.cards)}</span>
           </div>
           <div class="stat">
             <b>{terms}</b>
-            <span class="lbl">{labels.terms}</span>
+            <span class="lbl">{plural(terms, labels.units.term, labels.units.terms)}</span>
           </div>
           <div class="stat">
             <b>{quizzes}</b>
@@ -463,7 +470,9 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
         <h1>{labels.title}</h1>
         <span class="lbl flashcards-summary">
           {fill(labels.dueToday, { n: due })} · {fill(labels.done, { n: done })} ·{' '}
-          {fill(labels.streak, { n: state ? streakOf(state.progress, now) : 0 })}
+          {fill(labels.streak, {
+            count: formatCount(locale, state ? streakOf(state.progress, now) : 0, 'unit.day', 'unit.days'),
+          })}
         </span>
       </div>
       <div class="flashcards-controls">
@@ -520,7 +529,10 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
             <span class="tag acc">{parsed?.kind === 'quiz' ? parsed.bank.split('/')[0] : 'term'}</span>
             <span class="tag">{current.kind === 'term' ? labels.terms : labels.missedQuiz}</span>
             <span class="lbl">
-              {current.reps} · {fill(labels.days, { n: current.interval })}
+              {current.reps} ·{' '}
+              {fill(labels.days, {
+                count: formatCount(locale, current.interval, 'unit.day', 'unit.days'),
+              })}
             </span>
           </div>
           <span class="lbl">{fill(labels.cardCount, { i: done + 1, n: total })}</span>
@@ -584,8 +596,10 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
           >
             <span>{labels.ratings[rating]}</span>
             <span class="lbl">
-              {fill(labels.days, { n: previewInterval(current, rating) })} ·{' '}
-              <kbd class="kbd">{index + 1}</kbd>
+              {fill(labels.days, {
+                count: formatCount(locale, previewInterval(current, rating), 'unit.day', 'unit.days'),
+              })}{' '}
+              · <kbd class="kbd">{index + 1}</kbd>
             </span>
           </button>
         ))}

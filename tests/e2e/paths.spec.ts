@@ -14,6 +14,9 @@ test('the path index lists Python from zero', async ({ page }) => {
 test('the path page renders the complete build-time map', async ({ page }) => {
   await page.goto('/paths/python-from-zero/');
 
+  await expect(page.locator('.path-chips')).toContainText('23 topics');
+  await expect(page.locator('.path-chips')).toContainText('5 checkpoints');
+  await expect(page.locator('.path-chips')).not.toContainText('23topics');
   await expect(page.locator('.path-svg')).toHaveAttribute('role', 'img');
   expect(await page.locator('.path-svg [data-topic]').count()).toBeGreaterThanOrEqual(20);
   await expect(page.locator('.path-svg [data-checkpoint]')).toHaveCount(5);

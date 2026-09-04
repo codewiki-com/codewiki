@@ -12,4 +12,15 @@ export function t(locale: Locale, key: DictKey, vars: Record<string, string | nu
   return String(dicts[locale][key]).replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
 }
 
+/** English cardinal plural selection. Chinese unit keys intentionally carry one shared form. */
+export function plural<T>(n: number, one: T, many: T): T {
+  return n === 1 ? one : many;
+}
+
+/** Formats a localized number and unit without relying on JSX whitespace between expressions. */
+export function formatCount(locale: Locale, n: number, one: DictKey, many: DictKey): string {
+  const unitKey = locale === 'en' ? plural(n, one, many) : one;
+  return t(locale, 'count.value', { n, unit: t(locale, unitKey) });
+}
+
 export { en, zh };

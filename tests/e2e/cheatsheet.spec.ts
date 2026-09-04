@@ -12,6 +12,12 @@ test('the sheet page renders three authored panels and nine rows', async ({ page
   await expect(page.locator('h1')).toHaveText('Python cheatsheet');
   expect(await page.locator('.cheat').count()).toBeGreaterThanOrEqual(3);
   await expect(page.locator('.cr')).toHaveCount(9);
+  const related = page.locator('.related-card');
+  await expect(related).toContainText('Python track · 1 topic');
+  await expect(related).toContainText('Interview bank · 3 questions');
+  await expect(related).toContainText('Glossary · Python terms');
+  await expect(related).toContainText('Python compared with other languages');
+  await expect(related.locator('.related-row .lbl')).toHaveText('soon');
 });
 
 test('print media hides navigation and lays the sheet grid into two columns', async ({ page }) => {

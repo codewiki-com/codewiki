@@ -3,6 +3,7 @@ import type { CollectionEntry } from 'astro:content';
 import type { Quiz, QuizItem } from '@/schemas/quiz';
 import type { Locale } from '@/lib/urls';
 import { localizePath } from '@/lib/urls';
+import type { Localized } from '@/schemas/localized';
 
 export const ITEM_TYPES = ['predict', 'spotbug', 'review', 'mcq', 'fill'] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
@@ -22,6 +23,7 @@ export interface PracticeItem {
   type: ItemType;
   difficulty: 'beginner' | 'intermediate' | 'advanced';
   minutes: number;
+  title?: Localized;
   prompt: { en: string; zh: string };
   tags: string[];
   lang?: string;
@@ -60,6 +62,7 @@ export function catalogueFrom(banks: readonly QuizBank[]): PracticeItem[] {
         type: item.type,
         difficulty: item.difficulty,
         minutes: item.minutes ?? DEFAULT_MINUTES[item.type],
+        title: item.title,
         prompt: item.prompt,
         tags: item.tags,
         lang: 'lang' in item ? item.lang : undefined,
@@ -108,6 +111,15 @@ export function kataOfTheDay<T>(items: T[], date: Date): T | undefined {
     hash = Math.imul(hash, 16777619) >>> 0;
   }
   return items[hash % items.length];
+}
+
+/** A compact catalogue/page title, preserving an explicitly authored title when one exists. */
+export function practiceItemTitle(item: Pick<PracticeItem, 'prompt' | 'title'>, locale: Locale): string {
+  if (item.title) return item.title[locale];
+
+  const prompt = item.prompt[locale].trim().replace(/[.。]\s*$/u, '');
+  const characters = Array.from(prompt);
+  return characters.length <= 90 ? prompt : `${characters.slice(0, 89).join('')}…`;
 }
 
 export const typeLabelKey = (type: ItemType) => `practice.type.${type}` as const;

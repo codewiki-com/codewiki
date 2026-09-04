@@ -1,8 +1,11 @@
 import { useEffect } from 'preact/hooks';
 
+import { formatCount } from '@/i18n';
 import { EMPTY_PROGRESS, KEYS, readStore, type Progress, type QuizProgress } from '@/lib/prefs';
+import type { Locale } from '@/lib/urls';
 
 interface PracticeFiltersProps {
+  locale: Locale;
   labels: {
     results: string;
     showMore: string;
@@ -29,7 +32,7 @@ function safeQuizzes(progress: Progress): Record<string, QuizProgress> {
 }
 
 /** Client controller for server-rendered cards. It never creates or replaces a card. */
-export default function PracticeFilters({ labels }: PracticeFiltersProps) {
+export default function PracticeFilters({ locale, labels }: PracticeFiltersProps) {
   useEffect(() => {
     const controlsRoot = document.querySelector<HTMLElement>('[data-practice-controls]');
     const grid = document.querySelector<HTMLElement>('[data-practice-grid]');
@@ -132,7 +135,7 @@ export default function PracticeFilters({ labels }: PracticeFiltersProps) {
 
       if (count) {
         count.textContent = labels.results
-          .replace('{count}', String(matches))
+          .replace('{count}', formatCount(locale, matches, 'unit.exercise', 'unit.exercises'))
           .replace('{done}', String(done));
       }
       if (empty) empty.hidden = matches > 0;
@@ -209,7 +212,7 @@ export default function PracticeFilters({ labels }: PracticeFiltersProps) {
       document.removeEventListener('cw:progress', refresh);
       window.removeEventListener('popstate', pop);
     };
-  }, [labels]);
+  }, [labels, locale]);
 
   return null;
 }
