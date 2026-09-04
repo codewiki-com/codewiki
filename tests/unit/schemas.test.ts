@@ -1,5 +1,5 @@
 import { topicSchema } from '@/schemas/topic';
-import { quizSchema } from '@/schemas/quiz';
+import { issueKind, quizSchema } from '@/schemas/quiz';
 import { termSchema } from '@/schemas/glossary';
 import { pathSchema } from '@/schemas/path';
 
@@ -74,7 +74,7 @@ describe('quiz schema', () => {
         type: 'review',
         code: 'x = 1',
         lang: 'python',
-        issues: [{ line: 1, kind: 'bug', note: { en: 'n', zh: '注' } }],
+        issues: [{ line: 1, kind: 'correctness', note: { en: 'n', zh: '注' } }],
       }),
     ).not.toThrow();
     expect(() => parse({ ...shared, id: 'q4', type: 'predict', code: 'x', lang: 'python' })).toThrow();
@@ -82,6 +82,34 @@ describe('quiz schema', () => {
   });
   it('requires at least one item', () => {
     expect(() => quizSchema.parse({ id: 'a/b', topic: 'a/b', items: [] })).toThrow();
+  });
+  it('accepts review metadata, issue spans, tests and positive minutes', () => {
+    const review = quizSchema.parse({
+      id: 'a/b',
+      topic: 'a/b',
+      items: [
+        {
+          id: 'review',
+          type: 'review',
+          prompt: item.prompt,
+          explanation: item.explanation,
+          difficulty: 'intermediate',
+          code: 'x = 1',
+          lang: 'python',
+          issues: [{ line: 1, lines: 2, kind: 'readability', note: { en: 'Name it', zh: '修改命名' } }],
+          right: { en: 'Small function', zh: '函数简短' },
+          checklist: [{ en: 'Check names', zh: '检查命名' }],
+          task: { en: 'Review this function.', zh: '审查此函数。' },
+          tests: 'assert x == 1',
+          minutes: 3,
+        },
+      ],
+    });
+    expect(review.items[0]).toMatchObject({ minutes: 3, checklist: [{ en: 'Check names' }] });
+  });
+  it('restricts issue kinds to the content-pipeline vocabulary', () => {
+    expect(issueKind.options).toEqual(['security', 'correctness', 'edge-case', 'readability', 'performance']);
+    expect(() => issueKind.parse('bug')).toThrow();
   });
 });
 
