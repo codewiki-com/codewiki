@@ -26,6 +26,7 @@ Read this first in any new session. Update it at every milestone and before star
 | P0 plan (content pipeline) | done: `docs/superpowers/plans/2026-09-03-p0-content-pipeline.md` (14 tasks); briefs in `prompts/` |
 | Repo scaffold | done (P1 Task 1): Astro 7 + Tailwind 4 + Preact, ESLint/Prettier/Vitest/Playwright, CI |
 | Content collections | done (P1 Task 6): schemas in `src/schemas/`, `src/content.config.ts`, `src/lib/content.ts`; sample content pending Codex (`prompts/write-sample-topics.md`) |
+| Topic page | done (P1 Task 12): `src/pages-shared/Topic.astro`, depth dial, table of contents, read tracking |
 | Content import | not started (source: `../old/src/content/docs`, 925 pairs) |
 
 ## How to resume

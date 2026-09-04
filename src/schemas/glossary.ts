@@ -1,5 +1,11 @@
 import { z } from 'astro/zod';
-import { localized, slug } from '@/schemas/localized';
+import { slug } from '@/schemas/localized';
+
+/** Glossary cards are laid out for a one-sentence definition; spec §4 caps it at 140 characters. */
+const shortDefinition = z.object({
+  en: z.string().min(1).max(140),
+  zh: z.string().min(1).max(140),
+});
 
 /**
  * One glossary term, one YAML file: `src/content/glossary/free-variable.yaml`. The loader derives
@@ -10,7 +16,7 @@ export const termSchema = z.object({
   en: z.string().min(1),
   zh: z.string().min(1),
   aliases: z.array(z.string()).default([]),
-  short: localized,
+  short: shortDefinition,
   topics: z.array(z.string()).default([]),
 });
 

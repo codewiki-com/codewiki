@@ -96,6 +96,13 @@ describe('glossary schema', () => {
   it('rejects an id that is not a slug', () => {
     expect(() => termSchema.parse({ ...term, id: 'Free Variable' })).toThrow();
   });
+  it('caps short definitions at 140 characters in both languages', () => {
+    expect(() => termSchema.parse({ ...term, short: { en: 'x'.repeat(141), zh: '短' } })).toThrow();
+    expect(() => termSchema.parse({ ...term, short: { en: 's', zh: '短'.repeat(141) } })).toThrow();
+    expect(termSchema.parse({ ...term, short: { en: 'x'.repeat(140), zh: '短' } }).short.en).toHaveLength(
+      140,
+    );
+  });
 });
 
 describe('path schema', () => {
