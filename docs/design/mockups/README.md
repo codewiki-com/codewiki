@@ -16,3 +16,14 @@ Component classes (`.panel`, `.tag`, `.seg`, `.codebox`, `.opt`, `.act`, `.tree`
 exact paddings, radii, font sizes and line heights to reproduce. The master spec
 (`docs/superpowers/specs/2026-09-03-codewiki-design.md`, §7) is the contract; these files are the reference
 when the spec is silent. Ignore `<script src="./support.js">`, `<x-dc>` and `<helmet>` — canvas runtime wrappers.
+
+## P2 mockups (`p2/`)
+
+Artboards for the learning layer, added 2026-09-04 by the design lead: `Practice` (practice hub),
+`Kata` (review-the-AI's-code kata, revealed state), `Flashcards` (SRS review), `Interview`
+(interview bank), `Cheatsheet`, `Bilingual` (topic in bilingual mode), `PromptBuilder`
+(`/ai/prompt-builder/`), plus `*Dark` variants. Sources live in `p2/src/`: `head.part.html`
+(tokens + component classes, a superset of the P1 mockups), `nav.part.html`, one `*.body.html`
+per artboard and `build.py`, which assembles the `.dc.html` files and generates the dark ones
+with `mkdark.py`. Edit the sources, run `python3 p2/src/build.py`, never the assembled files.
+`p2/canvas.json` is the design-canvas layout. Canvas: see STATUS.md for the current link.
