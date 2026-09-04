@@ -29,11 +29,11 @@ Read this first in any new session. Update it at every milestone and before star
 | P2 learning layer | plan `docs/superpowers/plans/2026-09-04-p2-learning-layer.md`; worktree `.worktrees/p2-learning-layer` (branch from main 3644c06); ledger `.worktrees/p2-learning-layer/.superpowers/sdd/2026-09-04-p2-learning-layer/progress.md`; Tasks 1–11 complete (P2a implemented: 159 e2e, Lighthouse 8 URLs pass); P2a design sweep running on Codex (brief sweep-p2a-codex.md), then whole-branch review (brief review-p2a-codex.md), then merge to main; P2b (Tasks 12–17) briefs ready |
 | Content | 45+ reviewed topic pairs in `src/content/topics` on the P0 branch, 115+ glossary terms, 20 interview banks, quiz banks per topic |
 
-## Active work (updated 2026-09-04 17:20 local)
-- **Routing:** Codex implements and does routine reviews (`scripts/dev/codex-task.sh`, brief template `prompts/codex-task-template.md`); Fable plans, designs, rules, reviews, merges.
-- **P0 wave 1**: `pnpm content:polish --tier 1 --n 4 --max 20` per batch from `.worktrees/p0-content-pipeline` (logs scratchpad `polish/wave1-bN.log`; journal `reports/polish/state.json`; runner commits per 10). Follow-ups after wave 1 (Codex): v3 conformance pass on the 5 calibration topics; polish the two P1 sample topics; merge `main` into `p0-content-pipeline`.
-- **P2**: Task 1 (SRS scheduler, scoring, pref fields) → Codex; then Tasks 2–11 (P2a) one at a time with Fable review; merge P2a to `main`; Tasks 12–17 (P2b).
-- Resume rule: `git log --oneline -3` per branch; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; an interrupted wave is resumed by re-running the same `content:polish` command.
+## Active work (updated 2026-09-04 20:00 local — pausing for a Claude Code restart)
+- **Routing:** Codex implements and does routine reviews (`scripts/dev/codex-task.sh <worktree> <brief> <log>`); Fable plans, designs, rules, reviews results, merges.
+- **P2a** on `p2-learning-layer` (worktree `.worktrees/p2-learning-layer`): Tasks 1–11 + design sweep committed (HEAD 4da57cf). Whole-branch review by Codex running/finished → report `.superpowers/sdd/2026-09-04-p2-learning-layer/review-p2a-report.md` (log scratchpad `codex-p2-review.log`). Next: if "Ready to merge" → merge `p2-learning-layer` into `main`, run the gate on main, then start P2b Task 12 (`task-12-codex.md`); if "Not ready" → one fix round (Codex), scoped re-review, then merge. P2b briefs `task-12…17-codex.md` are ready in the ledger dir.
+- **P0 wave 1** on `p0-content-pipeline` (worktree `.worktrees/p0-content-pipeline`): batch 5 running/finished (log scratchpad `polish/wave1-b5.log`; journal `reports/polish/state.json`; runner commits per 10). After it: launch batch 6 (`pnpm content:polish --tier 1 --n 4 --max 20`), and so on until `pnpm content:status` shows tier 1 complete; then run `conformance-v3-codex.md` (Codex) and merge `main` into `p0-content-pipeline`, then `p0-content-pipeline` into `main`.
+- Resume rule: `git log --oneline -3` per branch; a Codex log ends with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`; an interrupted polish batch is resumed by re-running the same `content:polish` command (the journal skips finished topics).
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
