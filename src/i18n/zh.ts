@@ -213,4 +213,18 @@ export default {
   'glossary.open': '查看术语',
   'glossary.prevTerm': '上一个术语',
   'glossary.nextTerm': '下一个术语',
+
+  // Task 17
+  'settings.title': '设置',
+  'settings.sub':
+    '这里的内容只保存在当前浏览器里，不会上传到任何地方；要换一台设备，只能通过导出的备份文件带走。',
+  'settings.dataHint': '学习进度、闪卡和这些设置，导出为一个 JSON 文件。',
+  'settings.fontS': '小',
+  'settings.fontM': '中',
+  'settings.fontL': '大',
+  'settings.importMode': '导入方式',
+  'settings.merge': '合并',
+  'settings.replace': '覆盖',
+  'settings.chooseFile': '选择备份文件',
+  'settings.importFailed': '这个文件不是 codewiki 的备份文件。',
 } satisfies Record<keyof typeof en, string>;
