@@ -3,6 +3,7 @@ import { glob } from 'astro/loaders';
 import { topicSchema } from '@/schemas/topic';
 import { quizSchema } from '@/schemas/quiz';
 import { termSchema } from '@/schemas/glossary';
+import { interviewSchema } from '@/schemas/interview';
 import { pathSchema } from '@/schemas/path';
 import { topicIdFromPath } from '@/lib/content-ids';
 
@@ -28,9 +29,15 @@ const glossary = defineCollection({
   schema: termSchema,
 });
 
+// One interview bank per track, so the entry id is the track slug (`python`).
+const interview = defineCollection({
+  loader: glob({ pattern: '*.yaml', base: './src/content/interview' }),
+  schema: interviewSchema,
+});
+
 const paths = defineCollection({
   loader: glob({ pattern: '**/*.yaml', base: './src/content/paths' }),
   schema: pathSchema,
 });
 
-export const collections = { topics, quizzes, glossary, paths };
+export const collections = { topics, quizzes, glossary, interview, paths };
