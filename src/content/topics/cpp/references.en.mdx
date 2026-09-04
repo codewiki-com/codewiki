@@ -1,0 +1,407 @@
+---
+title: C++ references
+description: Bind expressions to existing objects with C++ references; understand lvalue and rvalue references, lifetimes, and forwarding without dangling.
+track: cpp
+section: memory-ownership
+difficulty: intermediate
+tags: [references, lvalue-references, rvalue-references, lifetime]
+prerequisites: [cpp/c-pointers]
+related: [cpp/classes, cpp/move-semantics, cpp/templates, cpp/smart-pointers]
+terms: [lvalue-reference, rvalue-reference, reference-collapsing, forwarding-reference]
+verified: { version: 'C++23 (GCC 13.3.0)', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: cpp/references
+sources:
+  - { title: 'C++23 working draft - References', url: 'https://timsong-cpp.github.io/cppwp/n4950/dcl.ref' }
+  - { title: 'C++23 working draft - Reference initialization', url: 'https://timsong-cpp.github.io/cppwp/n4950/dcl.init.ref' }
+  - { title: 'C++23 working draft - Value categories', url: 'https://timsong-cpp.github.io/cppwp/n4950/expr.prop' }
+  - { title: 'C++23 working draft - Deducing template arguments from a call', url: 'https://timsong-cpp.github.io/cppwp/n4950/temp.deduct.call' }
+  - { title: 'C++ Core Guidelines - Parameter passing', url: 'https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rf-in' }
+origin: old/src/content/docs/cpp/references.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    A C++ reference is an alias for an existing object or function. `T&` primarily binds to lvalues and `T&&` primarily binds to rvalues; neither owns the bound object.
+  </TLDRCell>
+  <TLDRCell label="trap">
+    A reference cannot be reseated, and it does not automatically extend an ordinary object's lifetime. Returning a reference to a local object or retaining a reference to a short-lived object leaves a dangling reference.
+  </TLDRCell>
+  <TLDRCell label="fix">
+    State mutation, nullability, and lifetime in the interface contract. A generic wrapper must also distinguish an rvalue reference from a forwarding reference and use `std::forward<T>` to preserve the caller's value category.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+A reference makes an expression designate an object or function that already exists. Reading or writing through the reference reads or writes the bound entity; the reference is not an independent copy, and it does not own or release a resource.
+
+An <Term id="lvalue-reference">lvalue reference</Term> is written `T&` and usually binds to an lvalue. An <Term id="rvalue-reference">rvalue reference</Term> is written `T&&` and can bind to an rvalue, letting overloads distinguish an object that remains in use from one whose resources may be reused. Both are references, but their binding rules and roles in overload selection differ.
+
+References solve indirect access at an interface. A function can modify a caller's object through `T&`, observe it through `const T&`, or return `T&` so that a caller can continue working with a container element or object member. References also appear in operator overloads, range loops, move semantics, and generic forwarding.
+
+In a well-defined program, a reference must designate a valid object or function and cannot be rebound after initialization. Assignment through a reference changes the bound object, not the relationship between the reference and that object. This constraint removes one null state from required-parameter interfaces, but it does not prevent dangling references.
+
+References and ownership are separate concerns. `const Widget&` restricts what that access path can do; it says nothing about who owns the `Widget` or whether the object will survive until the reference's last use. Any design that stores a reference needs a separate owner and lifetime contract.
+
+## How it works
+
+In a reference declaration, `&` or `&&` is part of the declarator. A reference variable must be initialized; parameters and function return types merely have no concrete binding at declaration time, while calls and returns still perform reference initialization. The language does not specify whether a reference needs separate storage, so describing it as "always a pointer" is inaccurate.
+
+Reference initialization considers the reference type, the initializer's type, and the initializer expression's value category. The table summarizes the common cases; class conversions and base-class subobjects add more candidates.
+
+| Reference type | Common bindable expression | Can modify through it | Typical interface meaning |
+| --- | --- | --- | --- |
+| `T&` | Compatible non-`const` lvalue | Yes | Required input/output object |
+| `const T&` | Compatible lvalue or rvalue | No | Read-only borrow, including a temporary |
+| `T&&` | Compatible rvalue | Yes | Object with reusable resources |
+| `const T&&` | Compatible rvalue | No | Rare in ordinary interfaces |
+
+Value categories belong to expressions, not objects. Every expression is ultimately an lvalue, xvalue, or prvalue; lvalues and xvalues are glvalues, while xvalues and prvalues are rvalues. An expression consisting of a variable's name is an lvalue even when that variable was declared `T&&`.
+
+`std::move(value)` roughly casts an expression to an xvalue; it does not move resources by itself. The following initialization or function call performs overload resolution, and the selected operation may still copy. The full resource-transfer contract belongs to `cpp/move-semantics`.
+
+When `const T&` or `T&&` binds directly to certain temporary objects, it can extend the temporary's lifetime to the reference's lifetime. The rule has sharp boundaries: a temporary bound to a reference parameter normally lasts only to the end of the full expression containing the call, and returning that parameter does not pass the extension to the caller.
+
+### Parameters state the calling contract
+
+Choose parameter types for semantics before copy cost. Small, cheaply copied values normally pass by value; `const T&` suits a read-only borrow of a larger object; `T&` says that the function modifies a required object. Optional objects normally use pointers or optional values because a reference has no legitimate null state.
+
+| Requirement | Typical parameter | Caller-visible meaning |
+| --- | --- | --- |
+| Read a cheaply copied value | `T` | The function gets its own value |
+| Borrow read-only | `const T&` | The function does not modify through this reference |
+| Modify the caller's object | `T&` | The call may change the original object |
+| Accept a movable concrete type | `T&&` | The caller permits resource reuse |
+| Transparently relay any argument | `T&&` in a template | The wrapper should preserve the original category |
+
+Returning a reference transfers the same lifetime obligation to the caller. Returning a container element or object member can be a sound interface, provided the owning container or object remains alive and later operations do not invalidate the element's address. Returning by value is usually safer when that condition cannot be stated clearly.
+
+## Examples
+
+These four examples progress through aliases and parameters, reference returns, value-category overloads, and forwarding references. Every output was produced by compiling with GCC 13.3 under `-std=c++23` and running the resulting program.
+
+### Aliases and parameter intent
+
+`invoice` and `total` designate the same integer, so a change through either name is visible through the other. `label` binds directly to a temporary string, whose lifetime is extended to the end of `label`'s scope.
+
+<Depth level="quick">
+
+```cpp title="aliases.cpp"
+#include <iostream>
+#include <string>
+
+void add_fee(int& cents) {
+    cents += 50;
+}
+
+std::size_t label_size(const std::string& label) {
+    return label.size();
+}
+
+int main() {
+    int total = 1200;
+    int& invoice = total;
+    add_fee(invoice);
+
+    const std::string& label = std::string{"paid"};
+    std::cout << "total: " << total << '\n';
+    std::cout << "same object: " << std::boolalpha
+              << (&invoice == &total) << '\n';
+    std::cout << "label size: " << label_size(label) << '\n';
+}
+```
+
+```text
+total: 1250
+same object: true
+label size: 4
+```
+
+<TryToBreak items={['declare total const', 'bind a non-const lvalue reference to a temporary', 'execute invoice = another_total']} />
+
+</Depth>
+
+`&invoice == &total` produces `true` because taking the address of a reference obtains the address of its bound object. Executing `invoice = another_total` would only write the other integer's value into `total`; it would not reseat `invoice`.
+
+The `int&` parameter of `add_fee()` explicitly permits a change to the caller's object. `label_size()` only observes its string, but this tiny example makes no performance claim; the choice to pass by reference must still follow the real type and interface semantics.
+
+### Returning an object from a container
+
+`Catalog::at()` has mutable and read-only overloads. It returns a reference to a string already held by `names_`, so modifying the returned value directly changes the catalog.
+
+```cpp title="catalog.cpp"
+#include <cstddef>
+#include <iostream>
+#include <string>
+#include <utility>
+#include <vector>
+
+class Catalog {
+public:
+    explicit Catalog(std::vector<std::string> names)
+        : names_(std::move(names)) {}
+
+    std::string& at(std::size_t index) {
+        return names_.at(index);
+    }
+
+    const std::string& at(std::size_t index) const {
+        return names_.at(index);
+    }
+
+private:
+    std::vector<std::string> names_;
+};
+
+void archive_first(Catalog& catalog) {
+    catalog.at(0) = "archived";
+}
+
+void print_first(const Catalog& catalog) {
+    std::cout << catalog.at(0) << '\n';
+}
+
+int main() {
+    Catalog catalog({"active", "queued"});
+    std::string& first = catalog.at(0);
+    archive_first(catalog);
+    std::cout << first << '\n';
+    print_first(catalog);
+}
+```
+
+```text
+archived
+archived
+```
+
+The lifetime of `first` depends on `catalog` and its internal `std::vector`. Using it after destroying `catalog` would dangle; an operation that reallocates the vector's storage can also invalidate existing element references. The bounds check in `at()` does not provide lifetime safety.
+
+The `const` member overload prevents callers from obtaining a mutable reference through a `const Catalog&`. It does not make the underlying string permanently `const`; another legitimate non-`const` path can still modify the same object.
+
+### Observing expression value categories
+
+These overloads only print the selected path; they do not move from a string. The last two calls show that `slot` has type `std::string&&`, while the name expression `slot` is an lvalue.
+
+```cpp title="value_categories.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+
+void inspect(std::string& value) {
+    std::cout << "mutable lvalue: " << value << '\n';
+}
+
+void inspect(const std::string& value) {
+    std::cout << "const lvalue: " << value << '\n';
+}
+
+void inspect(std::string&& value) {
+    std::cout << "rvalue: " << value << '\n';
+}
+
+int main() {
+    std::string queued = "queued";
+    const std::string fixed = "fixed";
+
+    inspect(queued);
+    inspect(fixed);
+    inspect(std::string{"temporary"});
+
+    std::string&& slot = std::string{"named"};
+    inspect(slot);
+    inspect(std::move(slot));
+}
+```
+
+```text
+mutable lvalue: queued
+const lvalue: fixed
+rvalue: temporary
+mutable lvalue: named
+rvalue: named
+```
+
+Reason about declaration types and expression categories separately. A named rvalue-reference parameter inside a function is also an lvalue; cast it to an xvalue only when the code genuinely permits resource reuse.
+
+Here `std::move(slot)` only changes overload selection. `inspect(std::string&&)` never uses its parameter to construct or assign another string, so the characters in `slot` remain in this run. That is not a guarantee made by move operations in general.
+
+### Preserving the caller's value category
+
+An unqualified `T&&` in a template-deduction context is a <Term id="forwarding-reference">forwarding reference</Term>. An lvalue argument makes `T` deduce as an lvalue reference, after which <Term id="reference-collapsing">reference collapsing</Term> leaves the parameter as an lvalue reference; an rvalue argument produces an rvalue reference.
+
+```cpp title="forwarding.cpp"
+#include <iostream>
+#include <string>
+#include <utility>
+
+struct Ticket {
+    std::string name;
+};
+
+void dispatch(const Ticket& ticket) {
+    std::cout << "borrowed: " << ticket.name << '\n';
+}
+
+void dispatch(Ticket&& ticket) {
+    std::cout << "transferable: " << ticket.name << '\n';
+}
+
+template<class T>
+void relay(T&& ticket) {
+    dispatch(std::forward<T>(ticket));
+}
+
+int main() {
+    Ticket queued{"queued"};
+    relay(queued);
+    relay(Ticket{"new"});
+}
+```
+
+```text
+borrowed: queued
+transferable: new
+```
+
+`ticket` is a named variable in the body of `relay()`, so the expression itself is an lvalue. `std::forward<T>(ticket)` conditionally restores the category deduced from the caller; replacing it with `std::move(ticket)` would also treat an ordinary caller-owned lvalue as consumable.
+
+Not every `T&&` is a forwarding reference. `void take(Ticket&&)` has a concrete type, `const T&&` is cv-qualified, and `T&&` in a class-template member is an ordinary rvalue reference when `T` was already fixed by the class instance.
+
+## Pitfalls
+
+### Mistaking assignment for reseating
+
+> [!PITFALL]
+> `current = replacement` does not make a reference designate `replacement`. It invokes assignment on the bound object and may change much of that object's state.
+
+**Fix:** use a pointer when an observer must be reseated, or use `std::reference_wrapper<T>` in a standard container. The wrapper is assignable and storable, but it remains non-owning and can still dangle.
+
+### Returning a reference to a local or temporary
+
+> [!PITFALL]
+> An object with automatic storage duration is destroyed when its function exits. Returning `T&` or `const T&` to it does not carry the object out of the scope; returning a reference to a temporary made by a computed expression has the same class of problem.
+
+**Fix:** return by value by default and let copy-elision and move rules handle the result. When an interface genuinely returns a reference, name the owner and test invalidation after owner destruction, container reallocation, and element removal.
+
+### Treating `const&` as lifetime insurance
+
+> [!PITFALL]
+> `const T&` can extend the lifetime of some directly bound temporary objects, but it does not extend the lifetime of an ordinary lvalue, a pointer's target, or an object behind another short-lived reference. `const` also means neither thread safety nor deep immutability.
+
+**Fix:** trace the reference back to the ultimate owning object instead of checking only the last binding. Before a reference crosses an asynchronous task, callback, or container boundary, prove that the owner lives longer; otherwise copy the value or pass an owning handle.
+
+### Calling every `T&&` a forwarding reference
+
+> [!PITFALL]
+> `T&&` is a forwarding reference only when template deduction occurs there and the form meets the deduction rule. A concrete `Widget&&`, a `const T&&`, and most `T&&` members of class templates cannot bind lvalues in the same way.
+
+**Fix:** write down the deduced `T` and the collapsed parameter type at every template entry point. Use `std::forward<T>` only in a transparent wrapper; handle a concrete rvalue reference according to its explicit ownership contract.
+
+### Mechanically changing every input to `const&`
+
+> [!PITFALL]
+> For cheaply copied types such as integers, a reference adds indirection without expressing useful semantics. For a function that retains a copy, accepting only `const&` can also force the implementation to copy every time.
+
+**Fix:** first decide whether the function observes, modifies, retains, or takes over the argument, then choose by-value, `const T&`, `T&`, or an owning parameter. Performance choices depend on the real type and call path; "references always avoid copies" is not a sound conclusion.
+
+### Forgetting element-reference invalidation
+
+> [!PITFALL]
+> A reference obtained from a container follows that container's invalidation rules. Vector reallocation, element removal, or destruction of the whole object can leave old references dangling, with no detectable null state in the reference syntax.
+
+**Fix:** check the guarantees for the exact container and operation, then limit reference use to a stable interval. For long-lived element identities, consider stable ownership, an index, or a validated handle, but do not assume that changing the reference to a pointer fixes lifetime.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often generate a getter returning `const T&` while its body returns a local variable, the by-value result of `optional.value_or(...)`, or a temporary such as `path.string()`. They also retain a reference to a container element in an asynchronous lambda and then insert into the vector; reallocation invalidates the reference before the callback runs. Generic wrappers show two opposite mistakes: omitting `std::forward` degrades an rvalue to an lvalue, while using `std::move` unconditionally can consume a caller's lvalue.
+
+**Ask your AI to check**
+
+- List every reference parameter, return, data member, and by-reference lambda capture, then name its ultimate owner, invalidating operations, and last use.
+- For every `T&&`, state whether the template parameter is deduced there, the argument's value category, the collapsed type, and which overload `std::forward` or `std::move` selects.
+- Build tests for owner-first destruction, vector reallocation, an lvalue passed through the wrapper, and a temporary argument; run those paths with compiler warnings and sanitizers.
+
+**Review checklist**
+
+- Confirm that every returned reference designates an object that survives the call and that its cv-qualification matches the interface.
+- Check whether retained references cross threads, tasks, callbacks, or container invalidation points, and ensure non-owning access was not mistaken for ownership.
+- Treat every named rvalue reference as an lvalue expression, then confirm that each wrapper neither copies nor moves a caller-owned object by mistake.
+
+**Prompt vocabulary**
+
+Use the exact terms `lvalue reference`, `rvalue reference`, `value category`, `reference initialization`, `temporary lifetime extension`, `dangling reference`, `reference collapsing`, `forwarding reference`, and `perfect forwarding`. Ask for an ownership/lifetime table and per-call overload resolution; "check whether these references are safe" is too vague.
+
+<Depth level="deep">
+
+## Temporary lifetime boundaries
+
+Lifetime extension depends on the initialization form; it is not a property that can be passed from one reference to another. When a local `const T& item = T{};` binds directly to a temporary, the temporary normally lasts to the end of `item`'s scope. Passing `item` to another reference parameter does not move that deadline.
+
+A temporary bound to a reference parameter normally lasts to the end of the full expression containing the call. That is long enough for the callee to read it while running, but not for the function to retain the reference for later. Returning the same reference does not extend the temporary's lifetime again.
+
+Return statements are particularly dangerous. If a function returns `const T&` and its return expression creates a temporary `T`, the temporary does not survive long enough for the caller to use the returned reference safely. Compiler warnings catch some direct forms, but cases routed through helpers, conditional expressions, and implicit conversions still need manual tracing.
+
+Binding a reference to a base subobject or a member of a temporary introduces rules that depend on the exact expression form. In maintenance work, do not substitute the slogan "`const&` extends lifetimes" for those rules. Splitting a complex expression or returning an owning value usually makes the result easier to review.
+
+## Value categories and reference types
+
+A value category describes how an expression's result participates in language rules; a reference type describes the binding established by a declaration. An object does not permanently carry an "lvalue" or "rvalue" label. The same object can be named by an lvalue expression and cast by `std::move` to produce an xvalue expression.
+
+| Argument expression | Deduced `T` | Collapsed `T&&` | Result of `std::forward<T>` |
+| --- | --- | --- | --- |
+| Non-`const` variable `item` | `Item&` | `Item&` | lvalue |
+| `const` variable `item` | `const Item&` | `const Item&` | const lvalue |
+| Temporary `Item{}` | `Item` | `Item&&` | xvalue |
+| `std::move(item)` | `Item` | `Item&&` | xvalue |
+
+The reference-collapsing rule can be summarized this way: if either reference in the combination is an lvalue reference, the result is an lvalue reference; only rvalue reference combined with rvalue reference remains an rvalue reference. The formal rule applies when aliases, template parameters, or forms such as `decltype` create the combination. Ordinary source cannot directly declare a "reference to reference."
+
+`auto&&` also normally follows forwarding-reference deduction when `auto` is deduced, which is why range `for` loops often use `for (auto&& element : range)`. Some deduction contexts, including braced initializer lists, have special rules. Check the initializer context whenever you see `auto&&` instead of deciding from the two ampersands alone.
+
+Plain `auto` drops a top-level reference. If `lookup()` returns `Record&`, then `auto record = lookup();` normally makes a copy, while `auto& record = lookup();` preserves the lvalue reference. `decltype(auto)` can retain the type produced by `decltype`, but an extra pair of parentheses can change that result; reserve it for wrappers that need exact return preservation and whose expressions have been reviewed.
+
+## Reference qualifiers and member returns
+
+A member function can use a trailing `&` or `&&` to restrict the value category of its object argument. `data() &` is callable only on an lvalue object, while `data() &&` is callable only on an rvalue object. Combining these qualifiers with `const` controls the access path and object category separately.
+
+This distinction can prevent a member reference from escaping a short-lived temporary. For example, an accessor can return `const T&` from its `const &` overload and return the member by value from its `&&` overload. The exact design still depends on the member type, moved-from state, and consistency of the interface; it is not a mechanical recipe.
+
+Reference qualifiers also participate in overload resolution. If generated code adds only an `&&` version and omits a `const &` version, existing lvalue calls may stop compiling. When two overloads return different ownership forms, names and documentation should make the distinction visible as well.
+
+## References, pointers, and `reference_wrapper`
+
+A reference fits a required object relationship that will not be reseated. A pointer fits a relationship that is nullable, reseatable, or involved in low-level address arithmetic. A smart pointer expresses some form of ownership rather than acting as alternate punctuation for a reference.
+
+Standard containers cannot directly hold reference elements because their elements must fit the container's object and assignment model. `std::reference_wrapper<T>` is a copyable, assignable, non-owning wrapper that can be placed in a container and converted back to `T&`. It solves representation, not lifetime, and never extends the target object's life.
+
+Choosing a reference in an interface does not automatically eliminate null-pointer faults. If the caller dereferences a null pointer to form a reference, undefined behavior has already occurred; the callee does not receive a legitimate "null reference" to check. Boundaries that start from pointers, handles, or external data must validate before forming the reference.
+
+Pointers and references can both designate storage whose lifetime has ended. Sanitizers catch some dangling uses on executed paths, but they do not prove every callback schedule, container operation, and exception path safe. Static analysis, type design, and lifetime-focused tests have to work together.
+
+## Ownership in generic interfaces
+
+Perfect forwarding preserves the cv-qualification and value category of a caller's expression; it is not a correctness or performance guarantee. A wrapper can still forward to the wrong overload, retain a short-lived reference, or forward the same argument twice. It must first define how many times it calls the target, whether it stores arguments, and whether it retries after an exception.
+
+Do not unconditionally forward the same forwarding reference more than once into an unknown target. The first call may already have taken resources from an rvalue argument, leaving the second call to observe a moved-from state. If repeated use is required, explicitly acquire an owned value or require a caller-provided object that can be read repeatedly.
+
+A forwarding constructor can also take over candidate positions intended for copy constructors or other overloads. Constrain the template to arguments the target really supports, and check same-type, derived-type, and `const` lvalue calls. C++20 concepts can state those constraints more clearly, but they cannot replace lifetime and ownership design.
+
+When a function simply stores one object, accepting by value and moving into a member can be simpler than maintaining separate `const T&` and `T&&` overloads. Forwarding is for transparent adapter layers, not a default for every interface. The final choice follows the number of uses, copy semantics, and the public contract.
+
+</Depth>
+
+<Checkpoint id="cpp/references" />
+
+## Further reading
+
+- [C++23 working draft: reference declarations](https://timsong-cpp.github.io/cppwp/n4950/dcl.ref)
+- [C++23 working draft: reference initialization](https://timsong-cpp.github.io/cppwp/n4950/dcl.init.ref)
+- [C++23 working draft: value categories](https://timsong-cpp.github.io/cppwp/n4950/expr.prop)
+- [C++23 working draft: template deduction from a function call](https://timsong-cpp.github.io/cppwp/n4950/temp.deduct.call)
+- [C++ Core Guidelines: parameter passing](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rf-in)

@@ -1,0 +1,401 @@
+---
+title: 单分派泛型函数
+description: singledispatch 根据首个实参的运行时类型选择实现；掌握注册形式、继承解析、抽象基类和方法分派，才能安全扩展类型行为。
+track: python
+section: functions-deeper
+difficulty: intermediate
+tags: [singledispatch, generic-functions, dispatch, functools]
+prerequisites: [python/functions, python/decorators]
+related: [python/functools, python/abc, python/inheritance-polymorphism, python/classes-objects]
+terms: [single-dispatch, generic-function, method-resolution-order, abstract-base-class]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: python/singledispatch
+sources:
+  - { title: 'Python functools - singledispatch', url: 'https://docs.python.org/3.14/library/functools.html#functools.singledispatch' }
+  - { title: 'Python functools - singledispatchmethod', url: 'https://docs.python.org/3.14/library/functools.html#functools.singledispatchmethod' }
+  - { title: 'Python abc - Abstract Base Classes', url: 'https://docs.python.org/3.14/library/abc.html' }
+  - { title: 'PEP 443 - Single-dispatch generic functions', url: 'https://peps.python.org/pep-0443/' }
+origin: old/src/content/docs/python/singledispatch.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    `@singledispatch` 把一个函数变成泛型函数，并根据第一个实参的运行时类型选择已注册实现。
+  </TLDRCell>
+  <TLDRCell label="trap">
+    它不会根据第二个实参、返回注解或容器元素类型分派；`bool` 等子类以及抽象基类还会影响匹配结果。
+  </TLDRCell>
+  <TLDRCell label="fix">
+    把真正的分派对象放在首位，只注册运行时类，并用 `dispatch()`、子类输入和未注册输入验证选择结果。
+  </TLDRCell>
+</TLDR>
+
+## 是什么，为什么存在
+
+<Term id="single-dispatch">单分派（single dispatch）</Term>是根据一个指定实参的运行时类型选择函数实现。`functools.singledispatch` 用第一个实参完成这项选择；`functools.singledispatchmethod` 则跳过 `self` 或 `cls`，检查第一个普通实参。它们都不会比较其余实参的类型。
+
+被装饰的函数会成为<Term id="generic-function">泛型函数（generic function）</Term>。它保留一个默认实现，同时允许模块为具体类或抽象基类注册变体。调用方始终使用同一个公开名称，不需要自己维护不断增长的 `isinstance()` 分支。
+
+这种机制适合操作属于函数，而新类型可能由其他模块引入的场景。例如，序列化器、语法树访问器或调试渲染器可以把每种类型的代码放在对应注册函数旁边。注册不会修改输入类，也不要求这些类继承某个业务基类。
+
+单分派不是按签名重载。`typing.overload` 为静态检查器描述多种调用形式，运行时仍只有一个实现；`singledispatch` 在运行时选择实现，却不会自动给静态检查器建立精确的参数与返回值关系。需要根据两个值的组合、字段值或协议能力选择行为时，显式控制流通常更清楚。
+
+一个合适的分派轴应稳定且能代表行为差异。若函数首个参数只是请求上下文，而真正差异来自第二个参数，把函数改造成单分派只会隐藏条件。此时可以调整 API 让被处理对象位于首位，或者保留清楚的条件分支。
+
+## 工作原理
+
+`@singledispatch` 首先把原函数注册为 `object` 的实现，因此任何没有更具体匹配的对象都会落到这里。默认实现可以提供合理的通用行为，也可以抛出包含实际类型名的 `TypeError`。失败优先的默认实现更适合必须显式支持每种输入的边界。
+
+注册发生在装饰器执行时，通常也就是模块导入时。`generic.register(SomeType)` 把类映射到实现；不传类型时，`register` 从实现函数第一个形参的注解推断注册类型。调用泛型函数时，Python 读取首个实参的 `type()`，再寻找最合适的实现。
+
+一次调用可以按下面的顺序理解：
+
+1. 求值所有实参，并取得第一个实参的运行时类。
+2. 检查该类是否有精确注册。
+3. 沿继承关系和适用的抽象基类寻找更一般的注册。
+4. 调用选中的实现，并原样传入全部位置与关键字实参。
+5. 没有更具体实现时，调用注册在 `object` 上的默认函数。
+
+分派只负责选择函数，不会调整实参，也不会验证各变体签名是否兼容。某个变体漏掉关键字参数时，模块可能正常导入，直到运行时选中该变体才抛出 `TypeError`。因此，所有实现都应遵守同一调用契约。
+
+### 三种注册形式
+
+最直接的形式是 `@render.register(int)`，适合注解要表达 `list[int]` 等更精确静态类型时。省略装饰器实参的 `@render.register` 会读取首个形参注解。函数式形式 `render.register(int, render_integer)` 则适合已有函数和动态扩展点。
+
+Python 3.14 支持从 `int | float` 或 `typing.Union[int, float]` 注解注册联合类型。注册过程会分别建立 `int` 与 `float` 的条目；调用时并不存在一个可实例化的联合类型。联合中的每一项仍必须是可用于运行时分派的类。
+
+| 注册形式 | 运行时注册对象 | 适用场景 |
+| --- | --- | --- |
+| `@func.register(int)` | `int` | 显式指定运行时类 |
+| `@func.register` 配合 `value: int` | `int` | 注解与分派类相同 |
+| `@func.register` 配合 `value: int \| float` | `int`、`float` | 多个类共享一个实现 |
+| `func.register(int, handler)` | `int` | 注册已有可调用对象 |
+
+`register()` 返回的是未被泛型包装的实现函数，而不是泛型函数本身。因此，同一实现可以堆叠多个注册装饰器，也可以在单元测试中直接调用。泛型函数仍通过原名称访问。
+
+### 继承与抽象基类
+
+参数类型没有精确注册时，分派器会利用<Term id="method-resolution-order">方法解析顺序（method resolution order，MRO）</Term>寻找已注册的基类。比如只注册 `int` 时，`bool` 会使用整数实现，因为 `bool` 是 `int` 的子类。后来精确注册 `bool` 后，布尔实现会优先，和注册语句的先后顺序无关。
+
+注册<Term id="abstract-base-class">抽象基类（abstract base class，ABC）</Term>可以覆盖它的具体子类和虚拟子类。给 `collections.abc.Mapping` 注册实现后，`dict` 以及符合该 ABC 关系的映射类都能匹配。再为 `dict` 注册更具体实现时，`dict` 的子类也会优先沿这条具体继承路径匹配。
+
+两个彼此无继承关系的 ABC 可能都把同一类视为虚拟子类。如果两项注册同样适用，且没有更具体关系打破平局，调用会抛出 `RuntimeError`，而不是选择较早或较晚注册的函数。对宽泛 ABC 组合必须加入代表性具体类测试。
+
+`dispatch(cls)` 会返回当前规则下为该类选择的实现，适合断言和诊断。只读的 `registry` 映射则列出显式注册，不会展开所有可能子类。`dispatch()` 的结果才回答某个未直接注册的子类实际会走哪条路径。
+
+## 示例
+
+下面三个示例依次展示联合注解注册、继承与 ABC 解析，以及类方法分派。输出均由本地 `python3` 执行对应文件产生。
+
+### 根据首个值格式化
+
+第一个示例让整数和浮点数共用一个实现，让字符串使用另一个实现。关键字参数 `compact` 会传给选中的函数，但它不参与分派。
+
+<Depth level="quick">
+
+```python run title="render_values.py"
+from functools import singledispatch
+
+
+@singledispatch
+def render(value, *, compact=False):
+    raise TypeError(f"unsupported type: {type(value).__name__}")
+
+
+@render.register
+def render_number(value: int | float, *, compact=False):
+    return f"{value:g}" if compact else f"{value:.2f}"
+
+
+@render.register
+def render_text(value: str, *, compact=False):
+    normalized = " ".join(value.split())
+    return normalized.lower() if compact else normalized
+
+
+for item in (42, 3.5, "  Priority   Queue "):
+    print(render(item, compact=True))
+
+print(render.dispatch(bool).__name__)
+```
+
+```text
+42
+3.5
+priority queue
+render_number
+```
+
+<TryToBreak items={['传入 `True`，观察 `bool` 与 `int` 的继承关系', '传入未注册的 `Decimal("1.5")`', '尝试按 `list[int]` 的元素类型分派']} />
+
+</Depth>
+
+联合注解为 `int` 和 `float` 各注册一次 `render_number`。`bool` 没有精确条目，但它沿继承关系找到同一实现，所以最后一行打印函数名 `render_number`。默认实现让其他输入显式失败。
+
+这个例子也说明后续参数的值不会改变选择。`compact=False` 和 `compact=True` 都先依据 `value` 分派，再把关键字实参交给对应实现。若某个实现没有 `compact` 形参，只有走到那条分支时才会暴露错误。
+
+### 查看继承匹配
+
+这里为 `Mapping` 提供一般实现，又为 `dict` 提供更具体实现。`AuditDict` 继承 `dict`，而 `UserDict` 通过映射 ABC 匹配。
+
+```python run title="resolve_handlers.py"
+from collections import UserDict
+from collections.abc import Mapping
+from functools import singledispatch
+
+
+@singledispatch
+def summarize(value):
+    return f"default:{type(value).__name__}"
+
+
+@summarize.register
+def summarize_mapping(value: Mapping):
+    return f"mapping:{len(value)}"
+
+
+@summarize.register(dict)
+def summarize_dict(value):
+    return f"dict:{','.join(sorted(value))}"
+
+
+class AuditDict(dict):
+    pass
+
+
+values = ({"id": 1}, AuditDict(event="login"), UserDict({"ok": True}), ("x", "y"))
+for value in values:
+    print(summarize(value))
+
+print(summarize.dispatch(AuditDict).__name__)
+print(summarize.dispatch(UserDict).__name__)
+```
+
+```text
+dict:id
+dict:event
+mapping:1
+default:tuple
+summarize_dict
+summarize_mapping
+```
+
+`AuditDict` 沿普通 MRO 找到 `dict` 实现，`UserDict` 找到 `Mapping` 实现，元组则落到默认函数。末尾直接调用 `dispatch()`，把选择规则变成可测试结果，而不用依赖实现内部的缓存结构。
+
+命名注册函数比统一命名为 `_` 更方便诊断和单独测试。下划线名称在多个互不引用的注册函数中完全有效，但回溯和 `dispatch(cls).__name__` 给出的信息较少。
+
+### 在类方法上分派
+
+`singledispatchmethod` 跳过绑定后的 `cls`，根据 `payload` 的类型选择解码器。为了让 `Message.decode.register` 可用，它必须放在 `@classmethod` 外层。
+
+```python run title="decode_message.py"
+from functools import singledispatchmethod
+
+
+class Message:
+    def __init__(self, text):
+        self.text = text
+
+    @singledispatchmethod
+    @classmethod
+    def decode(cls, payload):
+        raise TypeError(f"unsupported payload: {type(payload).__name__}")
+
+    @decode.register
+    @classmethod
+    def decode_bytes(cls, payload: bytes):
+        return cls(payload.decode("utf-8"))
+
+    @decode.register
+    @classmethod
+    def decode_mapping(cls, payload: dict):
+        return cls(payload["text"])
+
+
+for payload in (b"queued", {"text": "sent"}):
+    message = Message.decode(payload)
+    print(type(message).__name__, message.text)
+```
+
+```text
+Message queued
+Message sent
+```
+
+每个变体也保留 `@classmethod`，因此无论通过类还是实例访问，选中函数都会收到类对象。若改成普通实例方法，注册实现应使用同样的普通方法形态，并把待分派参数放在 `self` 之后。
+
+装饰器顺序是可观察的 API 要求，不是样式偏好。把 `@classmethod` 放到最外层会遮住 `singledispatchmethod` 暴露的 `register` 属性，类体中的后续注册无法按这种写法完成。
+
+## 陷阱
+
+### 把分派对象放错位置
+
+> [!PITFALL]
+> `save(context, value)` 使用 `@singledispatch` 时，会根据 `context` 而不是 `value` 分派。生成代码常保留原签名，却为 `value` 的类型注册实现，导致所有调用落到错误路径。
+
+**修复方法：** 让决定行为的对象成为第一个实参，例如 `save(value, *, context)`。若 API 顺序不能改变，就使用显式条件、对象方法或另一个清楚命名的入口。
+
+### 注册参数化泛型
+
+> [!PITFALL]
+> `list[int]` 和 `dict[str, Value]` 携带静态类型信息，但不是 `singledispatch` 可用于 `isinstance()` 式运行时选择的类。把它们交给 `register` 会在注册阶段抛出 `TypeError`。
+
+**修复方法：** 显式注册 `list` 或 `dict`，在选中实现后再验证元素。若整数列表和字符串列表必须走不同算法，单分派本身无法表达这项契约。
+
+### 默认实现过于宽松
+
+> [!PITFALL]
+> 默认函数直接执行 `str(value)` 或返回输入，会让遗漏注册看起来像成功。新类型可能悄悄得到不完整的序列化结果，而不是在测试中暴露支持缺口。
+
+**修复方法：** 在封闭的转换边界抛出带类型名的 `TypeError`。只有业务确实定义了通用回退语义时才保留宽松默认行为，并为未注册类写测试。
+
+### 忽略子类与 ABC 重叠
+
+> [!PITFALL]
+> `bool` 会匹配 `int`，字符串会匹配某些集合抽象，而一个类还可能同时成为多个无关 ABC 的虚拟子类。只测试精确注册类型会漏掉错误选择或歧义异常。
+
+**修复方法：** 为内置子类、自定义子类、虚拟子类和未注册类型建立选择矩阵。宽泛 ABC 重叠时，增加更具体注册或缩小分派边界，不要依赖注册顺序。
+
+### 隐藏导入时注册
+
+> [!PITFALL]
+> 插件模块只有被导入后，顶层 `@generic.register` 才会执行。开发环境自动导入了插件，不代表测试进程、命令行入口或生产 worker 也加载了同一注册集合。
+
+**修复方法：** 设置显式、可重复的插件启动步骤，并在启动后断言关键 `dispatch()` 结果。同一类型的重复注册会改变全局泛型函数行为，因此还要定义冲突策略和导入顺序。
+
+## AI 时代
+
+**生成代码在这里常犯的错**
+
+模型会把 `@handler.register(list[Order])` 当成合法的运行时注册，或者以为 `handler(records, format)` 会同时检查两个实参。它还常忽略 `bool` 继承 `int`，为金额整数注册的处理器因而意外接收开关值。生成插件代码时，注册函数可能藏在从未导入的模块里；生成类方法时，又可能把 `@classmethod` 放在 `@singledispatchmethod` 外层，使 `.register` 在类体中不可用。
+
+**让 AI 检查**
+
+- 列出每个泛型函数的实际分派位置，并对每个注册项给出运行时类，而不是只复述类型注解。
+- 为每个调用样例写出 `type(first_arg)`、精确注册、MRO 候选、ABC 候选和最终 `dispatch()` 结果。
+- 检查插件导入路径、重复类型注册和所有变体的参数签名，指出启动环境之间可能不同的注册集合。
+
+**审查清单**
+
+- 用未注册类型、子类、`bool` 和代表性虚拟子类验证默认与继承行为。
+- 确认没有把 `list[T]`、字段值或第二个实参误当成运行时分派条件。
+- 对照所有变体的关键字参数、异常与返回契约，并验证 `singledispatchmethod` 的装饰器顺序。
+
+**提示词词汇**
+
+使用准确术语：`single dispatch`（单分派）、`generic function`（泛型函数）、`dispatch type`（分派类型）、`registered implementation`（已注册实现）、`method resolution order`（方法解析顺序）、`abstract base class`（抽象基类）、`virtual subclass`（虚拟子类）、`dispatch ambiguity`（分派歧义）。要求模型输出分派矩阵和注册时机；「实现函数重载」无法说明运行时到底检查哪个值。
+
+<Depth level="deep">
+
+## 注册表是扩展边界
+
+`singledispatch` 把扩展点放在泛型函数对象上，而不是输入类上。拥有该函数的模块定义操作语义，其他模块只要拿到函数和运行时类，就能注册新实现。这种开放性适合插件，但也意味着注册表是共享的进程内状态。
+
+注册通常发生在导入阶段。若某个模块没有进入实际启动路径，它的装饰器就不会执行；若两个模块为同一精确类型注册不同实现，后执行的注册会替换该条目。自动发现插件时，加载顺序必须确定，冲突也应在启动阶段报告。
+
+`registry` 是只读映射视图，包含显式类型到函数的映射，其中 `object` 指向原始默认实现。只读限制调用方直接改字典，但不能阻止持有泛型函数的代码继续调用 `register()`。因此，读取注册表适合诊断，不等于注册集合已经冻结。
+
+函数式注册能让扩展更显式。调用 `serializer.register(Payload, encode_payload)` 后，返回值仍是 `encode_payload`，所以插件可以保存并直接测试这个函数。泛型入口的身份不会改变，已有调用方也无需重新绑定名称。
+
+为了避免测试互相污染，优先在创建泛型函数的模块边界测试完整注册集合。测试临时向全局泛型函数注册类型后，没有公开的注销 API 可以恢复单个旧条目。更稳妥的做法是为隔离测试创建局部泛型函数，或在一次性进程中加载插件组合。
+
+## 解析规则与歧义
+
+精确注册最容易预测。参数的运行时类正好出现在 `registry` 中时，该实现直接胜出。没有精确条目时，分派器才需要考虑普通基类和相关 ABC。
+
+普通继承由类的 MRO 提供有序关系。更接近实际类的已注册基类优先于更远的基类，所以 `AuditDict` 会在 `dict` 和 `object` 之间选择 `dict`。这不是「最后注册者优先」规则。
+
+ABC 还允许不出现在普通继承元组中的虚拟子类关系。`Mapping.register(CustomMap)` 可以显式建立关系，一些 `collections.abc` 类型也通过 `__subclasshook__` 识别结构。当分派器组合这些关系时，适用不等于一定能得到唯一最佳项。
+
+两个无关 ABC 同时匹配，且任何一项都不是另一项的子类时，选择缺少可证明的优先级。Python 会以 `RuntimeError` 暴露这种歧义。增加一个针对具体类或共同更具体基类的注册，可以把选择重新变成确定关系。
+
+注册宽泛 ABC 前，应列出当前会匹配的具体类和未来允许扩展的范围。ABC 注册减少重复实现，却扩大了行为表面；如果处理器实际上依赖未由 ABC 契约保证的方法，分派成功后仍会在函数体中失败。
+
+## 类型注解与运行时边界
+
+省略 `register` 的类型实参时，注解承担的是注册配置作用。装饰器读取首个形参的注解并建立运行时条目，但普通函数调用不会因此验证其他形参或返回值。注解的静态意义与注册的运行时副作用应分别审查。
+
+联合注解是一项注册便利，不是多分派。`value: int | float` 让两个运行时类指向同一函数；第二个参数上的联合、返回类型或 `TypeVar` 不会增加分派维度。容器中的元素类型在调用入口也不会成为选择依据。
+
+各实现可以写更具体的首参注解，但公开调用契约仍由泛型函数表达。静态检查器未必能从运行时注册表推导「传入某类就返回某类型」。如果调用方依赖这种关系，可以额外提供 `@overload` 声明，但仍要保留一个真实运行时实现，并避免让声明与注册表漂移。
+
+变体签名需要人工保持兼容。泛型函数接收 `verbose=False`，而某个实现删掉该参数时，`generic(value, verbose=True)` 只在选中该类型后失败。签名检查测试可以遍历显式注册函数，但继承选择和业务结果仍需行为测试。
+
+返回类型也应共享可说明的契约。让不同变体随意返回字符串、字典或 `None`，会把复杂度推给每个调用方。单分派解决的是实现选择，不会自动统一结果模型。
+
+## 方法描述器与装饰器堆叠
+
+`singledispatchmethod` 是为方法绑定规则准备的描述器。普通实例方法跳过 `self`，类方法跳过 `cls`，再对第一个普通实参分派。静态方法没有隐式接收者，因此第一个形参本身就是分派对象。
+
+它与 `classmethod`、`staticmethod` 或 `abstractmethod` 堆叠时必须位于最外层，才能在类体求值期间暴露 `.register`。每个注册变体也应使用与主方法相符的描述器装饰。混用普通方法和类方法形态会让绑定后的参数位置难以预测。
+
+对实例方法而言，状态属于 `self`，实现选择属于下一个实参的类型。这适合「同一服务对象处理多种消息」的接口。若行为更自然地属于消息类本身，普通虚方法或协议可能更直接，也更容易被静态检查器理解。
+
+继承带来的注册所有权需要格外明确。通过继承类可见的 `.register` 修改分派器时，可能影响共享同一描述器的其他使用方，而不只是当前子类。需要每个子类独立扩展表时，先用测试确认隔离需求，再考虑显式组合或独立泛型函数。
+
+## 测试分派契约
+
+每个注册实现应有直接单元测试，因为 `register()` 返回未包装函数。直接测试能覆盖该变体的输入验证、返回值和异常，却不能证明泛型入口会选择它。两层测试缺一不可。
+
+分派测试应通过公开入口传入精确类型、普通子类、相关虚拟子类和未注册类。对每种代表类型再断言 `generic.dispatch(Type)` 的函数身份，可以让错误来自选择规则还是函数体一目了然。
+
+多实参函数还要固定首个实参，只改变第二个实参，证明第二项不会影响选择。反向测试则改变首个实参并保持其余实参不变。这个小矩阵能直接揭穿把单分派误当成多分派的实现或测试。
+
+插件系统应在与生产相同的启动入口完成一次注册清单测试。断言关键类型的处理器身份，并检查不允许重复的类型只有预期实现。仅在插件自己的模块测试装饰器语法，无法证明应用进程真的导入了它。
+
+错误路径同样属于契约。默认实现是否拒绝未知类型、ABC 歧义是否被更具体注册消除、变体是否接受相同关键字参数，都应有失败测试。不要靠读取私有缓存或 `functools` 源码内部名称验证公开行为。
+
+## API 演进与兼容性
+
+增加注册项会改变既有调用的运行时行为，即使泛型函数的签名和调用位置完全没变。原先落到默认函数的类，可能在升级后命中一个新基类实现。注册表变化因此属于 API 行为变化，而不只是内部重构。
+
+类层次变化也会改变选择。给现有类增加一个已注册基类，或让它成为某个 ABC 的虚拟子类，可能把调用从默认实现移到专用实现。评审类型模型变更时，应搜索使用该类型的泛型函数，而不只检查类自身的方法。
+
+联合注解注册需要目标运行时支持。Python 3.11 才为 `register()` 增加 `typing.Union` 注解支持；面向更早版本的库应分别堆叠具体类型注册。本文以 Python 3.14 为准，不把新语法自动当成旧版本兼容写法。
+
+### 会改变选择的改动
+
+| 改动 | 潜在影响 | 回归测试 |
+| --- | --- | --- |
+| 为现有类型增加精确注册 | 默认或基类实现不再运行 | 断言该类型的处理器与结果 |
+| 注册一个宽泛 ABC | 多种虚拟子类开始匹配 | 覆盖代表性具体类与歧义 |
+| 改变类的基类 | MRO 中的最佳注册可能变化 | 覆盖修改前后的子类路径 |
+| 调整插件导入顺序 | 重复注册的最终实现变化 | 检查启动后的注册清单 |
+
+兼容性测试不应只比较 `registry.keys()`。两个版本可以拥有相同的显式键，却因为类层次或虚拟子类关系变化而给同一具体类选择不同函数。应同时断言关键 `dispatch(ConcreteType)` 结果。
+
+如果默认实现用于拒绝未知输入，新注册意味着扩大接受集合；如果默认实现提供通用结果，新注册则可能改变返回形状或异常。两种变化都需要在发布说明和类型契约中说明，不能因为调用名称未变就视为兼容。
+
+### 公开检查接口
+
+泛型函数公开 `register`、`dispatch` 和 `registry`，也通过 `__wrapped__` 指向原始默认函数。这些接口足以检查注册和测试选择。私有缓存的结构与失效策略属于实现细节，不应成为应用代码的依赖。
+
+`registry[SomeType]` 只适用于显式注册的键；查找未直接注册的子类时应使用 `dispatch(SomeType)`。混用二者会把「注册了什么」和「最终选什么」这两个问题混在一起。
+
+调试输出最好记录传入类型的限定名和选中函数的限定名，而不是转储整个注册表。这样既能定位选择，也不会把大量插件细节写入日志。生产日志仍应避免记录输入对象中的敏感数据。
+
+把这些公开检查放入启动自检时，要避免实际调用带副作用的处理器。`dispatch()` 返回函数而不执行它，适合验证关键映射；业务行为则留给使用受控样例的测试。
+
+## 选择更简单的机制
+
+类型分支只有两三个，而且所有行为都由同一模块维护时，一段清楚的 `isinstance()` 控制流可能更容易阅读。`singledispatch` 的价值来自独立注册和开放扩展，而不是减少任意几行条件语句。
+
+行为天然属于对象时，基类方法或协议通常能把能力与对象放在一起。单分派更适合你不能修改输入类，或同一类型需要参与多个彼此独立操作的场景。两种多态形式可以共存，但不应为同一选择建立两套竞争规则。
+
+选择依赖数据值时，`match`、映射表或普通条件更准确。例如，同一个 `str` 根据格式版本或媒体类型选择解析器，不是类型差异。强行包装成若干字符串子类只会让数据契约变得隐晦。
+
+选择同时依赖两个类型时，先判断是否能把操作建模为其中一个对象的方法。若确实需要多分派，再采用明确支持它的设计或库，并单独验证其解析规则。不要在 `singledispatch` 变体内部继续堆叠一套难以追踪的第二类型注册表。
+
+</Depth>
+
+<Checkpoint id="python/singledispatch" />
+
+## 延伸阅读
+
+- [Python `functools.singledispatch` 文档](https://docs.python.org/3.14/library/functools.html#functools.singledispatch)
+- [Python `functools.singledispatchmethod` 文档](https://docs.python.org/3.14/library/functools.html#functools.singledispatchmethod)
+- [Python `abc` 模块文档](https://docs.python.org/3.14/library/abc.html)
+- [PEP 443：单分派泛型函数](https://peps.python.org/pep-0443/)

@@ -1,0 +1,416 @@
+---
+title: Requests
+description: Use Python Requests to build HTTP calls, handle responses, reuse sessions, and set explicit boundaries for timeouts, retries, streaming, and TLS.
+track: backend
+section: http-apis
+difficulty: intermediate
+tags: [python, requests, http, api-client]
+prerequisites: [backend/getting-started, backend/restful-api-design]
+related: [backend/httpx, backend/oauth2-guide, backend/rate-limiting, backend/testing]
+terms: [connection-pool, idempotency, server-side-request-forgery]
+verified: { version: 'Python 3.14', date: 2026-09-04 }
+reviewed: 2026-09-04
+status: reviewed
+aligned: true
+quiz: backend/requests
+sources:
+  - { title: 'Requests quickstart', url: 'https://requests.readthedocs.io/en/latest/user/quickstart/' }
+  - { title: 'Requests advanced usage', url: 'https://requests.readthedocs.io/en/latest/user/advanced/' }
+  - { title: 'Requests developer interface', url: 'https://requests.readthedocs.io/en/latest/api/' }
+  - { title: 'urllib3 Retry reference', url: 'https://urllib3.readthedocs.io/en/stable/reference/urllib3.util.html#urllib3.util.Retry' }
+origin: old/src/content/docs/python/requests.zh.md
+---
+
+<TLDR>
+  <TLDRCell label="what">
+    Requests is a synchronous HTTP client. It assembles a method, URL, query parameters, headers, and body into a request, then exposes the response status, headers, and body through `Response`.
+  </TLDRCell>
+  <TLDRCell label="when">
+    It fits direct, synchronous API calls and downloads in Python. Use a client designed for native async I/O, HTTP/2, or high connection concurrency when those are requirements.
+  </TLDRCell>
+  <TLDRCell label="how">
+    Reuse a `Session`, set a timeout on every call, and check HTTP status before parsing. Configure retries only when an operation is safe to replay, and leave TLS verification enabled.
+  </TLDRCell>
+</TLDR>
+
+## What it is and why it exists
+
+Requests is a third-party synchronous HTTP client for Python. It provides one consistent API for URL encoding, headers, cookies, authentication, redirects, TLS certificate verification, and response decoding, leaving application code to focus on the HTTP exchange instead of sockets.
+
+Each call involves two objects worth distinguishing. A `PreparedRequest` is an encoded request ready to send; a `Response` holds the returned status, headers, content, and the request that was actually sent. That distinction helps when diagnosing signature failures, incorrect parameter encoding, or redirects.
+
+Requests fits command-line tools, background jobs, service-to-service calls, and synchronous requests in tests. Its I/O blocks the current thread, and using a `Session` does not make it asynchronous. An async application waiting on many concurrent requests usually needs a client built for that execution model instead of scattered synchronous calls inside its event loop.
+
+The library only handles client-side HTTP mechanics. It cannot decide whether a particular `404` means `None` or a domain error, nor whether a `POST` can be retried. Status interpretation, replay safety, response-size limits, and trust in the target URL remain part of the application contract.
+
+## How it works
+
+Convenience functions such as `requests.get()` ultimately create, prepare, and send a request through a transport adapter. Preparation encodes `params`, `data`, `json`, and `files`, adds headers that can be derived, and produces a `PreparedRequest`. Sending handles connections, TLS, proxies, redirects, and response reads.
+
+Follow one call from input to result in this order:
+
+1. Choose an HTTP method and target URL.
+2. Give Requests the query parameters, headers, cookies, authentication, and body.
+3. Let the `Session` merge session-level configuration and create a `PreparedRequest`.
+4. Let the mounted `HTTPAdapter` take a connection from its pool and send the bytes.
+5. Receive response headers and, depending on `stream`, either read or defer the response body.
+6. Check the status, parse the content, and close the response or consume its body completely.
+
+```mermaid
+flowchart LR
+    A[Request arguments] --> B[Session]
+    B --> C[PreparedRequest]
+    C --> D[HTTPAdapter]
+    D --> E[Server]
+    E --> F[Response]
+    F --> G[Status check]
+    G --> H[Decode or stream body]
+```
+
+The parameters represent different parts of HTTP and are not interchangeable:
+
+| Requests argument | Encoded location | Common media type or form |
+| --- | --- | --- |
+| `params=` | URL query string | `?page=2&tag=python` |
+| `headers=` | Request fields | `Accept`, `Authorization` |
+| Dictionary in `data=` | Request body | `application/x-www-form-urlencoded` |
+| `json=` | Request body | `application/json` |
+| `files=` | Request body | `multipart/form-data` |
+
+A `Session` retains default headers, cookies, authentication, and adapter configuration, and it uses urllib3 to reuse underlying connections to the same host. A <Term id="connection-pool">connection pool</Term> can reclaim a connection only after the response body has been consumed or the response has been closed. A session therefore owns configuration state and network-resource lifetimes.
+
+`Response.content` returns raw bytes, `Response.text` decodes a string with the selected encoding, and `Response.json()` decodes the body as JSON. None of these interfaces proves that the operation succeeded. Check the status and media type against the API contract before choosing a parser.
+
+Exceptions also occur at different layers. Connection failures and timeouts are transport problems; `raise_for_status()` turns `4xx` and `5xx` responses into `HTTPError`; malformed JSON raises `requests.exceptions.JSONDecodeError`. Do not erase those distinctions with one broad `except Exception`.
+
+## Examples
+
+These four examples avoid public test services. The first only prepares a request, while the other three start temporary HTTP servers bound to the loopback interface, so their output does not depend on an external API or network state.
+
+### Inspecting the request that will be sent
+
+Passing parameters to Requests is safer than assembling a URL and JSON by hand. A prepared request exposes the encoded result without sending network traffic.
+
+<Depth level="quick">
+
+```python run title="prepare_request.py"
+from requests import Request, Session
+
+request = Request(
+    "POST",
+    "https://api.example.test/orders",
+    params=[("include", "items"), ("include", "totals")],
+    headers={"Accept": "application/json"},
+    json={"sku": "BK-42", "quantity": 2},
+)
+
+with Session() as session:
+    prepared = session.prepare_request(request)
+
+print(prepared.method)
+print(prepared.url)
+print(prepared.headers["Content-Type"])
+print(prepared.body.decode())
+```
+
+```text
+POST
+https://api.example.test/orders?include=items&include=totals
+application/json
+{"sku": "BK-42", "quantity": 2}
+```
+
+</Depth>
+
+The list of key-value pairs preserves both `include` parameters. The `json=` argument serializes the body and sets `Content-Type`; take explicit control of serialization only when the server requires a different JSON representation.
+
+A `PreparedRequest` may contain access tokens, cookies, or personal data. Log only fields that may be disclosed, and redact headers and bodies rather than dumping the entire object during diagnosis.
+
+### Reading a successful JSON response
+
+This local service echoes a search term. The client sets one-second connect and read timeouts, then checks the status before calling `json()`.
+
+```python run title="read_json.py"
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+from urllib.parse import parse_qs, urlsplit
+
+import requests
+
+class CatalogHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        query = parse_qs(urlsplit(self.path).query)
+        body = json.dumps({"query": query["q"][0], "count": 2}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler)
+worker = Thread(target=server.serve_forever, daemon=True)
+worker.start()
+
+try:
+    url = f"http://127.0.0.1:{server.server_port}/search"
+    response = requests.get(
+        url,
+        params={"q": "blue mug", "limit": 2},
+        headers={"Accept": "application/json"},
+        timeout=(1, 1),
+    )
+    response.raise_for_status()
+    print(response.request.path_url)
+    print(response.headers["Content-Type"])
+    print(response.json())
+finally:
+    server.shutdown()
+    server.server_close()
+```
+
+```text
+/search?q=blue+mug&limit=2
+application/json; charset=utf-8
+{'query': 'blue mug', 'count': 2}
+```
+
+`response.request.path_url` shows that the space became `+`; the input dictionary needed no manual escaping. The server declares both JSON and a character set. A real client should still validate the media type promised by its contract instead of accepting any body that happens to parse.
+
+When a body may be large, do not call `response.text` or `response.content` merely to log it because either loads the full content into memory. With `stream=True`, consume chunks through `iter_content()` inside a `with` block.
+
+### Separating HTTP errors from timeouts
+
+The domain function maps a found order and a `404` to two explicit values. A transport timeout takes another path, so callers do not confuse "the server confirmed absence" with "no result arrived."
+
+```python run title="handle_errors.py"
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+import requests
+
+class OrderHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        status = 200 if self.path == "/orders/42" else 404
+        payload = {"id": 42, "state": "paid"} if status == 200 else {"error": "order not found"}
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+def fetch_order(session, base_url, order_id):
+    try:
+        response = session.get(f"{base_url}/orders/{order_id}", timeout=(1, 1))
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as error:
+        detail = error.response.json().get("error", "unknown error")
+        return {"status": error.response.status_code, "error": detail}
+    except requests.Timeout:
+        return {"error": "request timed out"}
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), OrderHandler)
+Thread(target=server.serve_forever, daemon=True).start()
+try:
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    with requests.Session() as session:
+        print(fetch_order(session, base_url, 42))
+        print(fetch_order(session, base_url, 7))
+finally:
+    server.shutdown()
+    server.server_close()
+```
+
+```text
+{'id': 42, 'state': 'paid'}
+{'status': 404, 'error': 'order not found'}
+```
+
+<TryToBreak items={['a 404 response containing HTML', 'a 204 response with no body', 'a server that stalls after sending headers']} />
+
+The example assumes that error responses are JSON because its local server makes that contract explicit. When a real client cannot rely on this, handle media type and `JSONDecodeError` separately on the error path, and cap any response excerpt retained for logs.
+
+It catches `Timeout` because the caller maps connection and read timeouts to the same result. Catch `ConnectTimeout` and `ReadTimeout` separately when recovery differs: the former commonly occurs before delivery, while the latter can leave the server-side result unknown.
+
+### Retrying only replayable calls
+
+The final local server returns `503` twice, then succeeds. The adapter retries only `GET` and permits two retries, producing three total attempts.
+
+```python run title="retry_get.py"
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
+
+class BusyHandler(BaseHTTPRequestHandler):
+    attempts = 0
+
+    def do_GET(self):
+        BusyHandler.attempts += 1
+        status = 503 if BusyHandler.attempts < 3 else 200
+        body = b"busy" if status == 503 else b"ready"
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+retry = Retry(
+    total=2,
+    status_forcelist={503},
+    allowed_methods={"GET"},
+    backoff_factor=0,
+)
+server = ThreadingHTTPServer(("127.0.0.1", 0), BusyHandler)
+Thread(target=server.serve_forever, daemon=True).start()
+try:
+    with requests.Session() as session:
+        session.mount("http://", HTTPAdapter(max_retries=retry))
+        url = f"http://127.0.0.1:{server.server_port}/health"
+        response = session.get(url, timeout=(1, 1))
+        print(response.status_code, response.text)
+        print("attempts:", BusyHandler.attempts)
+finally:
+    server.shutdown()
+    server.server_close()
+```
+
+```text
+200 ready
+attempts: 3
+```
+
+A production configuration usually needs nonzero backoff and jitter, plus contract-specific handling of `Retry-After`. This example uses zero backoff only to finish the local run immediately; it is not a production policy to copy.
+
+`Retry.total` caps retries after the first attempt rather than total calls. Even when an HTTP method is <Term id="idempotency">idempotent</Term> by specification, the client must confirm that the server implementation, body, and preconditions really permit replay.
+
+## Pitfalls
+
+### Omitting a timeout or treating it as a total deadline
+
+> [!PITFALL]
+> Requests has no timeout by default. One numeric value sets both connect and read timeouts, but a read timeout measures how long the socket receives no bytes; it is not a deadline for the whole download.
+
+**Fix:** pass an explicit `(connect_timeout, read_timeout)` to every external call and enforce the operation's overall deadline at a higher layer. Count retries, backoff, DNS, connection setup, and reads against one call budget.
+
+### Parsing JSON before checking status
+
+> [!PITFALL]
+> `response.json()` can successfully decode a `500` error response and can fail on `204`, an HTML gateway error, or truncated content. Parseable JSON and business success are separate facts.
+
+**Fix:** interpret the status against the contract first, then check the media type and parse the corresponding schema. Give error responses their own schema, and retain only bounded, redacted diagnostics when parsing fails.
+
+### Retrying writes unconditionally
+
+> [!PITFALL]
+> Copying `allowed_methods=None` into `Retry` makes every method eligible for replay. If a `POST` created an order but its response was lost, the second call may create another one.
+
+**Fix:** retry only methods explicitly known to be replayable. When a create operation must be retried, establish a real idempotency protocol, such as a caller-stable key with atomic server-side deduplication and replay of the stored result.
+
+### Disabling TLS verification to silence an error
+
+> [!PITFALL]
+> `verify=False` stops certificate verification, so the client cannot authenticate its peer. Hiding `InsecureRequestWarning` hides the signal without restoring authentication.
+
+**Fix:** keep verification enabled. Configure a controlled CA bundle for a private certificate authority; repair name, validity, or chain failures instead of bypassing them at the call site.
+
+### Leaking session state or streamed responses
+
+> [!PITFALL]
+> A long-lived global `Session` can carry cookies, authentication, or default headers into unrelated calls. A `stream=True` response that is neither consumed nor closed also holds a connection and weakens pool reuse.
+
+**Fix:** create sessions at a clear authentication and ownership boundary, then close them with a context manager. Put streamed reads in `with` too, enforce a maximum size, and either consume or explicitly close every response.
+
+### Fetching an untrusted URL
+
+> [!PITFALL]
+> Passing user input directly to `requests.get()` can cause <Term id="server-side-request-forgery">server-side request forgery (SSRF)</Term>. An attacker may reach loopback, private networks, cloud metadata, or use a redirect to evade the first check.
+
+**Fix:** prefer a fixed origin and controlled paths. If target addresses are required, restrict schemes and ports, resolve and validate hosts and IPs, revalidate every redirect, and use an outbound network policy as a second boundary.
+
+## In the AI era
+
+**What generated code gets wrong here**
+
+Models often emit a one-line call without `timeout`, then use `except Exception: return None` to collapse timeouts, DNS failures, TLS errors, and HTTP responses into one result. They also call `response.json()` before `raise_for_status()`, put every method into the retry set, or add `verify=False` to cure a local certificate problem. A subtler variant uses one global `Session` carrying an administrator token for user-supplied URLs, or reads only a prefix from `stream=True` without closing the response.
+
+**Ask your AI to check**
+
+- List the connect timeout, read timeout, overall deadline, and maximum attempts for every call, then calculate the worst-case call budget.
+- Explain why each retry is replay-safe by HTTP method, naming the server-side idempotency mechanism and `Retry-After` behavior.
+- Trace trust boundaries for URLs, redirects, proxies, cookies, and `Authorization`, and identify where every response closes on every path.
+
+**Review checklist**
+
+- Failure paths distinguish transport, HTTP, decoding, and domain errors, and logs are bounded and redacted.
+- Every call has timeouts, streamed responses are consumed in context, and sessions do not leak state across authentication tenants.
+- TLS verification remains enabled, untrusted targets and every redirect are validated, and retries cover only replayable operations.
+
+**Prompt vocabulary**
+
+Use the exact terms `prepared request`, `connect timeout`, `read timeout`, `total deadline`, `connection pool`, `idempotency`, `retry budget`, `response streaming`, `certificate verification`, and `SSRF allowlist`. Ask for a failure matrix and resource lifecycle instead of vaguely asking to "add error handling."
+
+<Depth level="deep">
+
+## Timeout budgets are not one number
+
+The connect timeout covers waiting to establish a network connection, while the read timeout covers waiting for the next response bytes after connecting. `timeout=(2, 5)` does not cap the entire call at seven seconds: address resolution, attempts against multiple addresses, redirects, a long response that keeps delivering small chunks, and retries can all extend wall-clock time.
+
+Call chains amplify budgets too. If an upstream call has three attempts and its downstream call also has three, the worst path can trigger many rounds of work while holding connections. Allocate time inward from a user-visible deadline so each layer knows what remains instead of choosing its own generous fixed timeout.
+
+No single Requests parameter substitutes for a complete wall-clock deadline. When a hard total limit matters, enforce cancellation at the task or process layer and ensure that cancellation paths close responses and sessions. Timing out while waiting for a background call in a thread does not mean that network call has stopped.
+
+After a read timeout, whether the server completed an operation may be unknown. Reads can be fetched again according to policy; writes need an idempotency key, status query, or domain reconciliation path. A missing client response is not evidence that the server did nothing.
+
+## Connection reuse depends on response lifetime
+
+A `Session` reuses connections to the same host, avoiding repeated TCP and TLS setup. It is not a promise of unlimited concurrency, and it does not cache responses. Pool size, blocking behavior, and adapter mount scope need configuration at a service boundary.
+
+With the default `stream=False`, Requests reads the body before returning, so the connection can normally return to the pool. With `stream=True`, callers see the headers while the body still owns the underlying connection; consuming the content or calling `close()` makes reliable reuse possible.
+
+A context manager closes resources on exceptional paths too. Downloads also need limits for both declared and observed size because `Content-Length` can be absent or untrusted. A decoded compressed body may be much larger than the bytes transferred on the wire.
+
+A session keeps cookies and default authentication, so its reuse boundary cannot be based on hostname alone. Two tenants calling the same API should not necessarily share one session object. Passing credentials as explicit dependencies is easier to review than repeatedly mutating `headers` on a process-wide singleton.
+
+## Retries must follow HTTP semantics
+
+A retry starts when the client is uncertain about the previous result. A connection that never opened, an interrupted read, and a `503` response all look like failure, but they carry different knowledge about whether the server received and handled the request. Recovery should follow that uncertainty, not only the exception class name.
+
+urllib3 `Retry` uses `allowed_methods` and `status_forcelist` to select response retries. Its default method set favors methods that are idempotent in HTTP semantics, but the application still has to ensure that the endpoint honors those semantics. A `GET` endpoint with an irreversible side effect is not repaired by client configuration.
+
+Backoff keeps clients from applying immediate repeated pressure, while jitter helps them avoid synchronizing again. When a server supplies `Retry-After`, honor it according to the API contract while retaining a client-side maximum wait and total deadline. A server's requested delay does not automatically override the caller's business limit.
+
+A replayable `POST` requires end-to-end design. The caller creates one stable idempotency key when the logical operation begins and preserves it across network attempts; the server records the key and result in the same consistency boundary as the side effect. Generating a fresh random key on every attempt provides no deduplication.
+
+## An input URL is a security boundary
+
+A server process has network reach and credentials that an ordinary user's browser does not. Treat outbound calls as an SSRF boundary whenever untrusted input can change the scheme, host, port, or redirect path. String-prefix checks are easy to bypass with user-info sections, encoding differences, or lookalike domains.
+
+Normalize and parse a URL before deciding against allowed schemes, hosts, and ports. If private and local addresses are forbidden, inspect DNS results and account for address changes between resolution and connection. The safest design is still to accept a business resource identifier and map it to a fixed origin on the server.
+
+A redirect introduces a new target, so validating the initial URL does not secure the whole chain. Disable automatic redirects and validate each hop, or use a transport layer that can only reach approved origins. Cap redirect counts as well to avoid loops and needless resource use.
+
+Proxy environment variables are routing input too. When a deployment must not inherit `HTTP_PROXY`, `HTTPS_PROXY`, or `NO_PROXY`, configure `Session.trust_env` explicitly and verify it in the target environment. A proxy changes the network path and may observe any traffic not protected by end-to-end TLS.
+
+</Depth>
+
+<Checkpoint id="backend/requests" />
+
+## Further reading
+
+- [Requests quickstart](https://requests.readthedocs.io/en/latest/user/quickstart/)
+- [Requests advanced usage](https://requests.readthedocs.io/en/latest/user/advanced/)
+- [Requests developer interface](https://requests.readthedocs.io/en/latest/api/)
+- [urllib3 `Retry` reference](https://urllib3.readthedocs.io/en/stable/reference/urllib3.util.html#urllib3.util.Retry)
