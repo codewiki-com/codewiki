@@ -8,10 +8,11 @@ import {
   type Flashcards,
   type Progress,
 } from '@/lib/prefs';
+import type { PublicQuizItem } from '@/lib/practice';
 import type { QuizItem } from '@/schemas/quiz';
 import type { Locale } from '@/lib/urls';
 
-export type { Locale, QuizItem };
+export type { Locale, PublicQuizItem, QuizItem };
 
 export type Issue = Extract<QuizItem, { type: 'spotbug' | 'review' }>['issues'][number];
 export type OptionItem = Extract<QuizItem, { type: 'mcq' | 'predict' }>;
@@ -21,6 +22,48 @@ export interface GradeLinesResult {
   missed: Issue[];
   score: number;
   total: number;
+}
+
+const answerBanks = new Map<string, Promise<QuizItem[]>>();
+
+/** Loads an answer bank at most once per page, then selects the item the controller owns. */
+export async function answerItem(
+  bank: string,
+  item: QuizItem | PublicQuizItem,
+  loadAnswers: boolean,
+): Promise<QuizItem> {
+  if (!loadAnswers) return item as QuizItem;
+
+  const url = `/api/quizzes/${bank}.answers.json`;
+  let request = answerBanks.get(url);
+  if (!request) {
+    request = fetch(url).then(async (response) => {
+      if (!response.ok) throw new Error(`answer bank returned ${response.status}`);
+      const value: unknown = await response.json();
+      if (!value || typeof value !== 'object' || !('items' in value) || !Array.isArray(value.items)) {
+        throw new Error('invalid answer bank');
+      }
+      return value.items as QuizItem[];
+    });
+    answerBanks.set(url, request);
+  }
+
+  const answer = (await request).find((candidate) => candidate.id === item.id);
+  if (!answer || answer.type !== item.type) throw new Error(`answer item ${item.id} is unavailable`);
+  return answer;
+}
+
+/** Announces an in-progress or failed remote answer request in the existing result region. */
+export function showAnswerStatus(root: HTMLElement, message: string, busy: boolean): void {
+  const result = root.querySelector<HTMLElement>('[data-result], [data-review-compare]');
+  if (!result) return;
+  const status = document.createElement('p');
+  status.className = busy ? 'answer-loading' : 'answer-error';
+  status.setAttribute('role', busy ? 'status' : 'alert');
+  status.textContent = message;
+  result.replaceChildren(status);
+  result.hidden = false;
+  root.toggleAttribute('aria-busy', busy);
 }
 
 /** Number-row shortcut for one of the at most nine rendered options. */

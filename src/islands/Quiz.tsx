@@ -1,37 +1,69 @@
 import { useSignal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
 import {
+  answerItem,
   gradeFill,
   gradeOptions,
   optionKey,
   persist,
   quizRoot,
+  showAnswerStatus,
   type Locale,
+  type PublicQuizItem,
   type QuizItem,
 } from '@/islands/quiz-shared';
 
 export interface QuizProps {
   bank: string;
-  item: QuizItem;
+  item: QuizItem | PublicQuizItem;
   locale: Locale;
   labels: Record<string, string>;
   onDone?: (score: number, total: number) => void;
   /** Checkpoints aggregate persistence after the last item instead. */
   persistResult?: boolean;
+  /** Standalone katas fetch their answer bank only after the learner commits an answer. */
+  loadAnswers?: boolean;
 }
 
-function showAnswer(root: HTMLElement, score: number, total: number): void {
-  const template = root.querySelector<HTMLTemplateElement>('template[data-answer]');
+function showAnswer(
+  root: HTMLElement,
+  item: Extract<QuizItem, { type: 'mcq' | 'predict' | 'fill' }>,
+  locale: Locale,
+  labels: Record<string, string>,
+  score: number,
+  total: number,
+): void {
   const result = root.querySelector<HTMLElement>('[data-result]');
-  if (!template || !result) return;
-  result.replaceChildren(template.content.cloneNode(true));
+  if (!result) return;
+  const answer = document.createElement('div');
+  answer.className = 'kata-answer';
+  const heading = document.createElement('span');
+  heading.className = 'lbl';
+  heading.textContent = labels.answer ?? '';
+  const value = document.createElement('p');
+  value.textContent =
+    item.type === 'fill' ? item.answer : (item.options.find((option) => option.correct)?.text[locale] ?? '');
+  const explanation = document.createElement('p');
+  explanation.dataset.explanation = '';
+  explanation.textContent = item.explanation[locale];
+  answer.append(heading, value, explanation);
+  result.replaceChildren(answer);
   result.hidden = false;
   result.dataset.score = String(score);
   result.dataset.total = String(total);
+  root.removeAttribute('aria-busy');
 }
 
 /** Multiple-choice, predict-the-output, and fill-in answer controller for a server KataShell. */
-export default function Quiz({ bank, item, labels, onDone, persistResult = true }: QuizProps) {
+export default function Quiz({
+  bank,
+  item,
+  locale,
+  labels,
+  onDone,
+  persistResult = true,
+  loadAnswers = false,
+}: QuizProps) {
   const mount = useRef<HTMLDivElement>(null);
   const choice = useSignal<number | null>(null);
   const answered = useSignal(false);
@@ -47,6 +79,7 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
     const form = root.querySelector<HTMLFormElement>('[data-fill-form]');
     const input = root.querySelector<HTMLInputElement>('[data-fill]');
     let persisted = false;
+    let loading = false;
 
     const paintChoice = () => {
       for (const [index, option] of options.entries()) {
@@ -62,18 +95,36 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
       paintChoice();
     };
 
-    const reveal = () => {
-      if (answered.value) return;
+    const reveal = async () => {
+      if (answered.value || loading) return;
+      if (item.type !== 'fill' && choice.value === null) return;
+      if (item.type === 'fill' && !input) return;
+
+      loading = true;
+      root.dataset.state = 'loading';
+      if (submit) submit.disabled = true;
+      showAnswerStatus(root, labels.loadingAnswer ?? '', true);
+
+      let answer: QuizItem;
+      try {
+        answer = await answerItem(bank, item, loadAnswers);
+      } catch {
+        loading = false;
+        root.dataset.state = 'idle';
+        if (submit) submit.disabled = false;
+        showAnswerStatus(root, labels.answersUnavailable ?? '', false);
+        return;
+      }
+      if (answer.type !== 'mcq' && answer.type !== 'predict' && answer.type !== 'fill') return;
+
       let score: number;
 
-      if (item.type === 'fill') {
-        if (!input) return;
-        score = Number(gradeFill(item, input.value));
-        input.classList.add(score ? 'ok' : 'bad');
-        input.disabled = true;
+      if (answer.type === 'fill') {
+        score = Number(gradeFill(answer, input!.value));
+        input!.classList.add(score ? 'ok' : 'bad');
+        input!.disabled = true;
       } else {
-        if (choice.value === null) return;
-        const grade = gradeOptions(item, choice.value);
+        const grade = gradeOptions(answer, choice.value!);
         score = Number(grade.correct);
         for (const [index, option] of options.entries()) {
           option.classList.remove('sel');
@@ -86,10 +137,10 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
       answered.value = true;
       root.dataset.state = 'answered';
       if (submit) submit.hidden = true;
-      showAnswer(root, score, 1);
+      showAnswer(root, answer, locale, labels, score, 1);
       if (!persisted) {
         persisted = true;
-        if (persistResult) persist(bank, item.id, score, 1, item, new Date());
+        if (persistResult) persist(bank, item.id, score, 1, answer, new Date());
         onDone?.(score, 1);
       }
     };
@@ -105,7 +156,8 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
       event.preventDefault();
       reveal();
     };
-    submit?.addEventListener('click', reveal);
+    const onReveal = () => void reveal();
+    submit?.addEventListener('click', onReveal);
     form?.addEventListener('submit', onSubmit);
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -122,7 +174,7 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
       }
       if (event.key === 'Enter' && item.type !== 'fill') {
         event.preventDefault();
-        reveal();
+        void reveal();
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -130,11 +182,11 @@ export default function Quiz({ bank, item, labels, onDone, persistResult = true 
 
     return () => {
       for (const cleanup of optionCleanups) cleanup();
-      submit?.removeEventListener('click', reveal);
+      submit?.removeEventListener('click', onReveal);
       form?.removeEventListener('submit', onSubmit);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [bank, item, labels, onDone, persistResult, answered, choice]);
+  }, [bank, item, labels, loadAnswers, locale, onDone, persistResult, answered, choice]);
 
   return <div ref={mount} class="quiz-mount" aria-hidden="true" data-quiz-controller="quiz" />;
 }

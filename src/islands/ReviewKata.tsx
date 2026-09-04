@@ -4,23 +4,27 @@ import { formatCount } from '@/i18n';
 import { enqueueCards, quizCardId } from '@/lib/score';
 import { EMPTY_FLASHCARDS, KEYS, readStore, writeStore, type Flashcards } from '@/lib/prefs';
 import {
+  answerItem,
   fillSlots,
   gradeLines,
   mountCodeLines,
   persist,
   quizRoot,
+  showAnswerStatus,
   type GradeLinesResult,
   type Issue,
   type Locale,
+  type PublicQuizItem,
   type QuizItem,
 } from '@/islands/quiz-shared';
 
 export interface ReviewKataProps {
   bank: string;
-  item: QuizItem;
+  item: QuizItem | PublicQuizItem;
   locale: Locale;
   labels: Record<string, string>;
   onDone?: (score: number, total: number) => void;
+  loadAnswers?: boolean;
 }
 
 function inIssue(line: number, issue: Issue): boolean {
@@ -96,7 +100,14 @@ function scoreRing(score: number, total: number, label: string): SVGSVGElement {
 }
 
 /** Four-stage code-review controller; learner comments intentionally live only in this instance. */
-export default function ReviewKata({ bank, item, locale, labels, onDone }: ReviewKataProps) {
+export default function ReviewKata({
+  bank,
+  item,
+  locale,
+  labels,
+  onDone,
+  loadAnswers = false,
+}: ReviewKataProps) {
   const mount = useRef<HTMLDivElement>(null);
   const step = useSignal(1);
   const marked = useSignal<number[]>([]);
@@ -113,7 +124,9 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
     const values = new Map<number, string>();
     const addedNotes: HTMLElement[] = [];
     let grade: GradeLinesResult | undefined;
+    let loaded: Extract<QuizItem, { type: 'review' }> | undefined;
     let persisted = false;
+    let loading = false;
 
     const mounted = mountCodeLines(
       root,
@@ -180,17 +193,17 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       }
     };
 
-    const appendReviewNotes = (result: GradeLinesResult) => {
+    const appendReviewNotes = (answer: Extract<QuizItem, { type: 'review' }>, result: GradeLinesResult) => {
       const found = new Set(result.found);
       for (const line of mounted.lines) {
-        const issue = item.issues.find((candidate) => inIssue(line.line, candidate));
+        const issue = answer.issues.find((candidate) => inIssue(line.line, candidate));
         line.row.classList.remove('marked');
         line.row.classList.toggle('hit', Boolean(issue && found.has(issue)));
         line.row.classList.toggle('miss', Boolean(issue && !found.has(issue)));
         line.marker.disabled = true;
       }
 
-      for (const issue of item.issues) {
+      for (const issue of answer.issues) {
         const anchor = mounted.lines.find((line) => line.line === (issue.lines ?? issue.line))?.row;
         if (!anchor) continue;
         const learner = marked.value
@@ -228,10 +241,26 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       }
     };
 
-    const renderCompare = () => {
+    const renderCompare = async () => {
       if (!compare) return;
-      grade = gradeLines(item, marked.value);
-      appendReviewNotes(grade);
+      loading = true;
+      root.dataset.state = 'loading';
+      if (next) next.disabled = true;
+      showAnswerStatus(root, labels.loadingAnswer ?? '', true);
+
+      try {
+        const answer = await answerItem(bank, item, loadAnswers);
+        if (answer.type !== 'review') throw new Error('review answer is unavailable');
+        loaded = answer;
+      } catch {
+        loading = false;
+        root.dataset.state = 'idle';
+        showAnswerStatus(root, labels.answersUnavailable ?? '', false);
+        return;
+      }
+
+      grade = gradeLines(loaded, marked.value);
+      appendReviewNotes(loaded, grade);
       compare.replaceChildren();
       compare.hidden = false;
       compare.dataset.score = String(grade.score);
@@ -249,9 +278,9 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       score.append(summary);
       compare.append(score);
 
-      if (item.right) compare.append(panel(labels.modelRight ?? '', item.right[locale]));
+      if (loaded.right) compare.append(panel(labels.modelRight ?? '', loaded.right[locale]));
 
-      if (item.checklist.length) {
+      if (loaded.checklist.length) {
         const checklist = document.createElement('div');
         checklist.className = 'panel review-panel review-checklist';
         const heading = document.createElement('span');
@@ -259,12 +288,12 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
         heading.textContent = labels.checklist ?? '';
         checklist.append(heading);
         const found = new Set(grade.found);
-        for (const [index, entry] of item.checklist.entries()) {
+        for (const [index, entry] of loaded.checklist.entries()) {
           const row = document.createElement('label');
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
           checkbox.className = 'chk';
-          checkbox.checked = Boolean(item.issues[index] && found.has(item.issues[index]));
+          checkbox.checked = Boolean(loaded.issues[index] && found.has(loaded.issues[index]));
           checkbox.disabled = true;
           row.append(checkbox, document.createTextNode(entry[locale]));
           checklist.append(row);
@@ -272,9 +301,10 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
         compare.append(checklist);
       }
 
-      const template = root.querySelector<HTMLTemplateElement>('template[data-answer]');
-      const explanation = template?.content.querySelector<HTMLElement>('[data-explanation]');
-      if (explanation) compare.append(explanation.cloneNode(true));
+      const explanation = document.createElement('p');
+      explanation.dataset.explanation = '';
+      explanation.textContent = loaded.explanation[locale];
+      compare.append(explanation);
 
       if (grade.missed.length) {
         const add = document.createElement('button');
@@ -287,20 +317,22 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       }
 
       root.dataset.state = 'answered';
+      root.removeAttribute('aria-busy');
+      loading = false;
       if (!persisted) {
         persisted = true;
-        persist(bank, item.id, grade.score, grade.total, item, new Date());
+        persist(bank, item.id, grade.score, grade.total, loaded, new Date());
         onDone?.(grade.score, grade.total);
       }
     };
 
     const advance = () => {
-      if (step.value >= 4) return;
+      if (step.value >= 4 || loading) return;
       step.value += 1;
       if (step.value === 3) renderCommentFields();
       if (step.value === 4) {
         if (comments) comments.hidden = true;
-        renderCompare();
+        void renderCompare();
       }
       paintSteps();
     };
@@ -323,7 +355,7 @@ export default function ReviewKata({ bank, item, locale, labels, onDone }: Revie
       for (const added of addedNotes) added.remove();
       mounted.undo();
     };
-  }, [bank, item, labels, locale, onDone, marked, step]);
+  }, [bank, item, labels, loadAnswers, locale, onDone, marked, step]);
 
   return <div ref={mount} class="quiz-mount" aria-hidden="true" data-quiz-controller="review" />;
 }

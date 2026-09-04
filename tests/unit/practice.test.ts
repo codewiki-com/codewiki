@@ -179,12 +179,14 @@ describe('stripAnswers', () => {
         code: 'x = 1',
         lang: 'python',
         issues: [{ line: 1, kind: 'readability', note: localized('Name') }],
+        right: localized('One thing was right'),
+        checklist: [localized('Check every input')],
       },
     ]);
 
     const stripped = stripAnswers(source);
     const encoded = JSON.stringify(stripped);
-    for (const key of ['correct', 'answer', 'issues', 'explanation']) {
+    for (const key of ['correct', 'answer', 'issues', 'explanation', 'right', 'checklist']) {
       expect(encoded).not.toContain(`"${key}"`);
     }
     expect(stripped.items.map((item) => item.url)).toEqual([
@@ -194,6 +196,11 @@ describe('stripAnswers', () => {
       '/practice/spotbug/python/closures/spotbug/',
       '/practice/review/python/closures/review/',
     ]);
-    expect(stripped.items[0]!.options).toEqual([{ text: localized('A') }, { text: localized('B') }]);
+    expect(stripped.items[0]).toMatchObject({
+      type: 'mcq',
+      options: [{ text: localized('A') }, { text: localized('B') }],
+    });
+    expect(stripped.items[3]).toMatchObject({ type: 'spotbug', issueCount: 1 });
+    expect(stripped.items[4]).toMatchObject({ type: 'review', issueCount: 1 });
   });
 });

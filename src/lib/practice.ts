@@ -38,8 +38,37 @@ export interface QuizBank {
 export interface PublicQuizBank {
   id: string;
   topic: string;
-  items: Record<string, unknown>[];
+  items: Array<PublicQuizItem & { url: string }>;
 }
+
+type PublicItemBase = Pick<QuizItem, 'id' | 'type' | 'title' | 'prompt' | 'difficulty' | 'tags' | 'minutes'>;
+
+/** The learner-visible part of a quiz item. Keep this explicit so new schema fields stay private. */
+export type PublicQuizItem =
+  | (PublicItemBase & {
+      type: 'mcq';
+      options: Array<{ text: Localized }>;
+    })
+  | (PublicItemBase & {
+      type: 'predict';
+      code: string;
+      lang: string;
+      options: Array<{ text: Localized }>;
+    })
+  | (PublicItemBase & {
+      type: 'spotbug';
+      code: string;
+      lang: string;
+      issueCount: number;
+    })
+  | (PublicItemBase & {
+      type: 'review';
+      code: string;
+      lang: string;
+      task?: Localized;
+      issueCount: number;
+    })
+  | (PublicItemBase & { type: 'fill' });
 
 export function practiceUrl(
   item: Pick<PracticeItem, 'type' | 'track' | 'slug' | 'item'>,
@@ -79,24 +108,53 @@ export async function listPracticeItems(): Promise<PracticeItem[]> {
   return catalogueFrom(banks);
 }
 
+/** Selects only learner-visible fields; answer and future author-only fields are omitted by default. */
+export function stripQuizItem(item: QuizItem): PublicQuizItem {
+  const base: PublicItemBase = {
+    id: item.id,
+    type: item.type,
+    title: item.title,
+    prompt: item.prompt,
+    difficulty: item.difficulty,
+    tags: item.tags,
+    minutes: item.minutes,
+  };
+
+  if (item.type === 'mcq') {
+    return { ...base, type: item.type, options: item.options.map(({ text }) => ({ text })) };
+  }
+  if (item.type === 'predict') {
+    return {
+      ...base,
+      type: item.type,
+      code: item.code,
+      lang: item.lang,
+      options: item.options.map(({ text }) => ({ text })),
+    };
+  }
+  if (item.type === 'spotbug') {
+    return { ...base, type: item.type, code: item.code, lang: item.lang, issueCount: item.issues.length };
+  }
+  if (item.type === 'review') {
+    return {
+      ...base,
+      type: item.type,
+      code: item.code,
+      lang: item.lang,
+      task: item.task,
+      issueCount: item.issues.length,
+    };
+  }
+  return { ...base, type: item.type };
+}
+
 /** Removes every answer-bearing field before a quiz bank reaches a public endpoint. */
 export function stripAnswers(bank: QuizBank): PublicQuizBank {
   const [track, slug] = bank.id.split('/');
-  const items = bank.data.items.map((item: QuizItem) => {
-    const stripped: Record<string, unknown> = { ...item };
-    delete stripped.explanation;
-
-    if (item.type === 'mcq' || item.type === 'predict') {
-      stripped.options = item.options.map((option) => ({ text: option.text }));
-    } else if (item.type === 'fill') {
-      delete stripped.answer;
-    } else {
-      delete stripped.issues;
-    }
-
-    stripped.url = practiceUrl({ type: item.type, track, slug, item: item.id }, 'en');
-    return stripped;
-  });
+  const items = bank.data.items.map((item: QuizItem) => ({
+    ...stripQuizItem(item),
+    url: practiceUrl({ type: item.type, track, slug, item: item.id }, 'en'),
+  }));
 
   return { id: bank.id, topic: bank.data.topic, items };
 }
