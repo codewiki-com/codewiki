@@ -21,4 +21,6 @@ export const P2B_NAV = false;
 export const P3_NAV = false;
 
 /** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
-export const P2_RULES = false;
+export const P2_RULES = true;
+
+// Task 14

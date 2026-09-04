@@ -11,6 +11,7 @@ import { getCollection, type CollectionEntry } from 'astro:content';
 
 import { isoDate, json, publicTopics, topicLinks } from '@/lib/api';
 import { topicMeta, type Topic } from '@/lib/content';
+import { extractRules } from '@/lib/rules';
 import type { Locale } from '@/lib/urls';
 
 /** A field that exists per locale. A missing twin leaves its side out entirely. */
@@ -24,6 +25,7 @@ interface Card {
   section: string;
   difficulty: string;
   terms: { id: string; en: string; zh: string; short: { en: string; zh: string } }[];
+  pitfalls: string[];
   prerequisites: string[];
   related: string[];
   url: PerLocale;
@@ -84,6 +86,10 @@ export const getStaticPaths = (async () => {
         const term = byTermId.get(termId);
         return term ? [{ id: term.id, en: term.data.en, zh: term.data.zh, short: term.data.short }] : [];
       }),
+      pitfalls: extractRules(primary.body ?? '', {
+        title: primary.data.title,
+        url: topicLinks(track, slug, 'en').url,
+      }).map((rule) => rule.text),
       prerequisites: data.prerequisites,
       related: data.related,
       url,

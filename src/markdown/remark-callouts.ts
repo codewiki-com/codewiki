@@ -34,7 +34,7 @@ type CalloutType = (typeof CALLOUT_TYPES)[number];
 const CALLOUT_TYPE_SET = new Set<string>(CALLOUT_TYPES);
 
 /** `[!TYPE]` on its own at the start of the blockquote's first paragraph. */
-const MARKER = /^\[!([A-Za-z]+)\][ \t]*\r?\n?/;
+export const MARKER = /^\[!([A-Za-z]+)\][ \t]*\r?\n?/;
 
 /** The label line rendered above the callout body. */
 function labelParagraph(type: CalloutType, locale: Locale): Paragraph {
