@@ -30,7 +30,7 @@ Read this first in any new session. Update it at every milestone and before star
 
 ## Active work (updated 2026-09-04 23:40 local)
 - **Routing:** Opus for insight-heavy content, reviews, complex merges; Codex for bulk mechanical work; running jobs never re-routed.
-- Running: Opus whole-site review on `main` (root checkout), report → `docs/superpowers/ledgers/2026-09-04-site-review.md`.
+- Running (3): Opus whole-site review on `main` (root checkout; report → `docs/superpowers/ledgers/2026-09-04-site-review.md`); Codex UI fixes on branch `fix-ui-real-content` (hero mock capped, wrapping track filter, path-map label clipping; design notes in `ledgers/2026-09-04-real-content-design-notes.md`); Opus content taxonomy pass on branch `fix-content-taxonomy` (sections, titles, duplicates; report → `ledgers/2026-09-04-taxonomy-pass.md`). Merge both fix branches into `main` after review, then act on the site-review findings, then deploy.
 - Branches: `p0-content-pipeline` (worktree kept for future tier-2 runs), `p2-learning-layer`, `p1-site-foundation` are merged; `p0-generate` worktree removed.
 - Resume rule: `git log --oneline -3`; Codex logs end with `end … exit=<code>` and `TASK DONE`/`TASK FAILED`.
 
