@@ -75,8 +75,7 @@ function wire(figure: HTMLElement): () => void {
 
   const lang = normalizeLang(figure.dataset.lang);
   if (!lang) {
-    // SQL and friends are marked runnable in the content but have no P1 runner. A button that
-    // cannot do anything is worse than no button, so it goes away.
+    // A button that cannot do anything is worse than no button, so unsupported fences hide it.
     button.hidden = true;
     out.hidden = true;
     return () => {
@@ -150,7 +149,10 @@ function wire(figure: HTMLElement): () => void {
     };
 
     try {
-      await run({ id: runId(), lang, code: readCode(pre) }, onEvent, { onStatus });
+      await run({ id: runId(), lang, code: readCode(pre), sourceLang: figure.dataset.lang }, onEvent, {
+        onStatus,
+        previewTarget: out,
+      });
     } catch (error) {
       if (isTimeout(error)) {
         writeFooter(out, label('code.timeout'));

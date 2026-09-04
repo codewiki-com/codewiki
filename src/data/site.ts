@@ -22,3 +22,6 @@ export const P3_NAV = false;
 
 /** Task 14 turns on the downloadable rules-pack card once its endpoints exist. */
 export const P2_RULES = false;
+
+// Task 13: append-only release switch for the playground route.
+export const P2B_NAV_TASK_13 = true;

@@ -32,6 +32,8 @@ export interface PromptContext {
   language: string;
   /** What the reader is assumed to know already; `explain` builds on it. */
   prerequisite?: string;
+  /** A surface-specific instruction that keeps the preset identity but narrows its action. */
+  presetInstruction?: string;
 }
 
 /** The language the answer must come back in, named in that language. */
@@ -69,10 +71,11 @@ const CUT_MARKER = ' […]';
 
 /** The prompt text for one preset, ready to be copied or handed to an assistant. */
 export function buildPrompt(context: PromptContext): string {
-  const { preset, locale, title, url, section, sectionText, language, prerequisite } = context;
+  const { preset, locale, title, url, section, sectionText, language, prerequisite, presetInstruction } =
+    context;
 
   const scope = section.trim() ? `, section "${section.trim()}"` : '';
-  const instruction = INSTRUCTIONS[preset]
+  const instruction = (presetInstruction ?? INSTRUCTIONS[preset])
     .replace('{prerequisite}', prerequisite?.trim() || DEFAULT_PREREQUISITE)
     .replace('{language}', language);
 

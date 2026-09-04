@@ -16,6 +16,9 @@ describe('normalizeLang', () => {
     expect(normalizeLang('typescript')).toBe('ts');
     expect(normalizeLang('py')).toBe('python');
     expect(normalizeLang('python')).toBe('python');
+    expect(normalizeLang('sql')).toBe('sql');
+    expect(normalizeLang('html')).toBe('html');
+    expect(normalizeLang('css')).toBe('html');
   });
 
   it('ignores case and surrounding space, because the id comes from fence meta', () => {
@@ -24,7 +27,6 @@ describe('normalizeLang', () => {
   });
 
   it('returns null for anything P1 cannot run', () => {
-    expect(normalizeLang('sql')).toBeNull();
     expect(normalizeLang('text')).toBeNull();
     expect(normalizeLang('')).toBeNull();
     expect(normalizeLang(undefined)).toBeNull();
