@@ -82,16 +82,16 @@ export default {
     'Quick shows the TL;DR and one example. Standard adds mechanics and pitfalls. Deep adds internals and edge cases.',
   'home.feature.3.title': 'One article, two languages',
   'home.feature.3.desc':
-    'English and Chinese topic pairs follow the same structure, with build checks for alignment. Read corresponding paragraphs side by side and compare the terminology.',
-  'home.feature.4.title': 'Practice from each topic',
+    'English and Chinese are the same text, paragraph for paragraph. Read them side by side and learn the terminology as you go.',
+  'home.feature.4.title': 'Practice that sticks',
   'home.feature.4.desc':
-    'Predict-the-output, spot-the-bug, checkpoint quizzes and spaced-repetition flashcards link back to the material they test.',
-  'home.feature.5.title': 'Formats for AI assistants',
+    'Predict-the-output, spot-the-bug, checkpoint quizzes and spaced-repetition flashcards built from what you read.',
+  'home.feature.5.title': 'Made for your AI too',
   'home.feature.5.desc':
-    'Topic pages have Markdown twins and an llms.txt index. Page actions prepare the selected context and a request for Claude or ChatGPT.',
+    'Every page has a Markdown twin and an llms.txt index. One click opens Claude or ChatGPT with the right section and a prompt that teaches.',
   'home.feature.6.title': 'Dated and versioned',
   'home.feature.6.desc':
-    'Each topic states the target version and verification date, so readers can judge whether the material is current for their environment.',
+    'Each topic states the language version it was checked against and when. Stale pages are flagged, not hidden.',
 
   'home.mode.learn.label': 'Learn',
   'home.mode.learn.title': 'Paths with a map',

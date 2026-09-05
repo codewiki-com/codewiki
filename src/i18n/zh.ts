@@ -75,15 +75,14 @@ export default {
   'home.feature.2.desc':
     '「速览」先给出 TL;DR 和一个示例；「标准」补充原理和易踩的坑；「深入」再讲内部机制与边界情况。',
   'home.feature.3.title': '一篇文章，两种语言',
-  'home.feature.3.desc':
-    '中英文主题采用相同结构，并由构建检查验证对齐。并排阅读对应段落，对照两种语言的专业术语。',
-  'home.feature.4.title': '与主题对应的练习',
-  'home.feature.4.desc': '输出预测题、找错题、阶段测验和间隔复习闪卡都会链接回它们所考查的内容。',
-  'home.feature.5.title': '供 AI 助手读取的格式',
+  'home.feature.3.desc': '英文与中文内容一致，逐段对应。并排阅读，顺手掌握专业术语。',
+  'home.feature.4.title': '真正记得住的练习',
+  'home.feature.4.desc': '根据阅读内容设计输出预测题、找错题、阶段测验和间隔复习闪卡。',
+  'home.feature.5.title': '你的 AI 也能读',
   'home.feature.5.desc':
-    '主题页面提供对应的 Markdown 和 llms.txt 索引。页面操作会为 Claude 或 ChatGPT 准备所选上下文与具体请求。',
+    '每个页面都有对应的 Markdown 和 llms.txt 索引。一键在 Claude 或 ChatGPT 中打开相关章节，并附上引导学习的提示词。',
   'home.feature.6.title': '注明日期与版本',
-  'home.feature.6.desc': '每个主题都会注明目标版本和验证日期，读者可据此判断内容是否适用于自己的环境。',
+  'home.feature.6.desc': '每个主题都会注明验证所用的语言版本和时间。过时页面会明确标记，不会隐藏。',
   'home.mode.learn.label': '学习',
   'home.mode.learn.title': '一图看清学习路径',
   'home.mode.learn.desc':
