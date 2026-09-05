@@ -427,20 +427,19 @@ test('the disclosure lists every runnable block and links to it', async ({ page 
   await expect(page.locator('figure#b1 .coderuntime')).toHaveText(/^recorded on Python \d+\.\d+\.\d+$/);
 });
 
-test('a topic whose output has drifted renders the partial state', async ({ page }) => {
+test('the repaired tuple output renders the verified state', async ({ page }) => {
   const sidecar = JSON.parse(readFileSync('reports/verify/python/tuples.json', 'utf8'));
-  expect(sidecar.blocks.matched).toBeLessThan(sidecar.blocks.executed);
+  expect(sidecar.blocks.matched).toBe(sidecar.blocks.executed);
 
   await page.goto('/python/tuples/');
   const panel = page.locator('.verify');
-  await expect(panel).toHaveAttribute('data-verify', 'partial');
-  await expect(panel.locator('.state')).toContainText(
-    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} matched`,
+  await expect(panel).toHaveAttribute('data-verify', 'verified');
+  await expect(panel.locator('.state')).toContainText('Verified');
+  await expect(panel.locator('.facts')).toContainText(
+    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} outputs matched`,
   );
-  // Drift is named, not hidden: the block that differs says so in the list.
-  await expect(panel.locator('.block-status.mismatched')).toHaveCount(
-    sidecar.blocks.executed - sidecar.blocks.matched,
-  );
+  await expect(panel.locator('.block-status.matched')).toHaveCount(sidecar.blocks.executed);
+  await expect(panel.locator('.block-status.mismatched')).toHaveCount(0);
 });
 
 test('a topic with nothing this machine can run says so rather than claiming a run', async ({ page }) => {
