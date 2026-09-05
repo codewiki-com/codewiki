@@ -5,6 +5,7 @@ import sitemap from '@astrojs/sitemap';
 import preact from '@astrojs/preact';
 import tailwindcss from '@tailwindcss/vite';
 
+import { LEGACY_REDIRECTS } from './src/data/redirects.ts';
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
 import { rehypeBlockIds } from './src/markdown/rehype-block-ids.ts';
 import { rehypeDepthHeadings } from './src/markdown/rehype-depth-headings.ts';
@@ -22,6 +23,10 @@ export default defineConfig({
   // Astro 7 defaults to 'jsx' whitespace handling, which drops line breaks between
   // inline elements. 'true' keeps the lossless v6 behaviour so authored prose is safe.
   compressHTML: true,
+  /* The same six 301s `public/_redirects` declares. The rule file is what a CDN serves; these
+     meta-refresh pages are what `astro preview` and any host without rule support serve, so an
+     old URL never dead-ends. `tests/unit/redirects.test.ts` keeps the two lists in step. */
+  redirects: { ...LEGACY_REDIRECTS },
   i18n: {
     locales: ['en', 'zh'],
     defaultLocale: 'en',
@@ -58,7 +63,12 @@ export default defineConfig({
       i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } },
       // Settings is `noindex` and search is a query interface, not a document: neither belongs
       // in the sitemap, and listing an unindexable URL is a Search Console warning.
-      filter: (page) => !/^\/(zh\/)?(settings|search)\/$/.test(new URL(page).pathname),
+      filter: (page) => {
+        const { pathname } = new URL(page);
+        // A 301 is not a document, and neither is a page marked noindex.
+        if (Object.hasOwn(LEGACY_REDIRECTS, pathname)) return false;
+        return !/^\/(zh\/)?(settings|search)\/$/.test(pathname);
+      },
     }),
   ],
   vite: { plugins: [tailwindcss()] },
