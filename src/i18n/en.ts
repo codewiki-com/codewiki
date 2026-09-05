@@ -166,7 +166,23 @@ export default {
   'about.contact.before':
     'To report an error, propose a topic, improve a translation, or contribute code, use the',
   'about.contact.link': 'Contribute',
-  'about.contact.after': ' link to open the codewiki repository.',
+  'about.contact.after': ' page.',
+
+  'contribute.title': 'Contribute to codewiki',
+  'contribute.description':
+    'Report a content error, correct a bilingual topic, or contribute to the codewiki project.',
+  'contribute.lead':
+    'Corrections are welcome. The contribution guide explains the editorial checks and review process for content and code changes.',
+  'contribute.guide': 'Read CONTRIBUTING.md',
+  'contribute.report.title': 'Report a content error',
+  'contribute.report.body':
+    'Tell us which page is affected, what is wrong, what you expected, and the runtime version you used.',
+  'contribute.report.link': 'Open the content-error form',
+  'contribute.licences.title': 'Licences',
+  'contribute.licences.body':
+    'Code and site content use separate licences. Contributions are accepted under the licence that applies to the files you change.',
+  'contribute.licences.code': 'Code: MIT License',
+  'contribute.licences.content': 'Content: Creative Commons Attribution-ShareAlike 4.0',
 
   'topic.level': 'level',
   'topic.time': 'time',

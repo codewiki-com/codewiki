@@ -12,6 +12,8 @@ const SAMPLES: { path: string; ld: string }[] = [
   { path: '/zh/', ld: 'WebSite' },
   { path: '/about/', ld: 'BreadcrumbList' },
   { path: '/zh/about/', ld: 'BreadcrumbList' },
+  { path: '/contribute/', ld: 'BreadcrumbList' },
+  { path: '/zh/contribute/', ld: 'BreadcrumbList' },
   { path: '/python/', ld: 'Course' },
   { path: '/python/closures/', ld: 'TechArticle' },
   { path: '/zh/python/closures/', ld: 'TechArticle' },
@@ -26,6 +28,19 @@ test('the sitemap index points at a child sitemap', async ({ request }) => {
 
   const body = await res.text();
   expect(body).toContain('<loc>https://codewiki.com/sitemap-0.xml</loc>');
+});
+
+test('contribution pages link the guide, issue form and both licences on main', async ({ page }) => {
+  for (const path of ['/contribute/', '/zh/contribute/']) {
+    await page.goto(path);
+    const links = await page
+      .locator('main a')
+      .evaluateAll((anchors) => anchors.map((anchor) => (anchor as HTMLAnchorElement).href));
+    expect(links).toContain('https://github.com/codewiki-com/codewiki/blob/main/CONTRIBUTING.md');
+    expect(links).toContain('https://github.com/codewiki-com/codewiki/issues/new?template=content-error.yml');
+    expect(links).toContain('https://github.com/codewiki-com/codewiki/blob/main/LICENSE');
+    expect(links).toContain('https://github.com/codewiki-com/codewiki/blob/main/LICENSE-CONTENT.md');
+  }
 });
 
 test('the child sitemap carries both locales and their alternates', async ({ request }) => {

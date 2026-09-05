@@ -37,3 +37,14 @@ pnpm lint && pnpm check && pnpm test && pnpm build && pnpm check:links && pnpm t
 
 Developer documentation lives in `docs/dev/`, including the
 [learning-layer guide](docs/dev/learning-layer.md) and [deployment notes](docs/dev/deploy.md).
+
+## Contributing
+
+Corrections and code contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+bilingual editorial workflow, example-execution requirement, and project gates.
+
+## Licence
+
+Source code is available under the [MIT License](LICENSE). Prose and other editorial content under
+`src/content/**`, `content/**`, and `docs/design/**` is licensed under
+[CC BY-SA 4.0](LICENSE-CONTENT.md).
