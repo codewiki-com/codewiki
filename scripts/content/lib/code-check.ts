@@ -354,7 +354,7 @@ async function checkWith(binary: string, argv: string[], options: ToolOptions): 
   });
 }
 
-async function withTempDir(run: (dir: string) => Promise<FenceCheck>): Promise<FenceCheck> {
+async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), 'code-check-'));
   try {
     return await run(dir);
@@ -434,7 +434,7 @@ function classify(language: 'java' | 'cpp', result: FenceCheck): FenceCheck {
   return syntactic ? result : skip('fragment');
 }
 
-interface ProcessRun {
+export interface ProcessRun {
   status: number | null;
   stdout: string;
   stderr: string;
@@ -443,11 +443,12 @@ interface ProcessRun {
 }
 
 /** Run a child process with `stdin` piped in, capped at {@link TOOL_TIMEOUT_MS}. */
-function runProcess(argv: string[], stdin: string): Promise<ProcessRun> {
+function runProcess(argv: string[], stdin: string, cwd?: string): Promise<ProcessRun> {
   return new Promise((resolve) => {
     const child = spawn(argv[0], argv.slice(1), {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PATH: searchPath() },
+      ...(cwd === undefined ? {} : { cwd }),
     });
     let stdout = '';
     let stderr = '';
@@ -497,4 +498,313 @@ function which(binary: string): boolean {
     });
   whichCache.set(key, found);
   return found;
+}
+
+// ---------------------------------------------------------------------------
+// Output verification
+// ---------------------------------------------------------------------------
+
+/**
+ * The second half of this module — docs/design/verification-panel.md.
+ *
+ * The checks above answer "does this parse?"; the ones below answer the question the
+ * verification panel puts on every topic page: "does the output printed under this
+ * example still come out of a real interpreter?". A `run` fence followed by a ```text
+ * fence is a recorded observation, so the block is executed here and its stdout compared
+ * with what the page claims. Anything that cannot be reproduced on this machine — a
+ * browser-only runner (`html`, `sql`), a toolchain that is not installed, a fence with no
+ * recorded output, an explicit `nocheck` — is reported as `skipped`, never as matched, so
+ * the panel can never claim more than was actually run.
+ */
+
+/** Fence languages that hold the recorded output of the fence above them. */
+const OUTPUT_FENCES = new Set(['text', 'plaintext', 'txt']);
+
+/** One `run` fence and the output the page records for it. */
+export interface RunnableBlock {
+  /** `b1`, `b2`, … in document order; the anchor the panel and the codebox share. */
+  id: string;
+  /** 1-based line of the opening fence. */
+  line: number;
+  /** Info-string language, lowercased. */
+  lang: string;
+  /** `title="…"` from the fence meta, or the empty string. */
+  title: string;
+  code: string;
+  /** The ```text fence directly below, when there is one. */
+  expected?: string;
+  /** `nocheck` on the fence: the author says this one is not reproducible. */
+  nocheck: boolean;
+}
+
+/** The interpreter that executed a block, with the patch version it reported. */
+export interface RuntimeInfo {
+  /** Display name, e.g. `Python`. */
+  name: string;
+  /** Patch version as the tool reported it, e.g. `3.14.3`. */
+  version: string;
+  /** The binary that ran, e.g. `python3.14`. */
+  tool: string;
+}
+
+export type BlockStatus = 'matched' | 'mismatched' | 'skipped';
+
+export interface BlockResult {
+  id: string;
+  title: string;
+  lang: string;
+  status: BlockStatus;
+  /** Present when the block was executed. */
+  runtime?: RuntimeInfo;
+  /** Why it was skipped, or how the run differed. */
+  reason?: string;
+}
+
+export interface OutputVerification {
+  /** The runtime that executed most of the blocks, or `null` when none ran. */
+  runtime: RuntimeInfo | null;
+  blocks: { runnable: number; executed: number; matched: number; skipped: number };
+  results: BlockResult[];
+}
+
+/** Lines a fence body occupies; an empty body occupies none. */
+function bodyLines(code: string): number {
+  return code === '' ? 0 : code.split('\n').length;
+}
+
+/** True when nothing but blank lines separates line `after` from line `before`. */
+function blankBetween(lines: string[], after: number, before: number): boolean {
+  return lines.slice(after, before - 1).every((line) => line.trim() === '');
+}
+
+/**
+ * Every `run` fence of a document, each carrying the recorded output printed under it.
+ * The pairing rule is the one `rehype-codebox` renders with: a ```text fence separated
+ * from the example by nothing but blank lines is that example's output.
+ */
+export function runnableBlocks(md: string): RunnableBlock[] {
+  const all = fences(md);
+  const lines = md.split('\n');
+  const out: RunnableBlock[] = [];
+  for (const [index, fence] of all.entries()) {
+    if (!/(?:^|\s)run(?:\s|=|$)/.test(fence.meta) || /\brun=false\b/.test(fence.meta)) continue;
+    const next = all[index + 1];
+    const close = fence.line + bodyLines(fence.code) + 1;
+    const expected =
+      next && OUTPUT_FENCES.has(next.lang.trim().toLowerCase()) && blankBetween(lines, close, next.line)
+        ? next.code
+        : undefined;
+    out.push({
+      id: `b${out.length + 1}`,
+      line: fence.line,
+      lang: fence.lang.trim().toLowerCase(),
+      title: /title="([^"]*)"/.exec(fence.meta)?.[1] ?? '',
+      code: fence.code,
+      ...(expected === undefined ? {} : { expected }),
+      nocheck: /(?:^|\s)nocheck(?:\s|$)/.test(fence.meta),
+    });
+  }
+  return out;
+}
+
+/** How a fence language is executed here. `html` and `sql` have no entry: they run only in a browser. */
+const RUNTIMES: Record<string, { name: string; candidates: string[]; python?: boolean; ts?: boolean }> = {
+  python: { name: 'Python', candidates: ['python3.14', 'python3'], python: true },
+  js: { name: 'Node', candidates: ['node'] },
+  ts: { name: 'Node', candidates: ['node'], ts: true },
+};
+
+/** An `import`/`export` statement, or a top-level `await`: the source is an ES module. */
+const ES_MODULE = /^\s*(?:import[\s{(*'"]|export[\s{*]|await\s)/m;
+
+/**
+ * Node decides between the two module systems by file extension, and the corpus writes both:
+ * `const { createServer } = require("node:http")` is as common as `import`. Handing a CommonJS
+ * example to the ESM loader would report `require is not defined` and turn a working example
+ * into a mismatch, so the extension follows the source.
+ */
+function moduleSuffix(source: string): string {
+  if (ES_MODULE.test(source)) return '.mjs';
+  return /\brequire\s*\(/.test(source) ? '.cjs' : '.mjs';
+}
+
+const RUN_ALIASES: Record<string, keyof typeof RUNTIMES> = {
+  js: 'js',
+  javascript: 'js',
+  mjs: 'js',
+  node: 'js',
+  ts: 'ts',
+  typescript: 'ts',
+  py: 'python',
+  python: 'python',
+  python3: 'python',
+};
+
+/** The process runner the verifier spawns with; injected by the unit tests. */
+export type ProcessRunner = (argv: string[], stdin: string, cwd?: string) => Promise<ProcessRun>;
+
+export interface VerifyOptions {
+  /** Defaults to the real child-process runner. */
+  exec?: ProcessRunner;
+}
+
+/** `Python 3.14.3` / `v24.14.0` → `3.14.3` / `24.14.0`. */
+function parseVersion(text: string): string | null {
+  return /(\d+\.\d+(?:\.\d+)*)/.exec(text)?.[1] ?? null;
+}
+
+/**
+ * The first candidate binary that answers `--version`, with the version it reported.
+ * Cached per runner list, because 287 topics would otherwise spawn it thousands of times.
+ */
+async function resolveRuntime(
+  key: keyof typeof RUNTIMES,
+  exec: ProcessRunner,
+  cache: Map<string, RuntimeInfo | null>,
+): Promise<RuntimeInfo | null> {
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const spec = RUNTIMES[key];
+  let found: RuntimeInfo | null = null;
+  for (const tool of spec.candidates) {
+    const run = await exec([tool, '--version'], '');
+    if (run.missing || run.timedOut || run.status !== 0) continue;
+    const version = parseVersion(`${run.stdout} ${run.stderr}`);
+    if (!version) continue;
+    found = { name: spec.name, version, tool };
+    break;
+  }
+  cache.set(key, found);
+  return found;
+}
+
+/** Trailing spaces, CRLF and surrounding blank lines carry no information in a printed output. */
+export function normaliseOutput(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/, ''))
+    .join('\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '');
+}
+
+/**
+ * Run every runnable fence of a document and compare its output with the page.
+ *
+ * Never throws: a missing interpreter, a crashing example or an unparsable fence all end
+ * as a result row, because the caller's job is to record what happened, not to fail.
+ */
+export async function verifyOutputs(md: string, options: VerifyOptions = {}): Promise<OutputVerification> {
+  const exec = options.exec ?? runProcess;
+  const cache = new Map<string, RuntimeInfo | null>();
+  const results: BlockResult[] = [];
+  const blocks = runnableBlocks(md);
+  const used = new Map<string, { runtime: RuntimeInfo; count: number }>();
+
+  for (const block of blocks) {
+    const base = { id: block.id, title: block.title, lang: block.lang };
+    const key = RUN_ALIASES[block.lang];
+    if (block.nocheck) {
+      results.push({ ...base, status: 'skipped', reason: 'nocheck' });
+      continue;
+    }
+    if (!key) {
+      results.push({ ...base, status: 'skipped', reason: 'no-host-runtime' });
+      continue;
+    }
+    if (block.expected === undefined) {
+      results.push({ ...base, status: 'skipped', reason: 'no-recorded-output' });
+      continue;
+    }
+    const runtime = await resolveRuntime(key, exec, cache);
+    if (!runtime) {
+      results.push({ ...base, status: 'skipped', reason: 'no-host-runtime' });
+      continue;
+    }
+    const outcome = await runBlock(block, key, runtime, exec);
+    results.push({ ...base, ...outcome, runtime });
+    const seen = used.get(runtime.tool) ?? { runtime, count: 0 };
+    seen.count += 1;
+    used.set(runtime.tool, seen);
+  }
+
+  const executed = results.filter((result) => result.status !== 'skipped').length;
+  const matched = results.filter((result) => result.status === 'matched').length;
+  const dominant = [...used.values()].sort((a, b) => b.count - a.count)[0]?.runtime ?? null;
+  return {
+    runtime: dominant,
+    blocks: { runnable: blocks.length, executed, matched, skipped: blocks.length - executed },
+    // A block only names its own runtime when that is not the topic's: on a page whose
+    // examples are all one language the sidecar would otherwise repeat it a dozen times.
+    results: results.map((result) => {
+      if (!result.runtime || !dominant || result.runtime.tool !== dominant.tool) return result;
+      const rest = { ...result };
+      delete rest.runtime;
+      return rest;
+    }),
+  };
+}
+
+/** Execute one block and classify the comparison. */
+async function runBlock(
+  block: RunnableBlock,
+  key: keyof typeof RUNTIMES,
+  runtime: RuntimeInfo,
+  exec: ProcessRunner,
+): Promise<{ status: BlockStatus; reason?: string }> {
+  const spec = RUNTIMES[key];
+  let source = block.code;
+  if (spec.ts) {
+    try {
+      // No `format`: the transform strips the types and leaves whatever module system the
+      // example was written in, which `moduleSuffix` then names the file after.
+      source = (await esbuild.transform(block.code, { loader: 'ts', logLevel: 'silent' })).code;
+    } catch {
+      return { status: 'mismatched', reason: 'does not compile' };
+    }
+  }
+  const suffix = spec.python ? '.py' : moduleSuffix(source);
+
+  return withTempDir(async (dir) => {
+    const file = path.join(dir, `snippet${suffix}`);
+    await writeFile(file, source, 'utf8');
+    const run = await exec([runtime.tool, file], '', dir);
+    if (run.timedOut) return { status: 'skipped' as BlockStatus, reason: 'timed out' };
+    if (run.missing) return { status: 'skipped' as BlockStatus, reason: 'no-host-runtime' };
+    const expected = normaliseOutput(block.expected ?? '');
+    const stdout = normaliseOutput(run.stdout);
+    const stderr = normaliseOutput(run.stderr);
+    const candidates = [stdout, stderr === '' ? stdout : `${stdout}\n${stderr}`.trim(), stderr];
+    if (candidates.some((candidate) => normaliseOutput(candidate) === expected)) {
+      return { status: 'matched' as BlockStatus };
+    }
+    // An example that needs a package, a fixture file or a network peer this machine does
+    // not have was never executed in the sense the panel means; calling it a mismatch
+    // would report drift that the content does not have.
+    const unavailable = run.status === 0 ? undefined : environmentReason(`${run.stderr}\n${run.stdout}`);
+    if (unavailable) return { status: 'skipped' as BlockStatus, reason: unavailable };
+    return {
+      status: 'mismatched' as BlockStatus,
+      reason: run.status === 0 ? 'output differs' : 'exited with an error',
+    };
+  });
+}
+
+/** Diagnostics that say "not reproducible on this machine" rather than "the page is wrong". */
+const ENVIRONMENT = [
+  {
+    reason: 'missing-dependency',
+    test: /ModuleNotFoundError|ImportError|ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/,
+  },
+  { reason: 'missing-fixture', test: /ENOENT|FileNotFoundError|IsADirectoryError|PermissionError|EACCES/ },
+  {
+    reason: 'no-network',
+    test: /ECONNREFUSED|EAI_AGAIN|ENOTFOUND|getaddrinfo|fetch failed|ETIMEDOUT|URLError|socket\.gaierror/,
+  },
+] as const;
+
+/** The environment reason a failing run reports, or `undefined` when it failed on its own merits. */
+export function environmentReason(output: string): string | undefined {
+  return ENVIRONMENT.find((entry) => entry.test.test(output))?.reason;
 }

@@ -177,6 +177,23 @@ export default {
   'topic.readTime': '{count} at Standard depth',
   'topic.transparency': 'Drafted with AI · verified by running the code · reviewed {date}',
 
+  // The verification panel — docs/design/verification-panel.md.
+  'verify.verified': 'Verified',
+  'verify.partial': '{matched} of {executed} matched',
+  'verify.notRun': 'Not run',
+  'verify.outputs': '{matched} of {executed} outputs matched',
+  'verify.reviewed': 'Reviewed by an editor {date} · drafted with AI',
+  'verify.browser': 'In your browser: {runner} — outputs may differ from the recorded {runtime} run.',
+  'verify.browserSame': 'Runs in your browser with {runner}.',
+  'verify.browserEngine': "your browser's JavaScript engine",
+  'verify.details': 'Verification details',
+  'verify.recordedOn': 'recorded on {runtime}',
+  'verify.runsHere': 'runs here on {runner}',
+  'verify.noRunnable': 'No example on this page runs by itself.',
+  'verify.status.matched': 'matched',
+  'verify.status.mismatched': 'differs',
+  'verify.status.skipped': 'not run here',
+
   'depth.quick': 'Quick',
   'depth.standard': 'Standard',
   'depth.deep': 'Deep',

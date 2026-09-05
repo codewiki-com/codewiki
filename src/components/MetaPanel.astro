@@ -4,13 +4,16 @@
  * docs/design/mockups/Topic.dc.html: how hard the topic is, how long it takes at Standard depth,
  * which language version it was checked against, and whether it has been reviewed.
  *
- * The transparency line below the grid is spec §3: every page says out loud that it was drafted
- * with AI, verified by running the code, and reviewed by a human on a date.
+ * Below the grid sits the verification panel — docs/design/verification-panel.md: which exact
+ * interpreter ran the examples, how many of the recorded outputs came out the same, what the
+ * reader's own browser will run them on, and a disclosure listing every block. Nothing here is
+ * written by hand: it is the sidecar `pnpm content:check` wrote when it executed the page.
  */
 import Icon from '@/components/Icon.astro';
 import Tag from '@/components/Tag.astro';
 import { formatCount, t } from '@/i18n';
 import type { Difficulty } from '@/schemas/topic';
+import { browserLine, verifyState, type Verification } from '@/lib/verify';
 import type { Locale } from '@/lib/urls';
 
 interface Props {
@@ -24,9 +27,11 @@ interface Props {
   checked: Date;
   reviewed: Date | null;
   status: 'imported' | 'draft' | 'reviewed';
+  /** The checker's sidecar for this topic; `null` only for a topic that is not reviewed yet. */
+  verification: Verification | null;
 }
 
-const { locale, difficulty, minutes, version, checked, reviewed, status } = Astro.props;
+const { locale, difficulty, minutes, version, checked, reviewed, status, verification } = Astro.props;
 
 const DIFFICULTY_VARIANT: Record<Difficulty, 'ok' | 'acc' | 'warn'> = {
   beginner: 'ok',
@@ -45,6 +50,45 @@ const day = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-Hans-CN' : 'en-US', {
   month: 'short',
   day: 'numeric',
 });
+
+/* ---- verification panel ----------------------------------------------------------------- */
+
+const state = verifyState(verification);
+const blocks = verification?.blocks;
+const ran = verification?.runtime;
+const browser = browserLine(verification, locale);
+
+const STATE_GLYPH = { verified: '✓', partial: '△', notRun: '○' } as const;
+
+const stateWord =
+  state === 'verified'
+    ? t(locale, 'verify.verified')
+    : state === 'partial'
+      ? t(locale, 'verify.partial', { matched: blocks?.matched ?? 0, executed: blocks?.executed ?? 0 })
+      : t(locale, 'verify.notRun');
+
+/** The environment the numbers belong to: what ran, or what the article pins when nothing did. */
+const environment = ran ? `${ran.name} ${ran.version}` : (verification?.target ?? version);
+
+const checkedAt = verification ? new Date(verification.checkedAt) : null;
+
+const facts = [
+  environment,
+  blocks && blocks.executed > 0
+    ? t(locale, 'verify.outputs', { matched: blocks.matched, executed: blocks.executed })
+    : t(locale, 'verify.noRunnable'),
+  checkedAt && !Number.isNaN(checkedAt.getTime()) ? day.format(checkedAt) : undefined,
+]
+  .filter(Boolean)
+  .join(' · ');
+
+const browserSentence = browser
+  ? browser.same
+    ? t(locale, 'verify.browserSame', { runner: browser.runner })
+    : t(locale, 'verify.browser', { runner: browser.runner, runtime: environment })
+  : undefined;
+
+const listed = verification?.results ?? [];
 ---
 
 <div class="panel meta">
@@ -78,11 +122,41 @@ const day = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-Hans-CN' : 'en-US', {
       )
     }
   </div>
-  {
-    reviewed && (
-      <p class="lbl transparency">{t(locale, 'topic.transparency', { date: day.format(reviewed) })}</p>
-    )
-  }
+  <div class="verify" data-verify={state}>
+    <p class="verify-line">
+      <span class:list={['state', state]}>
+        <span aria-hidden="true">{STATE_GLYPH[state]}</span>
+        {stateWord}
+      </span>
+      <span class="facts">{facts}</span>
+    </p>
+    {
+      reviewed && (
+        <p class="lbl transparency">{t(locale, 'verify.reviewed', { date: day.format(reviewed) })}</p>
+      )
+    }
+    {browserSentence && <p class="lbl runner">{browserSentence}</p>}
+    {
+      listed.length > 0 && (
+        <details class="verify-details">
+          <summary class="lbl">{t(locale, 'verify.details')}</summary>
+          <ul>
+            {listed.map((block) => (
+              <li>
+                <a class="block-title" href={`#${block.id}`}>
+                  {block.title || block.lang || block.id}
+                </a>
+                <span class:list={['lbl', 'block-status', block.status]}>
+                  {t(locale, `verify.status.${block.status}`)}
+                  {block.reason && block.status === 'skipped' ? ` · ${block.reason}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )
+    }
+  </div>
 </div>
 
 <style>
@@ -105,12 +179,112 @@ const day = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-Hans-CN' : 'en-US', {
     color: var(--ok);
   }
 
-  .transparency {
+  /* The verification panel spans the grid and is separated from it by one rule. */
+  .verify {
     grid-column: 1 / -1;
-    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     padding-top: 10px;
     border-top: 1px solid var(--line);
+  }
+
+  .verify-line {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin: 0;
+    font-size: 14px;
     line-height: 1.5;
+  }
+
+  .state {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+  }
+
+  .state.verified {
+    color: var(--ok);
+  }
+
+  .state.partial {
+    color: var(--warn);
+  }
+
+  .state.notRun {
+    color: var(--ink3);
+  }
+
+  .facts {
+    color: var(--ink2);
+    min-width: 0;
+  }
+
+  .transparency,
+  .runner {
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* A disclosure, not a control: no JavaScript, and closed by default. */
+  .verify-details {
+    margin-top: 2px;
+  }
+
+  .verify-details summary {
+    cursor: pointer;
+    width: fit-content;
+  }
+
+  .verify-details summary:hover {
+    color: var(--ink2);
+  }
+
+  .verify-details ul {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 8px 0 2px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .verify-details li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .block-title {
+    font-size: 13px;
+    color: var(--ink2);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  a.block-title:hover {
+    color: var(--acc);
+  }
+
+  .block-status {
+    flex: none;
+  }
+
+  .block-status.matched {
+    color: var(--ok);
+  }
+
+  .block-status.mismatched {
+    color: var(--warn);
   }
 
   @media (max-width: 767px) {

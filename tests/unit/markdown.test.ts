@@ -234,6 +234,9 @@ describe('rehypeCodebox', () => {
     expect(figure.tagName).toBe('figure');
     expect(figure.properties).toEqual({
       className: ['codebox'],
+      // Runnable fences are numbered in document order, so the verification panel's disclosure
+      // can link to them — docs/design/verification-panel.md.
+      id: 'b1',
       'data-lang': 'python',
       'data-title': 'make_counter.py',
       'data-run': 'true',

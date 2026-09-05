@@ -13,10 +13,16 @@
  * the link check still runs, because it needs no network and catches the "further
  * reading" entries nobody has verified. `--relaxed` lowers the length floor for the short
  * reference samples that predate the 400-line standard.
+ *
+ * A topic check also executes the topic's runnable examples and writes what it observed to
+ * `reports/verify/{track}/{slug}.json` — the sidecar the verification panel on the topic
+ * page reads (docs/design/verification-panel.md). `--no-verify` skips that half.
  */
-import { readdir, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { compile } from '@mdx-js/mdx';
 import YAML from 'yaml';
 import type { z } from 'astro/zod';
@@ -28,7 +34,13 @@ import { pathSchema } from '@/schemas/path';
 import { quizSchema } from '@/schemas/quiz';
 import { topicSchema } from '@/schemas/topic';
 import { alignBlocks, blocks, formatMismatches } from './lib/alignment';
-import { checkFences } from './lib/code-check';
+import {
+  checkFences,
+  verifyOutputs,
+  type BlockResult,
+  type ProcessRunner,
+  type RuntimeInfo,
+} from './lib/code-check';
 import { parseFrontmatter, type ParsedFrontmatter } from './lib/frontmatter';
 import { checkLinks, extractLinks, linkIssues } from './lib/links';
 import { headings } from './lib/markdown';
@@ -730,6 +742,92 @@ async function checkWrittenCheatsheet(id: string, options: KindCheckOptions): Pr
 }
 
 // ---------------------------------------------------------------------------
+// Verification sidecars
+// ---------------------------------------------------------------------------
+
+/** What the build reads to draw the verification panel — docs/design/verification-panel.md. */
+export interface VerifySidecar {
+  /** `{track}/{slug}`; both languages share one sidecar, because they share the code. */
+  topic: string;
+  /** When the examples were last executed, to the second. */
+  checkedAt: string;
+  /**
+   * The environment the article pins in its `verified` frontmatter, e.g. `Python 3.14`. It is
+   * what the page claims; `runtime` below is what actually ran here, and the two are not the
+   * same thing — a Go example is recorded on the target and executed by nobody on this machine.
+   */
+  target: string;
+  /** The interpreter that ran them, with the patch version it reported. */
+  runtime: RuntimeInfo | null;
+  blocks: { runnable: number; executed: number; matched: number; skipped: number };
+  results: BlockResult[];
+  /** `content:check@{git sha}`: which revision of the checker produced this. */
+  checker: string;
+}
+
+export interface VerifyTopicOptions {
+  /** Topics root; defaults to `src/content/topics`. */
+  root?: string;
+  /** Where the sidecars go; defaults to `reports/verify`. */
+  verifyRoot?: string;
+  /** Process runner, injected by the tests. */
+  exec?: ProcessRunner;
+  /** Clock, injected by the tests. */
+  now?: Date;
+  /** Checker revision; defaults to the short git sha of the working tree. */
+  checker?: string;
+}
+
+/** Repository-relative path of a topic's sidecar. */
+export function verifySidecarPath(id: string, verifyRoot?: string): string {
+  return path.join(verifyRoot ?? repoPath('reports/verify'), `${id}.json`);
+}
+
+let cachedRevision: string | undefined;
+
+/** The short git sha of the checkout, or `unknown` outside a repository. */
+async function revision(): Promise<string> {
+  if (cachedRevision !== undefined) return cachedRevision;
+  try {
+    const { stdout } = await promisify(execFile)('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: repoPath('.'),
+    });
+    cachedRevision = stdout.trim() || 'unknown';
+  } catch {
+    cachedRevision = 'unknown';
+  }
+  return cachedRevision;
+}
+
+/**
+ * Execute one topic's runnable examples and write the sidecar the build reads.
+ *
+ * The English body is the source: the bilingual gate (check 5) already holds the two
+ * languages to one block sequence, and the code inside those blocks is identical, so
+ * running both would only double the wall clock.
+ */
+export async function verifyTopic(id: string, options: VerifyTopicOptions = {}): Promise<VerifySidecar> {
+  const root = options.root ?? repoPath(TOPICS_ROOT);
+  const text = await readFile(path.join(root, `${id}.en.mdx`), 'utf8');
+  const { body, data } = parseFrontmatter(text);
+  const verification = await verifyOutputs(body, options.exec ? { exec: options.exec } : {});
+  const verified = data.verified as { version?: unknown } | undefined;
+  const sidecar: VerifySidecar = {
+    topic: id,
+    checkedAt: `${(options.now ?? new Date()).toISOString().slice(0, 19)}Z`,
+    target: typeof verified?.version === 'string' ? verified.version : '',
+    runtime: verification.runtime,
+    blocks: verification.blocks,
+    results: verification.results,
+    checker: `content:check@${options.checker ?? (await revision())}`,
+  };
+  const file = verifySidecarPath(id, options.verifyRoot);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(sidecar, null, 2)}\n`, 'utf8');
+  return sidecar;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -737,17 +835,19 @@ interface Args {
   all: boolean;
   ids: string[];
   noLinks: boolean;
+  noVerify: boolean;
   relaxed: boolean;
   kind?: ContentKind;
 }
 
 /** Parse topic checks or `--kind quiz|kata|interview|path|cheatsheet <id>`. */
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { all: false, ids: [], noLinks: false, relaxed: false };
+  const args: Args = { all: false, ids: [], noLinks: false, noVerify: false, relaxed: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--all') args.all = true;
     else if (arg === '--no-links') args.noLinks = true;
+    else if (arg === '--no-verify') args.noVerify = true;
     else if (arg === '--relaxed') args.relaxed = true;
     else if (arg === '--kind') {
       const kind = argv[index + 1];
@@ -763,7 +863,9 @@ export function parseArgs(argv: string[]): Args {
     throw new Error('--all supports topics and --kind cheatsheet');
   }
   if (!args.all && args.ids.length === 0)
-    throw new Error('usage: content:check [--all] [--kind quiz|kata|interview|path|cheatsheet] <id> [...]');
+    throw new Error(
+      'usage: content:check [--all] [--no-links] [--no-verify] [--kind quiz|kata|interview|path|cheatsheet] <id> [...]',
+    );
   return args;
 }
 
@@ -801,6 +903,14 @@ async function main(): Promise<void> {
       result = args.kind
         ? await checkContent(args.kind, id)
         : await checkTopic(id, { noLinks: args.noLinks, relaxed: args.relaxed });
+      if (!args.kind && !args.noVerify) {
+        const sidecar = await verifyTopic(id);
+        const { matched, executed, runnable } = sidecar.blocks;
+        console.log(
+          `VERIFY ${id} ${matched}/${executed} matched of ${runnable} runnable` +
+            `${sidecar.runtime ? ` on ${sidecar.runtime.name} ${sidecar.runtime.version}` : ''}`,
+        );
+      }
     } catch (error) {
       result = { ok: false, failures: [`0. ${(error as Error).message}`] };
     }

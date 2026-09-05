@@ -36,6 +36,9 @@ const PYODIDE_FILES = [
   { name: 'pyodide.asm.wasm', required: true },
   { name: 'python_stdlib.zip', required: true },
   { name: 'pyodide-lock.json', required: true },
+  // Not loaded by the runtime: the build reads the version out of it for the verification
+  // panel's "in your browser" line (docs/design/verification-panel.md).
+  { name: 'package.json', required: true },
 ];
 
 /** SHA-256 of a file, or `null` when it does not exist. Identical files are not recopied. */
