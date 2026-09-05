@@ -101,7 +101,7 @@ export function cheatsheetFacts(slug: string, lang: 'en' | 'zh' = 'en'): Cheatsh
     title: String(data.title),
     sheets: (content.match(/<Sheet\b/g) ?? []).length,
     rows: (content.match(/<Row\b/g) ?? []).length,
-    twinRows: (content.match(/<Row\s+code="/g) ?? []).length,
+    twinRows: (content.match(/<Row\s+code=["']/g) ?? []).length,
     firstRowBullet: `- \`${row?.[1] ?? ''}\` — ${(row?.[2] ?? '').replace(/\s+/g, ' ').trim()}`,
   };
 }

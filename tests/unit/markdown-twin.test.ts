@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { extractCheatsheetRows, toPlainMarkdown } from '@/lib/markdown-twin';
 
 const page = { locale: 'en', title: 'Closures', url: 'https://codewiki.com/python/closures/' } as const;
@@ -80,6 +80,35 @@ describe('toPlainMarkdown', () => {
     expect(out).not.toContain('<Row');
   });
 
+  it('converts a Row whose code attribute uses single quotes', () => {
+    const source = `<Sheet title="Dockerfile foundations">
+<Row code='ENTRYPOINT ["node", "app.mjs"]'>start Node without a shell wrapper</Row>
+</Sheet>
+`;
+    const out = toPlainMarkdown(source, { ...page, title: 'Docker cheatsheet' });
+    expect(out).toContain(
+      '## Dockerfile foundations\n\n- `ENTRYPOINT ["node", "app.mjs"]` — start Node without a shell wrapper',
+    );
+    expect(extractCheatsheetRows(source)).toEqual([
+      {
+        section: 'Dockerfile foundations',
+        code: 'ENTRYPOINT ["node", "app.mjs"]',
+        note: 'start Node without a shell wrapper',
+      },
+    ]);
+  });
+
+  it('keeps escaped matching quotes inside either Row attribute style', () => {
+    const source = String.raw`<Sheet title="Quotes">
+<Row code="say \"hello\"">double quoted</Row>
+<Row code='say \'hello\''>single quoted</Row>
+</Sheet>`;
+    expect(extractCheatsheetRows(source)).toEqual([
+      { section: 'Quotes', code: String.raw`say \"hello\"`, note: 'double quoted' },
+      { section: 'Quotes', code: String.raw`say \'hello\'`, note: 'single quoted' },
+    ]);
+  });
+
   it('extracts section, code and note from cheatsheet source without compiling MDX', () => {
     const source = '<Sheet title="Comparisons">\n<Row code="0 &lt; x">read left to right</Row>\n</Sheet>\n';
     expect(extractCheatsheetRows(source)).toEqual([
@@ -132,5 +161,28 @@ describe('toPlainMarkdown', () => {
     expect(out).toContain('<!-- deep -->');
     expect(out).toContain('<!-- /deep -->');
     expect(out).toContain('[Checkpoint: python/closures](https://codewiki.com/python/closures/#checkpoint)');
+  });
+
+  it('converts every authored cheatsheet row into its Markdown twin and API data', () => {
+    const directory = new URL('../../src/content/cheatsheets/', import.meta.url);
+    for (const file of readdirSync(directory)
+      .filter((name) => name.endsWith('.mdx'))
+      .sort()) {
+      const source = readFileSync(new URL(file, directory), 'utf8');
+      const authoredRows = (source.match(/<Row\b/g) ?? []).length;
+      const locale = file.endsWith('.zh.mdx') ? 'zh' : 'en';
+      const markdown = toPlainMarkdown(source, {
+        locale,
+        title: file,
+        url: `https://codewiki.com/cheatsheets/${file.replace(/\.(?:en|zh)\.mdx$/, '')}.md`,
+      });
+      const twinRows = (markdown.match(/^- `+/gm) ?? []).length;
+
+      expect({ file, apiRows: extractCheatsheetRows(source).length, twinRows }).toEqual({
+        file,
+        apiRows: authoredRows,
+        twinRows: authoredRows,
+      });
+    }
   });
 });
