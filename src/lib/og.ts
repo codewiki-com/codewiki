@@ -181,6 +181,7 @@ export function ogEntries(): OgEntry[] {
 
   const pages = [
     { path: 'about', title: 'about.title', description: 'about.description' },
+    { path: 'contribute', title: 'contribute.title', description: 'contribute.description' },
     { path: 'glossary', title: 'glossary.title', description: 'glossary.sub' },
     { path: 'tracks', title: 'tracks.title', description: 'tracks.sub' },
     { path: 'search', title: 'search.title', description: 'search.sub' },
@@ -230,6 +231,14 @@ export function ogEntries(): OgEntry[] {
         title: track.name[locale],
         subtitle: track.description[locale],
         track: t(locale, `tracks.${track.kind}s`),
+        glyph: track.glyph,
+      });
+      out.push({
+        path: `${p}rules/${track.slug}`,
+        locale,
+        title: t(locale, 'rules.pageTitle', { track: track.name[locale] }),
+        subtitle: t(locale, 'rules.pageDescription', { track: track.name[locale] }),
+        track: t(locale, 'rules.pack', { track: track.name[locale] }),
         glyph: track.glyph,
       });
     }

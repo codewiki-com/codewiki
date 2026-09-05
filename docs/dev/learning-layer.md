@@ -181,10 +181,17 @@ keeps its canonical topic source. Tracks with at least one rule receive:
 
 - `/rules/{track}/CLAUDE.md`
 - `/rules/{track}/AGENTS.md`
-- `/rules/{track}/cursor.mdc`
+- `/rules/{track}/codewiki-{track}.mdc`
 
-Cursor globs are track-aware. A track hub or cheatsheet advertises a rules pack only at the UI
-threshold of ten rules; generation itself deliberately has a lower threshold of one.
+Install the Claude Code file as `CLAUDE.md` in the repository root and the Codex/agents file as
+`AGENTS.md` in the repository root. Install the Cursor file as
+`.cursor/rules/codewiki-{track}.mdc`. The older `/rules/{track}/cursor.mdc` URL serves identical
+content as a compatibility alias.
+
+Cursor globs are arrays of track-aware language extensions. Non-language tracks use an empty array,
+set `alwaysApply: false`, and explain in the body that no file globs were inferred. A track hub or
+cheatsheet advertises a rules pack only at the UI threshold of ten rules; generation itself
+deliberately has a lower threshold of one.
 
 Context packs concatenate the plain-Markdown twins of reviewed English topics by track and topic
 `section`. They are emitted at `/packs/{track}/{section}.md`. A pack over 1,000,000 bytes is split

@@ -4,6 +4,9 @@ codewiki is a bilingual, static knowledge base for learning programming concepts
 builds the content and Preact islands add browser-local interaction; reading history, settings and
 practice data never require an account.
 
+AI increasingly writes code; developers still have to understand implementations, state
+constraints and verify results. codewiki focuses on making those checks concrete and reproducible.
+
 ## Features
 
 - Depth-aware English and Simplified Chinese topic pages with aligned bilingual reading.
@@ -15,7 +18,8 @@ practice data never require an account.
 - In-browser Playground for Python, JavaScript, TypeScript, SQL and sandboxed HTML/CSS, with
   shareable state and kata tests.
 - Prompt Builder for topic-aware explanations, quizzes, reviews, ports, tests and Socratic prompts.
-- Generated `CLAUDE.md`, `AGENTS.md`, Cursor rules packs and size-bounded Markdown context packs.
+- Generated `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/codewiki-{track}.mdc` files and size-bounded
+  Markdown context packs.
 - Static JSON/Markdown endpoints, `llms.txt`, search, accessible light/dark themes and no account or
   server-side runtime.
 
@@ -37,3 +41,14 @@ pnpm lint && pnpm check && pnpm test && pnpm build && pnpm check:links && pnpm t
 
 Developer documentation lives in `docs/dev/`, including the
 [learning-layer guide](docs/dev/learning-layer.md) and [deployment notes](docs/dev/deploy.md).
+
+## Contributing
+
+Corrections and code contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+bilingual editorial workflow, example-execution requirement, and project gates.
+
+## Licence
+
+Source code is available under the [MIT License](LICENSE). Prose and other editorial content under
+`src/content/**`, `content/**`, and `docs/design/**` is licensed under
+[CC BY-SA 4.0](LICENSE-CONTENT.md).

@@ -82,16 +82,16 @@ export default {
     'Quick shows the TL;DR and one example. Standard adds mechanics and pitfalls. Deep adds internals and edge cases.',
   'home.feature.3.title': 'One article, two languages',
   'home.feature.3.desc':
-    'English and Chinese are the same text, paragraph for paragraph. Read them side by side and learn the terminology as you go.',
-  'home.feature.4.title': 'Practice that sticks',
+    'English and Chinese topic pairs follow the same structure, with build checks for alignment. Read corresponding paragraphs side by side and compare the terminology.',
+  'home.feature.4.title': 'Practice from each topic',
   'home.feature.4.desc':
-    'Predict-the-output, spot-the-bug, checkpoint quizzes and spaced-repetition flashcards built from what you read.',
-  'home.feature.5.title': 'Made for your AI too',
+    'Predict-the-output, spot-the-bug, checkpoint quizzes and spaced-repetition flashcards link back to the material they test.',
+  'home.feature.5.title': 'Formats for AI assistants',
   'home.feature.5.desc':
-    'Every page has a Markdown twin and an llms.txt index. One click opens Claude or ChatGPT with the right section and a prompt that teaches.',
+    'Topic pages have Markdown twins and an llms.txt index. Page actions prepare the selected context and a request for Claude or ChatGPT.',
   'home.feature.6.title': 'Dated and versioned',
   'home.feature.6.desc':
-    'Each topic states the language version it was checked against and when. Stale pages are flagged, not hidden.',
+    'Each topic states the target version and verification date, so readers can judge whether the material is current for their environment.',
 
   'home.mode.learn.label': 'Learn',
   'home.mode.learn.title': 'Paths with a map',
@@ -146,14 +146,19 @@ export default {
     'How codewiki combines a bilingual programming reference, runnable lessons, code review practice and local-first browser tools.',
   'about.what.title': 'What codewiki is',
   'about.what.body':
-    'codewiki is a programming reference and a course in one place, for programmers from beginner to advanced. Every topic gives its answer in the first screen, includes examples that run in the browser, and has a clean Markdown twin that can be handed directly to an AI. The English and Chinese editions contain the same text, paragraph for paragraph.',
+    'codewiki is a programming reference and a course in one place, for programmers from beginner to advanced. Every published topic gives its answer in the first screen and has a clean Markdown twin. Examples run in the browser where the language is supported. The English and Chinese editions share an aligned structure and cover the same material.',
   'about.why.title': 'Why “Master code in the AI era”',
   'about.why.body':
-    'Coding agents now write most first drafts. The scarce skill is the ability to read code, review it, and specify the next change precisely. Every codewiki topic therefore ends with an “In the AI era” section that names the characteristic failure modes of generated code for that subject. Review katas train the same judgment on concrete examples. Rules packs and the prompt builder carry those pitfalls into the instructions you give an agent.',
+    'AI increasingly writes code; developers still have to understand implementations, state constraints and verify results. Every codewiki topic therefore ends with an “In the AI era” section that names the failure modes to check in generated code for that subject. Review katas exercise the same judgment on concrete examples. Rules packs and the prompt builder carry those checks into the instructions you give an agent.',
   'about.verified.title': 'How content is verified',
   'about.verified.body':
     'Versions are pinned rather than implied: Python 3.14, Node 24, TypeScript 6, Go 1.27, Rust 1.98, Java 25, C++23, and the corresponding versions for other tracks. Every runnable example was executed, and its observed output was pasted into the page. Builds check external links and reject English and Chinese topics that fall out of alignment. The repository publishes the editorial standard and verification tooling.',
   'about.verified.date': 'Each topic also shows its verified date, so readers can judge the age of a claim.',
+  'about.made.title': 'How this content is made',
+  'about.made.body':
+    'Drafts are written with AI assistance under a public editorial standard. Every runnable example is executed, and its observed output is recorded. A build gate checks that the English and Chinese editions remain aligned. Editors spot-check explanations, sources, and results. Every page has a “Report an error” link, and the public repository accepts corrections. The site’s own argument is that generated text must be verified instead of trusted on sight, so it applies that standard to itself: claims are scoped, examples are reproducible, verification dates are visible, and readers can inspect the sources or challenge a result.',
+  'about.made.standard': 'Read the editorial standard',
+  'about.made.report': 'Report an error',
   'about.local.title': 'What stays on your machine',
   'about.local.body':
     'There are no accounts. Reading progress, flashcards, and settings live in your browser’s localStorage and can be reset from the Settings page. After a page has been visited, the site can work offline. Runnable Python, JavaScript or TypeScript, and SQL examples execute in your browser through Pyodide, esbuild, and sql.js. Your code, progress, and settings are not sent anywhere.',
@@ -166,7 +171,23 @@ export default {
   'about.contact.before':
     'To report an error, propose a topic, improve a translation, or contribute code, use the',
   'about.contact.link': 'Contribute',
-  'about.contact.after': ' link to open the codewiki repository.',
+  'about.contact.after': ' page.',
+
+  'contribute.title': 'Contribute to codewiki',
+  'contribute.description':
+    'Report a content error, correct a bilingual topic, or contribute to the codewiki project.',
+  'contribute.lead':
+    'Corrections are welcome. The contribution guide explains the editorial checks and review process for content and code changes.',
+  'contribute.guide': 'Read CONTRIBUTING.md',
+  'contribute.report.title': 'Report a content error',
+  'contribute.report.body':
+    'Tell us which page is affected, what is wrong, what you expected, and the runtime version you used.',
+  'contribute.report.link': 'Open the content-error form',
+  'contribute.licences.title': 'Licences',
+  'contribute.licences.body':
+    'Code and site content use separate licences. Contributions are accepted under the licence that applies to the files you change.',
+  'contribute.licences.code': 'Code: MIT License',
+  'contribute.licences.content': 'Content: Creative Commons Attribution-ShareAlike 4.0',
 
   'topic.level': 'level',
   'topic.time': 'time',
@@ -649,9 +670,9 @@ export default {
 
   // Task 14
   'promptBuilder.eyebrow': 'prompt builder',
-  'promptBuilder.title': 'Build a prompt that teaches.',
+  'promptBuilder.title': 'Build a prompt with checks.',
   'promptBuilder.sub':
-    'Pick a topic, a goal and your level. Build a sourced prompt with precise vocabulary and checks. Nothing leaves this page until you open your assistant.',
+    'Pick a topic, a goal and your level. The result includes selected source links, precise vocabulary and explicit checks. Code you paste stays in the page until you open your assistant.',
   'promptBuilder.step.topic': 'Topic',
   'promptBuilder.step.goal': 'Goal',
   'promptBuilder.step.level': 'Your level',
@@ -698,6 +719,14 @@ export default {
   'rules.count': '{n} rules generated from the {track} track',
   'rules.agentTitle': '{track} rules for your coding agent',
   'rules.agentBody': "Download the track's pitfalls and review checks in the format your coding agent reads.",
+  'rules.pageTitle': '{track} rules for coding agents',
+  'rules.pageDescription':
+    'Download {track} pitfalls and review checks for Claude Code, Codex, other agents, or Cursor.',
+  'rules.pageLead':
+    'These {n} rules are generated from reviewed codewiki topics. Choose the file your tool reads, then install it at the path shown.',
+  'rules.installAt': 'Install at',
+  'rules.repositoryRoot': 'in the repository root',
+  'rules.download': 'Download {file}',
   // Task 12
   'bilingual.enZh': 'EN + 中文',
   'bilingual.zhEn': '中文 + EN',

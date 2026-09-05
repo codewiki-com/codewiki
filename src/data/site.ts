@@ -7,8 +7,8 @@ export const SITE = {
   /** Canonical origin, no trailing slash — canonical URLs, sitemap and OG images build on it. */
   url: 'https://codewiki.com',
   tagline: { en: 'Master code in the AI era', zh: '在 AI 时代精通编程' } satisfies L,
-  /** Source repository; powers the "Edit on GitHub" links. Placeholder until the repo is public. */
-  repo: 'https://github.com/codewiki-dev/codewiki',
+  /** Source repository; powers contribution and "Edit on GitHub" links. */
+  repo: 'https://github.com/codewiki-com/codewiki',
 } as const;
 
 /** Paths, Practice and Cheatsheets are public after the P2a learning-layer wave. */

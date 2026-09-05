@@ -2,7 +2,7 @@
 import type { APIRoute, GetStaticPaths } from 'astro';
 
 import { generatedRulePacks } from '@/lib/generated-packs';
-import { renderAgentsMd, renderClaudeMd, renderCursorMdc } from '@/lib/rules';
+import { cursorFilename, renderAgentsMd, renderClaudeMd, renderCursorMdc } from '@/lib/rules';
 
 interface Props {
   body: string;
@@ -10,11 +10,16 @@ interface Props {
 
 export const getStaticPaths = (async () => {
   const packs = await generatedRulePacks();
-  return [...packs].flatMap(([track, rules]) => [
-    { params: { track, file: 'CLAUDE.md' }, props: { body: renderClaudeMd(track, rules) } },
-    { params: { track, file: 'AGENTS.md' }, props: { body: renderAgentsMd(track, rules) } },
-    { params: { track, file: 'cursor.mdc' }, props: { body: renderCursorMdc(track, rules) } },
-  ]);
+  return [...packs].flatMap(([track, rules]) => {
+    const cursorBody = renderCursorMdc(track, rules);
+    return [
+      { params: { track, file: 'CLAUDE.md' }, props: { body: renderClaudeMd(track, rules) } },
+      { params: { track, file: 'AGENTS.md' }, props: { body: renderAgentsMd(track, rules) } },
+      { params: { track, file: cursorFilename(track) }, props: { body: cursorBody } },
+      // Compatibility alias for links published before the install-ready filename was introduced.
+      { params: { track, file: 'cursor.mdc' }, props: { body: cursorBody } },
+    ];
+  });
 }) satisfies GetStaticPaths;
 
 export const GET = (({ props }) =>
