@@ -159,16 +159,58 @@ export function stripAnswers(bank: QuizBank): PublicQuizBank {
   return { id: bank.id, topic: bank.data.topic, items };
 }
 
-/** Deterministic pick per UTC day so every visitor sees the same kata and the page stays static-cacheable. */
-export function kataOfTheDay<T>(items: T[], date: Date): T | undefined {
-  if (!items.length) return undefined;
-  const day = Math.floor(date.getTime() / 86_400_000);
+/**
+ * The UTC day a moment falls in, as a monotonic integer. `getTime()` is absolute, so every
+ * timezone agrees on the number and the daily rotation is the same everywhere on earth.
+ */
+export function utcDay(date: Date): number {
+  return Math.floor(date.getTime() / 86_400_000);
+}
+
+/** FNV-1a over the day number: a stable, dependency-free spread with no per-build state. */
+function dayHash(day: number): number {
   let hash = 2166136261;
   for (const character of String(day)) {
     hash ^= character.charCodeAt(0);
     hash = Math.imul(hash, 16777619) >>> 0;
   }
-  return items[hash % items.length];
+  return hash;
+}
+
+/** Deterministic pick per UTC day so every visitor sees the same kata and the page stays static-cacheable. */
+export function kataOfTheDay<T>(items: T[], date: Date): T | undefined {
+  if (!items.length) return undefined;
+  return items[dayHash(utcDay(date)) % items.length];
+}
+
+/**
+ * The daily kata is a piece of generated code to review, so only the two code-bearing types are
+ * eligible; `mcq`, `predict` and `fill` never appear on the home page's card.
+ */
+export function dailyKataPool<T extends Pick<PracticeItem, 'type'>>(items: readonly T[]): T[] {
+  return items.filter((item) => item.type === 'review' || item.type === 'spotbug');
+}
+
+/**
+ * The pick for `date` and the following `days - 1` days, so a page built today can rotate in the
+ * browser without a rebuild. Entry 0 is exactly `kataOfTheDay`, which keeps the home page and the
+ * practice hub on the same item. A pick that repeats the day before is nudged one place on: the
+ * card has to visibly change every morning, or a returning visitor reads it as a stale page.
+ */
+export function dailyKataWindow<T>(items: readonly T[], date: Date, days = 7): T[] {
+  if (!items.length || days <= 0) return [];
+  const day = utcDay(date);
+  const window: T[] = [];
+  for (let offset = 0; offset < days; offset += 1) {
+    const index = dayHash(day + offset) % items.length;
+    const previous = window.at(-1);
+    window.push(
+      items.length > 1 && window.length > 0 && items[index] === previous
+        ? items[(index + 1) % items.length]
+        : items[index],
+    );
+  }
+  return window;
 }
 
 /** A compact catalogue/page title, preserving an explicitly authored title when one exists. */
