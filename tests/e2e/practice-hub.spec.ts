@@ -5,9 +5,11 @@ test('the practice hub lists the server-rendered catalogue and kata of the day',
 
   expect(await page.locator('[data-practice-card]').count()).toBeGreaterThan(1_000);
   await expect(page.locator('[data-today] > .card')).toHaveCount(3);
+  // The daily pool is the code-bearing types only, and the hub picks from it exactly as the home
+  // page does — docs/design/daily-kata.md.
   await expect(page.locator('[data-today] .kata-card')).toHaveAttribute(
     'href',
-    /\/practice\/[^/]+\/[^/]+\/[^/]+\/[^/]+\/$/,
+    /\/practice\/(review|spotbug)\/[^/]+\/[^/]+\/[^/]+\/$/,
   );
   await expect(page.locator('[data-today-flashcards-placeholder]')).toContainText(
     'Cards you miss or add appear here',
