@@ -332,6 +332,7 @@ export default {
   'practice.type.fill': 'Fill in',
   'practice.all': 'All',
   'practice.allTracks': 'All tracks',
+  'practice.filterBy': 'Filter by {track}',
   'practice.level': 'level',
   'practice.sort': 'sort',
   'practice.sort.unsolved': 'Unsolved first',

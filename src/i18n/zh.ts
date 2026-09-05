@@ -304,6 +304,7 @@ export default {
   'practice.type.fill': '填空',
   'practice.all': '全部',
   'practice.allTracks': '全部方向',
+  'practice.filterBy': '按 {track} 筛选',
   'practice.level': '难度',
   'practice.sort': '排序',
   'practice.sort.unsolved': '未完成优先',
