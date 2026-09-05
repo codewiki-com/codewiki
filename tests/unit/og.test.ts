@@ -30,7 +30,17 @@ describe('ogPaths', () => {
   });
 
   it('covers every localized generic page and glossary term', () => {
-    for (const path of ['about', 'glossary', 'glossary/closure', 'tracks', 'search', 'settings', '404']) {
+    for (const path of [
+      'about',
+      'contribute',
+      'glossary',
+      'glossary/closure',
+      'rules/python',
+      'tracks',
+      'search',
+      'settings',
+      '404',
+    ]) {
       expect(paths).toContain(path);
       expect(paths).toContain(`zh/${path}`);
     }

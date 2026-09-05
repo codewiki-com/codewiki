@@ -1,9 +1,11 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { parse } from 'yaml';
 
 import { buildContextPackFiles, splitPack, type PackTopic } from '@/lib/packs';
 import {
   extractRules,
+  cursorFilename,
   renderAgentsMd,
   renderClaudeMd,
   renderCursorMdc,
@@ -70,9 +72,52 @@ describe('rules', () => {
     expect(renderClaudeMd('python', rules)).toMatch(/^# Python rules/);
     expect(renderAgentsMd('python', rules)).toContain('- Avoid swallowing');
     const cursor = renderCursorMdc('python', rules);
-    expect(cursor).toContain('description: Python rules');
-    expect(cursor).toContain('globs: "**/*.py"');
     expect(cursor).toContain('[Iterator safety](https://codewiki.com/python/iterator-safety/)');
+  });
+
+  it.each([
+    [
+      'python',
+      {
+        description: 'codewiki Python pitfalls and review checks',
+        globs: ['**/*.py'],
+        alwaysApply: false,
+      },
+    ],
+    [
+      'typescript',
+      {
+        description: 'codewiki TypeScript pitfalls and review checks',
+        globs: ['**/*.ts', '**/*.tsx'],
+        alwaysApply: false,
+      },
+    ],
+  ])('renders parseable Cursor frontmatter and a Markdown body for %s', (track, expected) => {
+    const rendered = renderCursorMdc(track, rules);
+    const match = /^---\n([\s\S]*?)\n---\n\n([\s\S]+)$/.exec(rendered);
+    expect(match).not.toBeNull();
+    expect(parse(match?.[1] ?? '')).toEqual(expected);
+    expect(Object.keys(parse(match?.[1] ?? '') as object).sort()).toEqual([
+      'alwaysApply',
+      'description',
+      'globs',
+    ]);
+    expect(match?.[2]).toMatch(/^# \S+ rules\n/);
+  });
+
+  it('leaves non-language globs empty and explains manual application in the body', () => {
+    const rendered = renderCursorMdc('backend', rules);
+    const match = /^---\n([\s\S]*?)\n---\n\n([\s\S]+)$/.exec(rendered);
+    expect(parse(match?.[1] ?? '')).toEqual({
+      description: 'codewiki Backend pitfalls and review checks',
+      globs: [],
+      alwaysApply: false,
+    });
+    expect(match?.[2]).toContain('no file globs are inferred');
+  });
+
+  it('uses an install-ready Cursor filename', () => {
+    expect(cursorFilename('python')).toBe('codewiki-python.mdc');
   });
 });
 

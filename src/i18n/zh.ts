@@ -681,6 +681,14 @@ export default {
   'rules.count': '从 {track} 学习方向生成了 {n} 条规则',
   'rules.agentTitle': '供编码智能体使用的 {track} 规则',
   'rules.agentBody': '下载本方向的常见陷阱与审查项，文件格式可直接供编码智能体读取。',
+  'rules.pageTitle': '供编码智能体使用的 {track} 规则',
+  'rules.pageDescription':
+    '下载 {track} 的常见陷阱与审查项，供 Claude Code、Codex、其他智能体或 Cursor 使用。',
+  'rules.pageLead':
+    '这 {n} 条规则从已审校的 codewiki 主题生成。请选择工具能够读取的文件，再按页面所示路径安装。',
+  'rules.installAt': '安装路径',
+  'rules.repositoryRoot': '位于仓库根目录',
+  'rules.download': '下载 {file}',
   // Task 12
   'bilingual.enZh': 'EN + 中文',
   'bilingual.zhEn': '中文 + EN',

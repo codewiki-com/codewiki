@@ -55,6 +55,18 @@ test('Python rules are published as agent-readable Markdown', async ({ request }
   expect(body).toMatch(/^-[ ]\S/m);
 });
 
+test('Cursor rules use install-ready frontmatter and keep the old URL as an alias', async ({ request }) => {
+  const canonical = await request.get('/rules/python/codewiki-python.mdc');
+  const alias = await request.get('/rules/python/cursor.mdc');
+  expect(canonical.ok()).toBe(true);
+  const body = await canonical.text();
+  expect(await alias.text()).toBe(body);
+
+  expect(body).toContain('description: "codewiki Python pitfalls and review checks"');
+  expect(body).toContain('globs: ["**/*.py"]');
+  expect(body).toContain('alwaysApply: false');
+});
+
 test('the Python functions context pack contains the closures twin', async ({ request }) => {
   const response = await request.get('/packs/python/functions-deeper.md');
   expect(response.ok()).toBe(true);
@@ -68,6 +80,8 @@ test('llms.txt lists the generated rules and context packs', async ({ request })
   const body = await (await request.get('/llms.txt')).text();
   expect(body).toContain('## Rules packs');
   expect(body).toContain('/rules/python/CLAUDE.md');
+  expect(body).toContain('/rules/python/codewiki-python.mdc');
+  expect(body).not.toContain('/rules/python/cursor.mdc');
   expect(body).toContain('## Context packs');
   expect(body).toContain('/packs/python/functions-deeper.md');
 });

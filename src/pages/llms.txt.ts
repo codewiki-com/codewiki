@@ -9,6 +9,7 @@ import { publicCheatsheets, publicTopics, text, toLlmsCheatsheet, toLlmsTopic } 
 import { buildLlmsIndex } from '@/lib/llms';
 import { getTrack } from '@/data/tracks';
 import { generatedContextPacks, generatedRulePacks } from '@/lib/generated-packs';
+import { cursorFilename } from '@/lib/rules';
 
 export const GET = (async () => {
   const [topics, glossary, paths, cheatsheets, rules, contexts] = await Promise.all([
@@ -21,7 +22,7 @@ export const GET = (async () => {
   ]);
   const rulesPacks = [...rules.keys()].flatMap((track) => {
     const name = getTrack(track)?.name.en ?? track;
-    return ['CLAUDE.md', 'AGENTS.md', 'cursor.mdc'].map((file) => ({
+    return ['CLAUDE.md', 'AGENTS.md', cursorFilename(track)].map((file) => ({
       label: `${name} ${file}`,
       url: `https://codewiki.com/rules/${track}/${file}`,
       description: `${rules.get(track)?.length ?? 0} rules from reviewed ${name} topics.`,

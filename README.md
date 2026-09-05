@@ -18,7 +18,8 @@ constraints and verify results. codewiki focuses on making those checks concrete
 - In-browser Playground for Python, JavaScript, TypeScript, SQL and sandboxed HTML/CSS, with
   shareable state and kata tests.
 - Prompt Builder for topic-aware explanations, quizzes, reviews, ports, tests and Socratic prompts.
-- Generated `CLAUDE.md`, `AGENTS.md`, Cursor rules packs and size-bounded Markdown context packs.
+- Generated `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/codewiki-{track}.mdc` files and size-bounded
+  Markdown context packs.
 - Static JSON/Markdown endpoints, `llms.txt`, search, accessible light/dark themes and no account or
   server-side runtime.
 

@@ -168,6 +168,30 @@ function trackName(track: string): string {
   );
 }
 
+const LANGUAGE_GLOBS: Readonly<Record<string, readonly string[]>> = {
+  python: ['**/*.py'],
+  javascript: ['**/*.js', '**/*.jsx'],
+  typescript: ['**/*.ts', '**/*.tsx'],
+  go: ['**/*.go'],
+  rust: ['**/*.rs'],
+  java: ['**/*.java'],
+  kotlin: ['**/*.kt', '**/*.kts'],
+  cpp: ['**/*.cpp', '**/*.cc', '**/*.cxx', '**/*.h', '**/*.hpp'],
+  csharp: ['**/*.cs'],
+  swift: ['**/*.swift'],
+  php: ['**/*.php'],
+};
+
+/** Filename to use when installing one generated pack as a Cursor project rule. */
+export function cursorFilename(track: string): string {
+  return `codewiki-${track}.mdc`;
+}
+
+/** Cursor attachment globs exist only for tracks that represent one programming language. */
+export function cursorGlobs(track: string): readonly string[] {
+  return getTrack(track)?.kind === 'language' ? (LANGUAGE_GLOBS[track] ?? []) : [];
+}
+
 function renderedRules(rules: Rule[]): string {
   return rules
     .map((rule) => {
@@ -191,20 +215,19 @@ export function renderAgentsMd(track: string, rules: Rule[]): string {
 
 /** Cursor uses the same rules under the frontmatter its project-rule format requires. */
 export function renderCursorMdc(track: string, rules: Rule[]): string {
-  const globs =
-    track === 'python'
-      ? '**/*.py'
-      : track === 'javascript' || track === 'typescript'
-        ? '**/*.{js,ts,jsx,tsx}'
-        : '**/*';
+  const globs = cursorGlobs(track);
+  const intro =
+    globs.length > 0
+      ? 'Apply these rules when a matching file is in context.'
+      : 'This track covers more than one language, so no file globs are inferred. Apply these rules manually when they are relevant.';
   return [
     '---',
-    `description: ${trackName(track)} rules generated from reviewed codewiki topics`,
-    `globs: "${globs}"`,
+    `description: ${JSON.stringify(`codewiki ${trackName(track)} pitfalls and review checks`)}`,
+    `globs: ${JSON.stringify(globs)}`,
     'alwaysApply: false',
     '---',
     '',
-    renderPack(track, rules, 'Apply these rules when a matching file is in context.').trimEnd(),
+    renderPack(track, rules, intro).trimEnd(),
     '',
   ].join('\n');
 }

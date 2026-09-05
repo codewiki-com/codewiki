@@ -719,6 +719,14 @@ export default {
   'rules.count': '{n} rules generated from the {track} track',
   'rules.agentTitle': '{track} rules for your coding agent',
   'rules.agentBody': "Download the track's pitfalls and review checks in the format your coding agent reads.",
+  'rules.pageTitle': '{track} rules for coding agents',
+  'rules.pageDescription':
+    'Download {track} pitfalls and review checks for Claude Code, Codex, other agents, or Cursor.',
+  'rules.pageLead':
+    'These {n} rules are generated from reviewed codewiki topics. Choose the file your tool reads, then install it at the path shown.',
+  'rules.installAt': 'Install at',
+  'rules.repositoryRoot': 'in the repository root',
+  'rules.download': 'Download {file}',
   // Task 12
   'bilingual.enZh': 'EN + 中文',
   'bilingual.zhEn': '中文 + EN',
