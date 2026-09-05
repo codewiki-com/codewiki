@@ -35,6 +35,7 @@ Read this first in any new session. Update it at every milestone and before star
 - **Then:** review + merge `fix-followups`; rerun `pnpm lint && pnpm check && pnpm test` on main. Deploy is **not urgent** (user, 2026-09-05): when asked, create the GitHub repo with `gh`, push, Cloudflare Pages (user), verify headers/CSP/sw on the live site.
 - Stale preview servers were killed (ports 4399/4400); no other background processes belong to us.
 ## TODO (deferred by the user)
+- **Deploy / launch: deferred by the user on 2026-09-05.** Runbook: `docs/superpowers/plans/2026-09-05-launch-checklist.md` (GitHub repo via `gh`, Cloudflare Pages settings, domain, post-deploy verification incl. the PWA on iOS).
 - **MCP server: dropped** by the user on 2026-09-04 (do not build). P3 keeps compare pages, visualizer tools and the daily kata surface.
 - **Tier 2 polish (423 topics)** — decided 2026-09-04 by the user: not now. Estimate at 10-way parallelism: ~6 h wall, ~79 M Codex tokens (tier 1 averaged 187 k per topic). Command when the time comes: `pnpm content:polish --tier 2 --n 10 --max 100` per batch from `.worktrees/p0-content-pipeline`.
 - **Tier 3 polish (238 topics)** — same, after tier 2.
