@@ -29,6 +29,18 @@ export type Plan = 15 | 30 | 60;
 export type BilingualLayout = 'paired' | 'side';
 export type RevealMode = 'one' | 'all';
 
+/**
+ * What this browser has downloaded for offline reading. The pages themselves live in the service
+ * worker's caches; this is only the bookkeeping the buttons render their state from, so a cleared
+ * cache and a stale entry here disagree harmlessly — pressing Save again fixes it.
+ */
+export interface OfflineState {
+  /** Track slug → how many URLs the last successful save stored. */
+  tracks: Record<string, number>;
+  /** True once the optional Python and SQL runtimes are in the cache. */
+  runtimes: boolean;
+}
+
 export interface Prefs {
   theme: Theme;
   depth: Depth;
@@ -42,6 +54,8 @@ export interface Prefs {
   interviewReveal?: RevealMode;
   /** Flashcard sources; every source defaults to on when the key is absent. */
   cardSources?: { terms: boolean; quiz: boolean; manual: boolean };
+  /** Absent until the reader saves something for offline reading. */
+  offline?: OfflineState;
 }
 
 /** One entry per topic read, keyed by `${track}/${slug}`. */
@@ -232,6 +246,18 @@ export function sanitizePrefs(value: Record<string, unknown>): Prefs {
         manual: typeof value.cardSources.manual === 'boolean' ? value.cardSources.manual : true,
       }
     : undefined;
+  // Validated as a collection, the way `progress` is: a `tracks` map with one bad entry is
+  // replaced whole rather than filtered. This module is in the chunk every page downloads and the
+  // topic-page script budget is all but full, so the cheap check is the right one — nothing reads
+  // this block except the Save button, which re-derives its state from it defensively anyway.
+  const offline: OfflineState | undefined = isRecord(value.offline)
+    ? {
+        tracks: validEntries(value.offline.tracks, (count) => typeof count === 'number' && count > 0)
+          ? (value.offline.tracks as Record<string, number>)
+          : {},
+        runtimes: value.offline.runtimes === true,
+      }
+    : undefined;
   return {
     theme: oneOf(value.theme, ['system', 'light', 'dark'] as const, DEFAULT_PREFS.theme),
     depth: oneOf(value.depth, ['quick', 'standard', 'deep'] as const, DEFAULT_PREFS.depth),
@@ -245,6 +271,7 @@ export function sanitizePrefs(value: Record<string, unknown>): Prefs {
     interviewReveal: oneOf(value.interviewReveal, ['one', 'all'] as const, 'one'),
     ...(lang ? { lang } : {}),
     ...(sources ? { cardSources: sources } : {}),
+    ...(offline ? { offline } : {}),
   };
 }
 

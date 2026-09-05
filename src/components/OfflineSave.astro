@@ -1,0 +1,195 @@
+---
+/**
+ * "Save this offline" — one button, a progress line, and the list of URLs it downloads.
+ *
+ * The list is server-rendered as a JSON script tag rather than passed through JavaScript, so the
+ * page still says what it would cache even with scripting off, and the control itself starts
+ * hidden: a browser without service workers is shown nothing rather than a button that cannot work.
+ *
+ * The behaviour is an inline script, not an island. Both surfaces that use it (the track hub and
+ * the playground) already carry a script budget this must not eat into, and the whole interaction
+ * is one `postMessage` round trip — see `src/sw/sw.js` for the other end of it.
+ */
+interface Props {
+  /** Unique on the page; the script finds its own elements through it. */
+  id: string;
+  /** Which of the worker's opt-in caches the URLs go to. */
+  scope: 'track' | 'runtimes';
+  /** The key under `prefs.offline.tracks`; ignored for the runtimes scope. */
+  storeKey: string;
+  urls: string[];
+  labels: {
+    /** Button text before anything is saved. */
+    save: string;
+    /** Button text once it is; pressing it clears the cache again. */
+    remove: string;
+    /** Progress line, with `{done}` and `{total}`. */
+    saving: string;
+    /** Saved state, with `{n}` — the runtimes label carries no placeholder and is used as-is. */
+    saved: string;
+    failed: string;
+  };
+}
+
+const { id, scope, storeKey, urls, labels } = Astro.props;
+---
+
+<div class="offline-save" id={id} hidden>
+  <button type="button" class="btn btn-g" data-offline-action>{labels.save}</button>
+  <span class="offline-save-status" data-offline-status aria-live="polite"></span>
+</div>
+<script id={`${id}-urls`} type="application/json" is:inline set:html={JSON.stringify(urls)} />
+
+<script is:inline define:vars={{ id, scope, storeKey, labels }}>
+  (function () {
+    var root = document.getElementById(id);
+    var list = document.getElementById(id + '-urls');
+    if (!root || !list || !('serviceWorker' in navigator)) return;
+
+    var urls = [];
+    try {
+      urls = JSON.parse(list.textContent || '[]');
+    } catch {
+      return;
+    }
+    if (!Array.isArray(urls) || urls.length === 0) return;
+
+    var button = root.querySelector('[data-offline-action]');
+    var status = root.querySelector('[data-offline-status]');
+    root.hidden = false;
+
+    // The same key `src/lib/prefs.ts` owns. Only `offline` is touched, and anything unreadable is
+    // replaced rather than merged, so a corrupt value cannot stop the button from working.
+    var KEY = 'cw:v1:prefs';
+    function read() {
+      try {
+        var value = JSON.parse(localStorage.getItem(KEY) || '{}');
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      } catch {
+        return {};
+      }
+    }
+    function offlineOf(prefs) {
+      var value = prefs.offline;
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    }
+    function saved() {
+      var offline = offlineOf(read());
+      if (scope === 'runtimes') return offline.runtimes ? urls.length : 0;
+      var tracks = offline.tracks && typeof offline.tracks === 'object' ? offline.tracks : {};
+      return Number(tracks[storeKey]) || 0;
+    }
+    function remember(count) {
+      var prefs = read();
+      var offline = offlineOf(prefs);
+      var tracks = offline.tracks && typeof offline.tracks === 'object' ? offline.tracks : {};
+      if (scope === 'runtimes') offline.runtimes = count > 0;
+      else if (count > 0) tracks[storeKey] = count;
+      else delete tracks[storeKey];
+      offline.tracks = tracks;
+      prefs.offline = offline;
+      try {
+        localStorage.setItem(KEY, JSON.stringify(prefs));
+      } catch {
+        /* a full or disabled store only costs the reader the remembered state */
+      }
+    }
+
+    function render(count, busy) {
+      root.dataset.state = busy ? 'busy' : count > 0 ? 'saved' : 'idle';
+      button.disabled = Boolean(busy);
+      button.textContent = count > 0 ? labels.remove : labels.save;
+      if (!busy) status.textContent = count > 0 ? labels.saved.replace('{n}', String(count)) : '';
+    }
+
+    /** One request to the worker over a private channel, resolved by its `done` message. */
+    function ask(message, onProgress) {
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () {
+          reject(new Error('timeout'));
+        }, 600000);
+        navigator.serviceWorker.ready.then(function (registration) {
+          var worker = navigator.serviceWorker.controller || registration.active;
+          if (!worker) {
+            clearTimeout(timer);
+            reject(new Error('no worker'));
+            return;
+          }
+          var channel = new MessageChannel();
+          channel.port1.onmessage = function (event) {
+            var data = event.data || {};
+            if (data.type === 'progress') onProgress(data);
+            else if (data.type === 'done') {
+              clearTimeout(timer);
+              resolve(data);
+            }
+          };
+          worker.postMessage(message, [channel.port2]);
+        }, reject);
+      });
+    }
+
+    button.addEventListener('click', function () {
+      var count = saved();
+      if (count > 0) {
+        render(count, true);
+        // Only this control's own URLs: another track's pages share the cache.
+        ask({ type: 'forget', scope: scope, urls: scope === 'track' ? urls : [] }, function () {}).then(
+          function () {
+            remember(0);
+            render(0, false);
+          },
+          function () {
+            render(count, false);
+            status.textContent = labels.failed;
+          },
+        );
+        return;
+      }
+
+      render(0, true);
+      status.textContent = labels.saving.replace('{done}', '0').replace('{total}', String(urls.length));
+      ask({ type: 'save', scope: scope, urls: urls }, function (progress) {
+        status.textContent = labels.saving
+          .replace('{done}', String(progress.done))
+          .replace('{total}', String(progress.total));
+      }).then(
+        function (done) {
+          remember(done.ok);
+          render(done.ok, false);
+          if (done.failed > 0) status.textContent = labels.failed;
+        },
+        function () {
+          render(0, false);
+          status.textContent = labels.failed;
+        },
+      );
+    });
+
+    render(saved(), false);
+  })();
+</script>
+
+<style>
+  .offline-save {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .offline-save[hidden] {
+    display: none;
+  }
+
+  .offline-save-status {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ink3);
+  }
+
+  .offline-save button[disabled] {
+    opacity: 0.6;
+    cursor: progress;
+  }
+</style>

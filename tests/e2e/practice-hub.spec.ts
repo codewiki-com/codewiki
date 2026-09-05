@@ -16,9 +16,11 @@ test('the practice hub indexes the tracks and the kata of the day', async ({ pag
   await expect(cells.first()).toContainText('Predict the output');
 
   await expect(page.locator('[data-today] > .card')).toHaveCount(3);
+  // The daily pool is the code-bearing types only, and the hub picks from it exactly as the home
+  // page does — docs/design/daily-kata.md.
   await expect(page.locator('[data-today] .kata-card')).toHaveAttribute(
     'href',
-    /\/practice\/[^/]+\/[^/]+\/[^/]+\/[^/]+\/$/,
+    /\/practice\/(review|spotbug)\/[^/]+\/[^/]+\/[^/]+\/$/,
   );
   await expect(page.locator('[data-today-flashcards-placeholder]')).toContainText(
     'Cards you miss or add appear here',

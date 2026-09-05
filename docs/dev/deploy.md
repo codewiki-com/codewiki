@@ -35,7 +35,9 @@ directory, keyed on the script that names the fonts.
 - `X-Content-Type-Options`, `Referrer-Policy` and a `Permissions-Policy` that turns off camera,
   microphone and geolocation;
 - immutable year-long caching for the fingerprinted assets (`/_astro/`, `/vendor/`, `/fonts/`)
-  and a week for the generated OG images.
+  and a week for the generated OG images;
+- `Cache-Control: no-cache` on `/sw.js` — the service worker must be revalidated on every update
+  check, or a browser keeps an old precache and never offers the new build (docs/dev/pwa.md).
 
 Two details are worth knowing before editing that file:
 

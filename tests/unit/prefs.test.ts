@@ -114,6 +114,31 @@ describe('guarded preference reads', () => {
     expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual(stored);
   });
 
+  it('keeps the offline bookkeeping and replaces a broken track map whole', () => {
+    localStorage.setItem(
+      KEYS.prefs,
+      JSON.stringify({ ...DEFAULT_PREFS, offline: { tracks: { python: 42 }, runtimes: true } }),
+    );
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS).offline).toEqual({
+      tracks: { python: 42 },
+      runtimes: true,
+    });
+
+    localStorage.setItem(
+      KEYS.prefs,
+      JSON.stringify({ ...DEFAULT_PREFS, offline: { tracks: { python: 42, go: 'many' } } }),
+    );
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS).offline).toEqual({
+      tracks: {},
+      runtimes: false,
+    });
+  });
+
+  it('reads a malformed offline value as nothing saved', () => {
+    localStorage.setItem(KEYS.prefs, JSON.stringify({ ...DEFAULT_PREFS, offline: 'yes' }));
+    expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual(DEFAULT_PREFS);
+  });
+
   it('defaults invalid flashcard source fields to on', () => {
     localStorage.setItem(
       KEYS.prefs,

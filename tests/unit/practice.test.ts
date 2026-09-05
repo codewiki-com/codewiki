@@ -1,5 +1,7 @@
 import {
   catalogueFrom,
+  dailyKataPool,
+  dailyKataWindow,
   DEFAULT_MINUTES,
   ITEM_TYPES,
   kataOfTheDay,
@@ -7,6 +9,8 @@ import {
   practiceUrl,
   stripAnswers,
   typeLabelKey,
+  utcDay,
+  type ItemType,
   type QuizBank,
 } from '@/lib/practice';
 import { quizSchema } from '@/schemas/quiz';
@@ -53,6 +57,64 @@ describe('kataOfTheDay', () => {
 
   it('returns undefined for an empty list', () => {
     expect(kataOfTheDay([], new Date('2026-09-04T00:00:00Z'))).toBeUndefined();
+  });
+});
+
+describe('the daily kata pool and window', () => {
+  const pool = Array.from({ length: 12 }, (_, index) => `kata-${index}`);
+
+  const typed = (types: ItemType[]) => types.map((type, index) => ({ type, id: `item-${index}` }));
+
+  it('keeps only the code-bearing types', () => {
+    const items = typed(['mcq', 'review', 'predict', 'spotbug', 'fill', 'review']);
+    expect(dailyKataPool(items).map((item) => item.id)).toEqual(['item-1', 'item-3', 'item-5']);
+    expect(dailyKataPool(items).every((item) => item.type === 'review' || item.type === 'spotbug')).toBe(
+      true,
+    );
+  });
+
+  it('returns one entry per day, starting with the kata of the day', () => {
+    const date = new Date('2026-09-04T09:12:00Z');
+    const window = dailyKataWindow(pool, date);
+    expect(window).toHaveLength(7);
+    expect(window[0]).toBe(kataOfTheDay(pool, date));
+    expect(dailyKataWindow(pool, date, 3)).toHaveLength(3);
+  });
+
+  it('depends on the UTC day alone, so every timezone sees the same week', () => {
+    // The same instant expressed three ways, then a local midnight in UTC+9 — which is still the
+    // previous UTC day and must therefore select the previous day's window.
+    const noon = new Date('2026-09-04T12:00:00Z');
+    expect(dailyKataWindow(pool, new Date('2026-09-04T00:00:00Z'))).toEqual(dailyKataWindow(pool, noon));
+    expect(dailyKataWindow(pool, new Date('2026-09-04T23:59:59Z'))).toEqual(dailyKataWindow(pool, noon));
+    expect(dailyKataWindow(pool, new Date('2026-09-04T00:00:00+09:00'))).toEqual(
+      dailyKataWindow(pool, new Date('2026-09-03T12:00:00Z')),
+    );
+    expect(utcDay(new Date('2026-09-04T00:00:00+09:00'))).toBe(utcDay(new Date('2026-09-03T15:00:00Z')));
+  });
+
+  it('opens every build on the kata of the day, so the home page and the hub agree', () => {
+    for (let day = 0; day < 60; day += 1) {
+      const date = new Date(Date.UTC(2026, 8, 1 + day, 7, 30));
+      expect(dailyKataWindow(pool, date)[0]).toBe(kataOfTheDay(pool, date));
+    }
+  });
+
+  it('never repeats yesterday while the pool holds more than one kata', () => {
+    for (let size = 2; size <= 12; size += 1) {
+      const items = Array.from({ length: size }, (_, index) => `kata-${index}`);
+      for (let day = 0; day < 60; day += 1) {
+        const window = dailyKataWindow(items, new Date(Date.UTC(2026, 8, 1 + day)));
+        const repeated = window.filter((item, index) => index > 0 && item === window[index - 1]);
+        expect(repeated, `pool of ${size} on day ${day}`).toEqual([]);
+      }
+    }
+  });
+
+  it('stays on the single kata of a one-item pool and is empty without one', () => {
+    expect(dailyKataWindow(['only'], new Date('2026-09-04T00:00:00Z'))).toEqual(Array(7).fill('only'));
+    expect(dailyKataWindow([], new Date('2026-09-04T00:00:00Z'))).toEqual([]);
+    expect(dailyKataWindow(pool, new Date('2026-09-04T00:00:00Z'), 0)).toEqual([]);
   });
 });
 

@@ -36,7 +36,10 @@ export interface TodayPath {
 
 export interface TodayStripProps {
   locale: Locale;
-  kata?: TodayKata;
+  /** UTC day of the build; `katas[0]` belongs to it. */
+  buildDay: number;
+  /** The build day and the six after it, so the hub rotates in step with the home page. */
+  katas: TodayKata[];
   paths: TodayPath[];
   flashcardsUrl: string;
   labels: {
@@ -159,8 +162,22 @@ function personalToday(progress: Progress, cards: Flashcard[], paths: TodayPath[
 }
 
 /** The build-time kata plus the two cards derived from this browser's local learning data. */
-export default function TodayStrip({ locale, kata, paths, flashcardsUrl, labels }: TodayStripProps) {
+export default function TodayStrip({
+  locale,
+  buildDay,
+  katas,
+  paths,
+  flashcardsUrl,
+  labels,
+}: TodayStripProps) {
   const [personal, setPersonal] = useState<PersonalToday>({ ready: false, due: 0 });
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    if (!katas.length) return;
+    const day = Math.floor(Date.now() / 86_400_000);
+    setOffset(Math.min(Math.max(day - buildDay, 0), katas.length - 1));
+  }, [buildDay, katas]);
 
   useEffect(() => {
     const refresh = () => {
@@ -182,6 +199,7 @@ export default function TodayStrip({ locale, kata, paths, flashcardsUrl, labels 
     return () => document.removeEventListener('cw:progress', refresh);
   }, [labels.daysShort, paths]);
 
+  const kata = katas[offset];
   const checkpoint = personal.checkpoint;
   const dueCount = formatCount(locale, personal.due, 'unit.card', 'unit.cards');
   const dueTitle = (

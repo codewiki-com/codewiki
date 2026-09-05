@@ -25,32 +25,25 @@ export interface PersonalStripProps {
   /** Localised copy. Islands never import `t`, because the locale is a page-level fact. */
   labels: {
     continue: string;
-    kata: string;
     recall: string;
     review: string;
     /** Carries a `{count}` slot. */
     due: string;
-    /** Carries a `{min}` slot. */
-    minutes: string;
     /** Accessible name of the reading-progress bar; carries a `{title}` slot. */
     progress: string;
   };
   /** Every public topic of this locale, keyed by `${track}/${slug}`. */
   titles: Record<string, TopicRef>;
-  /** Deterministic daily practice item chosen while the static home page is built. */
-  kata?: { title: string; url: string; minutes: number };
   /** Where the "Review" link goes. */
   reviewUrl: string;
 }
 
 /**
- * The personal strip under the hero: what the visitor was reading, today's kata and what is due
- * for review. It renders nothing on the server; the visitor-specific cards come from local data.
- *
- * The daily kata is selected at build time and passed in as plain data; the visitor-specific
- * cards are read only after hydration.
+ * The personal strip under the hero: what the visitor was reading and what is due for review. It
+ * renders nothing on the server; both cards come from local data read after hydration. Today's
+ * kata is the `DailyKata` panel below it, not a chip here.
  */
-export default function PersonalStrip({ locale, labels, titles, kata, reviewUrl }: PersonalStripProps) {
+export default function PersonalStrip({ locale, labels, titles, reviewUrl }: PersonalStripProps) {
   const [state, setState] = useState<{ progress: Progress; cards: Flashcards } | null>(null);
 
   useEffect(() => {
@@ -68,7 +61,7 @@ export default function PersonalStrip({ locale, labels, titles, kata, reviewUrl 
   const cards = Array.isArray(state.cards?.cards) ? state.cards.cards : [];
   const due = dueFlashcards(cards, new Date());
 
-  if (!topic && !kata && due === 0) return null;
+  if (!topic && due === 0) return null;
 
   const readPct = Number(cont?.readPct);
   const pct = Number.isFinite(readPct) ? Math.max(0, Math.min(100, Math.round(readPct))) : 0;
@@ -91,21 +84,6 @@ export default function PersonalStrip({ locale, labels, titles, kata, reviewUrl 
           >
             <div style={{ width: `${pct}%` }} />
           </div>
-        </a>
-      ) : null}
-      {kata ? (
-        <a class="cont" href={kata.url} data-personal-kata>
-          <span class="lbl">{labels.kata}</span>
-          <span class="pstrip-text">
-            <strong>{kata.title}</strong>
-          </span>
-          <span class="pstrip-link">
-            {labels.minutes.replace(
-              '{count}',
-              formatCount(locale, kata.minutes, 'unit.minute', 'unit.minutes'),
-            )}{' '}
-            →
-          </span>
         </a>
       ) : null}
       {due > 0 ? (

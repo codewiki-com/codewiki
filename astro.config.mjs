@@ -5,6 +5,8 @@ import sitemap from '@astrojs/sitemap';
 import preact from '@astrojs/preact';
 import tailwindcss from '@tailwindcss/vite';
 
+import pwa from './scripts/build-sw.mjs';
+
 import { LEGACY_REDIRECTS } from './src/data/redirects.ts';
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
 import { rehypeBlockIds } from './src/markdown/rehype-block-ids.ts';
@@ -61,15 +63,17 @@ export default defineConfig({
     preact(),
     sitemap({
       i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } },
-      // Settings is `noindex` and search is a query interface, not a document: neither belongs
-      // in the sitemap, and listing an unindexable URL is a Search Console warning.
+      // Settings is `noindex`, search is a query interface and the offline notice only ever
+      // renders without a network: none belongs in the sitemap, and listing an unindexable URL is
+      // a Search Console warning. A 301 is not a document either.
       filter: (page) => {
         const { pathname } = new URL(page);
-        // A 301 is not a document, and neither is a page marked noindex.
         if (Object.hasOwn(LEGACY_REDIRECTS, pathname)) return false;
-        return !/^\/(zh\/)?(settings|search)\/$/.test(pathname);
+        return !/^\/(zh\/)?(settings|search|offline)\/$/.test(pathname);
       },
     }),
+    // Writes dist/sw.js once the real, content-hashed file names exist.
+    pwa(),
   ],
   vite: { plugins: [tailwindcss()] },
 });

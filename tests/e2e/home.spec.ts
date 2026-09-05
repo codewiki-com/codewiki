@@ -68,13 +68,23 @@ test('the P2 navigation and path call to action point at public routes', async (
   await expect(page.getByRole('link', { name: 'Start a path' })).toHaveAttribute('href', '/paths/');
 });
 
-test('the personal strip receives the build-time kata of the day', async ({ page }) => {
+/* The kata of the day is the `DailyKata` panel now; tests/e2e/daily-kata.spec.ts covers the card. */
+test('the daily kata panel sits between the hero and the feature grid', async ({ page }) => {
   await page.goto('/');
-  const kata = page.locator('[data-personal-kata]');
-  await expect(kata).toBeVisible();
-  await expect(kata).toHaveAttribute('href', /^\/practice\//);
-  await expect(kata).toContainText('kata today');
-  await expect(kata).toContainText(/\d+ min/);
+  await expect(page.locator('[data-personal-kata]')).toHaveCount(0);
+  await expect(page.locator('[data-daily] [data-daily-start]')).toHaveAttribute('href', /^\/practice\//);
+
+  const placed = await page.evaluate(() => {
+    const [hero, daily, features] = ['.hero', '[data-daily]', '.features'].map((selector) =>
+      document.querySelector(selector),
+    );
+    if (!hero || !daily || !features) return null;
+    return {
+      afterHero: Boolean(hero.compareDocumentPosition(daily) & Node.DOCUMENT_POSITION_FOLLOWING),
+      beforeFeatures: Boolean(features.compareDocumentPosition(daily) & Node.DOCUMENT_POSITION_PRECEDING),
+    };
+  });
+  expect(placed).toEqual({ afterHero: true, beforeFeatures: true });
 });
 
 test('the Chinese home page renders the same headline in Chinese', async ({ page }) => {
