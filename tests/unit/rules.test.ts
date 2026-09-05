@@ -1,7 +1,15 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 
 import { buildContextPackFiles, splitPack, type PackTopic } from '@/lib/packs';
-import { extractRules, renderAgentsMd, renderClaudeMd, renderCursorMdc } from '@/lib/rules';
+import {
+  extractRules,
+  renderAgentsMd,
+  renderClaudeMd,
+  renderCursorMdc,
+  RULE_MAX_LENGTH,
+  type Rule,
+} from '@/lib/rules';
 
 const source = readFileSync(new URL('../fixtures/rules.mdx', import.meta.url), 'utf8');
 const topic = { title: 'Iterator safety', url: 'https://codewiki.com/python/iterator-safety/' };
@@ -22,6 +30,40 @@ describe('rules', () => {
     );
     expect(rules[1]?.text).toBe('Avoid swallowing the exception before logging its cause.');
     expect(rules[2]?.text).toBe('Logout handlers run after the response is committed.');
+  });
+
+  it('keeps a long single sentence whole instead of cutting it into a Why: fragment', () => {
+    const long =
+      '> [!PITFALL]\n' +
+      '> Deferring each resource close directly inside a long loop retains all resources until the' +
+      ' outer function ends, not until the current iteration ends.\n';
+    const [rule] = extractRules(long, topic);
+    expect(rule?.text).toBe(
+      'Do not assume this is safe: deferring each resource close directly inside a long loop retains' +
+        ' all resources until the outer function ends, not until the current iteration ends.',
+    );
+    expect(rule?.why).toBe('');
+  });
+
+  it('never turns a semicolon clause into a reason', () => {
+    const source =
+      '> [!PITFALL]\n' +
+      '> Declaring a nil function variable and then writing `defer cleanup()` does not fail at' +
+      ' registration; it panics when the nil function is invoked during exit.\n';
+    const [rule] = extractRules(source, topic);
+    expect(rule?.text).toContain('it panics when the nil function is invoked during exit.');
+    expect(rule?.why).toBe('');
+  });
+
+  it('keeps a 200-character sentence intact', () => {
+    const source =
+      '> [!PITFALL]\n' +
+      '> `send(*recipient)` supplies one positional argument per character when `recipient` is a' +
+      ' string, and unpacking a generator consumes it before the function body begins.\n';
+    const [rule] = extractRules(source, topic);
+    expect(rule?.text).toContain('before the function body begins.');
+    expect(rule?.text.endsWith('…')).toBe(false);
+    expect(rule?.why).toBe('');
   });
 
   it('renders the three agent formats with sources and track globs', () => {
@@ -67,5 +109,46 @@ describe('context packs', () => {
     expect(split.map((file) => file.filename)).toEqual(['functions-deeper-1.md', 'functions-deeper-2.md']);
     expect(split[0]?.body).toContain('## Parts');
     expect(split[0]?.body).toContain('/packs/python/functions-deeper-2.md');
+  });
+});
+
+describe('generated rules over the published corpus', () => {
+  const topicsDir = new URL('../../src/content/topics/', import.meta.url).pathname;
+  const files = readdirSync(topicsDir, { recursive: true, encoding: 'utf8' })
+    .map((file) => file.split(path.sep).join('/'))
+    .filter((file) => file.endsWith('.en.mdx'))
+    .sort();
+
+  const rules: Rule[] = files.flatMap((file) =>
+    extractRules(readFileSync(path.join(topicsDir, file), 'utf8'), {
+      title: file,
+      url: `https://codewiki.com/${file.replace(/\.en\.mdx$/, '')}/`,
+    }),
+  );
+
+  it('reads a non-trivial number of rules', () => {
+    expect(files.length).toBeGreaterThan(100);
+    expect(rules.length).toBeGreaterThan(500);
+  });
+
+  it('never ends a rule mid-sentence with a Why: fragment underneath', () => {
+    const severed = rules.filter((rule) => rule.text.trimEnd().endsWith('…'));
+    expect(severed.map((rule) => `${rule.topic.title}: ${rule.text}`)).toEqual([]);
+  });
+
+  it('states a reason only when a second sentence supplies one', () => {
+    const withWhy = rules.filter((rule) => rule.why);
+    expect(withWhy.length).toBeGreaterThan(0);
+    for (const rule of withWhy) {
+      // Both halves are whole sentences: the rule ends on its own terminator and the reason
+      // starts a new one rather than continuing the clause above it.
+      expect(rule.text).toMatch(/[.!?。！？]$/u);
+      expect(rule.why).toMatch(/[.!?。！？][”’"')\]]?$/u);
+    }
+  });
+
+  it('keeps almost every rule inside the soft length budget', () => {
+    const over = rules.filter((rule) => rule.text.length > RULE_MAX_LENGTH);
+    expect(over.length / rules.length).toBeLessThan(0.1);
   });
 });

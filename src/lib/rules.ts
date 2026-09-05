@@ -65,27 +65,26 @@ function imperative(sentence: string): string {
   return `Do not assume this is safe: ${lowered}`;
 }
 
-/** Keep the rule line compact and move any overflow into the explanation. */
-function clamp(text: string): { text: string; overflow: string } {
-  if (text.length <= 160) return { text, overflow: '' };
-  const prefix = text.slice(0, 157);
-  const boundary = prefix.lastIndexOf(' ');
-  const end = boundary >= 128 ? boundary : 157;
-  return { text: `${text.slice(0, end).trimEnd()}…`, overflow: text.slice(end).trim() };
-}
+/**
+ * Soft length budget for one rule line. It is a budget, not a cut: a sentence longer than this
+ * is still emitted whole, because a 240-character bullet reads fine and a severed one does not.
+ */
+export const RULE_MAX_LENGTH = 240;
 
+/**
+ * One rule is one whole sentence, and `why` is only ever a genuine second sentence.
+ *
+ * The earlier version truncated at 160 characters and printed the severed tail under `Why:`,
+ * which produced a rule that stopped mid-clause — without the qualifier that made it correct —
+ * followed by a reason that was not one. Nothing is moved from the rule into the explanation now.
+ */
 function ruleFromText(value: string, topic: RuleTopic, forceWhole = false): Rule | undefined {
   const body = plain(value);
   if (!body) return undefined;
   const match = forceWhole ? undefined : SENTENCE.exec(body);
   const first = match?.[1] ?? body;
   const rest = match?.[2] ?? '';
-  const compact = clamp(forceWhole ? first : imperative(first));
-  return {
-    text: compact.text,
-    why: [compact.overflow, rest].filter(Boolean).join(' '),
-    topic,
-  };
+  return { text: forceWhole ? first : imperative(first), why: rest, topic };
 }
 
 /** Lines outside fenced examples, following the same source-walking model as markdown-twin.ts. */
