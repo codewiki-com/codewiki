@@ -29,11 +29,11 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-05 evening — Phase A merged)
-- **Merged into `main`:** `phase-a-repo` (5cd0a0f: licences, CONTRIBUTING, templates, `/contribute/`, About "How this content is made", Cursor `.mdc` format + rules install pages; four flattened home feature strings restored in a0ce92c) and `phase-a-ui` (hero = review kata, search row, nav order, flagship tracks, verification panel + `reports/verify/**` sidecars, report-an-error links; ledger `ledgers/2026-09-05-phase-a-ui.md`; screenshots `docs/design/screenshots/phase-a/` reviewed by the design lead). Branch gate on `phase-a-ui` was fully green (2,419 unit, 275 e2e, lhci exit 0; script budget raised to 66 KiB — see ROADMAP B10).
-- **Running — Codex** on `phase-a-followups` (brief/log/report under `.superpowers/sdd/followups/` in that worktree): flagship copy "where to start", `python/tuples` recorded-output drift + `foundations/regular-expressions` nocheck fence, hero `llms.txt` link placement.
-- **Running:** lint/check/test on `main` after the UI merge (log `main-gate-4.log`, session scratchpad).
-- **Then:** merge the follow-ups, full gate on `main` (build → links → e2e → lhci, on a quiet machine), then ask the user before creating and pushing the public repository `codewiki-com/codewiki`. Deploy stays deferred. After that: ROADMAP Phase B (B1 kata schema v2 first — design lead designs, Opus implements, Codex authors).
+## Active work (updated 2026-09-05 20:50 local — Phase A complete)
+- **`main` HEAD 23b675e, full gate green:** lint, check, 2,423 unit tests, build 5,909 pages, 160,258 links + 6 redirects resolve, **283/283 e2e**, lhci exit 0 (median of 3, no category failures). Phase A (ROADMAP A1–A6, A7 decided) is merged; two copy sweeps by Codex were partially reverted where the original wording made no over-claim (home feature lines, prompt-builder headline).
+- **No agent or background job running.**
+- **Next, pending the user:** (1) create and push the public repository `github.com/codewiki-com/codewiki` (`gh repo create codewiki-com/codewiki --public --source=. --remote=origin --push`; then CI runs the same gate); (2) start ROADMAP Phase B — design notes ready: `docs/design/kata-v2.md` (B1) and `docs/design/spec-items.md` (B2); B3 ("In the AI era" rewrite) is a Codex bulk job over 287 topics split by track; B1 and B3 can run in parallel (quiz YAML/schema vs topic prose), B2 after B1.
+- Deploy stays deferred (`plans/2026-09-05-launch-checklist.md`).
 
 ## TODO
 All open work, deferred items and decisions-against live in **`docs/superpowers/ROADMAP.md`** (Phase A before launch, Phase B after, Phase C later). Deploy is deferred by the user; runbook `plans/2026-09-05-launch-checklist.md`.
