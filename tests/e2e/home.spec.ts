@@ -85,13 +85,22 @@ test('the Chinese home page renders the same headline in Chinese', async ({ page
 });
 
 test('the palette on the home page is a static list of real pages without JavaScript', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
-  // Server-rendered rows: ordinary links, so the page is usable with scripting off. The first is
-  // the selected one, as the mockup has it; the rest are the glossary term and the quiz item.
+  // Server-rendered rows: two recent topics from different tracks, one glossary term and one
+  // practice item. They remain ordinary links, so the palette is useful with scripting off.
   const rows = page.locator('.hero-palette .row');
+  await expect(rows).toHaveCount(4);
   await expect(rows.first()).toHaveClass(/\bon\b/);
-  await expect(rows.first()).toHaveAttribute('href', '/python/closures/');
   await expect(page.locator('.hero-palette .row[href="/glossary/closure/"]')).toBeVisible();
+
+  const topicTracks = await rows.evaluateAll((links) =>
+    links.slice(0, 2).map((link) => new URL((link as HTMLAnchorElement).href).pathname.split('/')[1]),
+  );
+  expect(new Set(topicTracks).size).toBe(2);
+
+  const pageHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  expect(pageHeight).toBeLessThan(3_000);
 });
 
 test('the theme toggle cycles system, light and dark', async ({ page }) => {

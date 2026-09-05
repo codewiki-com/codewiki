@@ -107,6 +107,8 @@ export default function PracticeFilters({ locale, labels }: PracticeFiltersProps
         for (const control of group.querySelectorAll<HTMLElement>('[data-value]')) {
           const on = control.dataset.value === state[name];
           control.classList.toggle('on', on);
+          if (name === 'track') control.setAttribute('aria-pressed', String(on));
+          else control.removeAttribute('aria-pressed');
           if (on) control.setAttribute('aria-current', 'true');
           else control.removeAttribute('aria-current');
         }

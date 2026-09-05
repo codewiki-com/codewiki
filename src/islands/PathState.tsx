@@ -2,6 +2,7 @@ import { useEffect } from 'preact/hooks';
 
 import { formatCount } from '@/i18n';
 import { exportAll } from '@/lib/export';
+import { truncateSvgText } from '@/lib/pathmap';
 import { nextStep, pathProgress, weeksLeft, type ProgressPath } from '@/lib/paths';
 import {
   DEFAULT_PREFS,
@@ -218,7 +219,12 @@ export default function PathState({ locale, path, topics, labels, mode = 'detail
         if (label) {
           const base = label.dataset.baseLabel ?? topics[id]?.title ?? id;
           const pct = readPercent(progress, id);
-          label.textContent = pct > 0 && nodeState !== 'done' ? `${base} · ${pct}%` : base;
+          const fullLabel = pct > 0 && nodeState !== 'done' ? `${base} · ${pct}%` : base;
+          const available = Number(label.dataset.labelWidth) - (nodeState === 'done' ? 28 : 0);
+          const visible = label.querySelector<SVGTSpanElement>('[data-node-label-text]');
+          if (visible) visible.textContent = truncateSvgText(fullLabel, available, 'node');
+          const title = node.querySelector<SVGTitleElement>('title');
+          if (title) title.textContent = fullLabel;
           const baseX = Number(label.dataset.baseX);
           if (Number.isFinite(baseX))
             label.setAttribute('x', String(baseX + (nodeState === 'done' ? 28 : 0)));

@@ -1,4 +1,4 @@
-import { COL, NODE, layoutPath } from '@/lib/pathmap';
+import { COL, NODE, estimateSvgTextWidth, humanizeTopicId, layoutPath, truncateSvgText } from '@/lib/pathmap';
 
 const path = {
   milestones: [
@@ -66,5 +66,27 @@ describe('layoutPath', () => {
     expect(Number.isFinite(layout.height)).toBe(true);
     expect(layout.width).toBeGreaterThan(0);
     expect(layout.height).toBeGreaterThan(0);
+  });
+});
+
+describe('path map labels', () => {
+  it('humanises a planned topic id without exposing its track or raw separators', () => {
+    expect(humanizeTopicId('python/inheritance-polymorphism')).toBe('Inheritance polymorphism');
+    expect(humanizeTopicId('foundations/dates_and_time')).toBe('Dates and time');
+  });
+
+  it('keeps labels that fit and truncates long labels to the requested SVG width', () => {
+    expect(truncateSvgText('M1 · Syntax', 200, 'milestone')).toBe('M1 · Syntax');
+
+    const truncated = truncateSvgText('M1 · Syntax, values, and control flow', 192, 'milestone');
+    expect(truncated).toMatch(/…$/u);
+    expect(truncated).not.toBe('M1 · Syntax, values, and control flow');
+    expect(estimateSvgTextWidth(truncated, 'milestone')).toBeLessThanOrEqual(192);
+  });
+
+  it('accounts for wide CJK glyphs when clipping node text', () => {
+    const truncated = truncateSvgText('智能体上下文管理与代码来源验证', 80, 'node');
+    expect(truncated).toMatch(/…$/u);
+    expect(estimateSvgTextWidth(truncated, 'node')).toBeLessThanOrEqual(80);
   });
 });

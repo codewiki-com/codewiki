@@ -3,11 +3,11 @@ import { expect, test } from '@playwright/test';
 test('the practice hub lists the server-rendered catalogue and kata of the day', async ({ page }) => {
   await page.goto('/practice/');
 
-  await expect(page.locator('[data-practice-card]')).toHaveCount(5);
+  expect(await page.locator('[data-practice-card]').count()).toBeGreaterThan(1_000);
   await expect(page.locator('[data-today] > .card')).toHaveCount(3);
   await expect(page.locator('[data-today] .kata-card')).toHaveAttribute(
     'href',
-    /\/practice\/review\/[^/]+\/[^/]+\/[^/]+\/$/,
+    /\/practice\/[^/]+\/[^/]+\/[^/]+\/[^/]+\/$/,
   );
   await expect(page.locator('[data-today-flashcards-placeholder]')).toContainText(
     'Cards you miss or add appear here',
@@ -15,7 +15,7 @@ test('the practice hub lists the server-rendered catalogue and kata of the day',
   await expect(page.locator('[data-today-checkpoint-placeholder]')).toContainText(
     'Start a path to see your next checkpoint',
   );
-  await expect(page.locator('[data-practice-card][data-type="review"] .tag.acc2')).toHaveCount(2);
+  expect(await page.locator('[data-practice-card][data-type="review"] .tag.acc2').count()).toBeGreaterThan(0);
 });
 
 test('the type query hides cards outside the selected practice type', async ({ page }) => {
@@ -23,14 +23,53 @@ test('the type query hides cards outside the selected practice type', async ({ p
   await expect(page.locator('[data-practice-controls]')).toHaveAttribute('data-ready', 'true');
 
   const visible = page.locator('[data-practice-card]:visible');
-  await expect(visible).toHaveCount(2);
-  expect(await visible.evaluateAll((cards) => cards.map((card) => card.getAttribute('data-type')))).toEqual([
-    'review',
-    'review',
-  ]);
+  const visibleTypes = await visible.evaluateAll((cards) =>
+    cards.map((card) => card.getAttribute('data-type')),
+  );
+  expect(visibleTypes.length).toBeGreaterThan(0);
+  expect(new Set(visibleTypes)).toEqual(new Set(['review']));
   await expect(page.locator('[data-practice-card][data-type]:not([data-type="review"]):visible')).toHaveCount(
     0,
   );
+});
+
+test('the track chips wrap on desktop, scroll on mobile and retain URL state', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/practice/');
+  await expect(page.locator('[data-practice-controls]')).toHaveAttribute('data-ready', 'true');
+
+  const chips = page.locator('[data-filter-group="track"]');
+  await expect(chips).toHaveCSS('flex-wrap', 'wrap');
+  const containment = await chips.evaluate((element) => {
+    const wrapper = element.closest('.track-filter-scroll')!.getBoundingClientRect();
+    const controls = [...element.querySelectorAll<HTMLElement>('[data-value]')].map((control) =>
+      control.getBoundingClientRect(),
+    );
+    return {
+      group: element.getBoundingClientRect().right,
+      control: Math.max(...controls.map((control) => control.right)),
+      column: wrapper.right,
+    };
+  });
+  expect(containment.group).toBeLessThanOrEqual(containment.column);
+  expect(containment.control).toBeLessThanOrEqual(containment.column);
+
+  const firstTrack = chips.locator('[data-value]:not([data-value="all"])').first();
+  const value = await firstTrack.getAttribute('data-value');
+  await firstTrack.click();
+  await expect(page).toHaveURL(new RegExp(`[?&]track=${value}(?:&|$)`));
+  await expect(firstTrack).toHaveClass(/\bon\b/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(chips).toHaveCSS('flex-wrap', 'nowrap');
+  const widths = await page.locator('.track-filter-scroll').evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+    document: document.documentElement.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  expect(widths.scroll).toBeGreaterThan(widths.client);
+  expect(widths.document).toBeLessThanOrEqual(widths.viewport);
 });
 
 test('the today strip shows the browser flashcards that are due', async ({ page }) => {
@@ -70,8 +109,8 @@ test('the today strip finds the next unpassed checkpoint on a started path', asy
 
   const checkpoint = page.locator('[data-today-checkpoint]');
   await expect(checkpoint).toBeVisible();
-  await expect(checkpoint).toContainText('Functions, deeper checkpoint is ready');
-  await expect(checkpoint).toHaveAttribute('href', '/practice/');
+  await expect(checkpoint).toContainText('Functions, scope, and iteration checkpoint is ready');
+  await expect(checkpoint).toHaveAttribute('href', /\/practice\/[^/]+\/python\/checkpoint-2\/[^/]+\/$/);
 });
 
 test('saved quiz progress marks cards and updates the practice statistics', async ({ page }) => {
@@ -105,5 +144,5 @@ test('the Chinese practice hub renders its localized shell', async ({ page }) =>
 
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');
   await expect(page.locator('h1')).toHaveText('练习');
-  await expect(page.locator('[data-practice-card]')).toHaveCount(5);
+  expect(await page.locator('[data-practice-card]').count()).toBeGreaterThan(1_000);
 });

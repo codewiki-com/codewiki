@@ -37,6 +37,55 @@ export interface MapLayout {
 export const NODE = { w: 180, h: 34, gap: 14 };
 export const COL = { w: 212, gap: 24, padX: 16, top: 40 };
 
+export type SvgTextKind = 'milestone' | 'node';
+
+const SVG_TEXT_STYLE: Record<SvgTextKind, { fontSize: number; letterSpacing: number; defaultEm: number }> = {
+  milestone: { fontSize: 11, letterSpacing: 0.66, defaultEm: 0.66 },
+  node: { fontSize: 12.5, letterSpacing: 0, defaultEm: 0.58 },
+};
+
+/** Turns a stable topic id into reader-facing fallback copy for curriculum nodes without content. */
+export function humanizeTopicId(id: string): string {
+  const slug = id.split('/').at(-1) ?? id;
+  const words = slug.replace(/[-_]+/g, ' ').trim();
+  return words ? `${words[0]!.toUpperCase()}${words.slice(1)}` : id;
+}
+
+function glyphWidthEm(character: string, kind: SvgTextKind): number {
+  if (/\p{Mark}/u.test(character)) return 0;
+  if (/\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(character))
+    return 1.05;
+  if (kind === 'milestone') return SVG_TEXT_STYLE[kind].defaultEm;
+  if (/\s/u.test(character)) return 0.32;
+  if (/[ilI1|.,'`:;]/u.test(character)) return 0.3;
+  if (/[mwMW@%&]/u.test(character)) return 0.9;
+  if (/[A-Z0-9]/u.test(character)) return 0.68;
+  if (/[-_()\[\]{}·]/u.test(character)) return 0.42;
+  return SVG_TEXT_STYLE[kind].defaultEm;
+}
+
+/** Conservative build-time width estimate for the two font styles used by the path map. */
+export function estimateSvgTextWidth(text: string, kind: SvgTextKind): number {
+  const characters = [...text];
+  const style = SVG_TEXT_STYLE[kind];
+  const glyphs = characters.reduce((width, character) => width + glyphWidthEm(character, kind), 0);
+  return glyphs * style.fontSize + Math.max(0, characters.length - 1) * style.letterSpacing;
+}
+
+/** Fits an SVG label before render because SVG text does not support CSS text-overflow. */
+export function truncateSvgText(text: string, maxWidth: number, kind: SvgTextKind): string {
+  if (estimateSvgTextWidth(text, kind) <= maxWidth) return text;
+
+  const ellipsis = '…';
+  let visible = '';
+  for (const character of text) {
+    const candidate = `${visible}${character}${ellipsis}`;
+    if (estimateSvgTextWidth(candidate, kind) > maxWidth) break;
+    visible += character;
+  }
+  return `${visible.trimEnd()}${ellipsis}`;
+}
+
 export function layoutPath(
   path: {
     milestones: { id: string; title: string; topics: string[] }[];
