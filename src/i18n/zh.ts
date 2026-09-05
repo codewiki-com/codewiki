@@ -123,6 +123,30 @@ export default {
   'footer.llms': 'llms.txt',
   'footer.rss': 'RSS',
   'footer.otherLocale': 'English',
+  'about.title': '关于 codewiki',
+  'about.description':
+    'codewiki 如何把双语编程参考、可运行课程、代码审查练习与本地优先的浏览器工具放在一起。',
+  'about.what.title': 'codewiki 是什么',
+  'about.what.body':
+    'codewiki 把编程参考手册和系统课程放在同一个地方，面向从初学者到高级工程师的读者。每个主题都会在首屏给出答案，包含可直接在浏览器中运行的示例，同时提供整洁的 Markdown 对应版本，可直接交给 AI。英文版与中文版逐段对应，内容一致。',
+  'about.why.title': '为什么是「在 AI 时代精通编程」',
+  'about.why.body':
+    '如今，编码智能体已经承担大多数初稿。真正稀缺的能力，是准确阅读和审查代码，并清楚说明下一步需要什么。每个 codewiki 主题都以「在 AI 时代」一节收尾，列出生成代码在该主题上常见的失效方式。代码审查 kata 用具体示例训练同一种判断力；规则包和提示词构建器则把这些易错点带进你交给智能体的指令。',
+  'about.verified.title': '内容如何验证',
+  'about.verified.body':
+    '版本不会含糊带过，而是明确固定为 Python 3.14、Node 24、TypeScript 6、Go 1.27、Rust 1.98、Java 25、C++23，以及其他方向各自对应的版本。所有可运行示例都实际执行过，观察到的输出也已粘贴到页面中。构建流程会检查外部链接，并在中英文主题失去对齐时拒绝发布。仓库公开编辑规范与验证工具。',
+  'about.verified.date': '每个主题还会显示 verified 日期，方便读者判断结论的新旧。',
+  'about.local.title': '哪些内容只留在你的设备上',
+  'about.local.body':
+    '网站不设账号。阅读进度、闪卡和设置保存在浏览器的 localStorage 中，可在「设置」页面重置。页面访问过一次后，网站即可离线使用。可运行的 Python、JavaScript 或 TypeScript 与 SQL 示例分别通过 Pyodide、esbuild 和 sql.js 在浏览器中执行。你的代码、进度和设置不会发送到任何地方。',
+  'about.built.title': '技术栈',
+  'about.built.body':
+    '网站使用 Astro 构建，并通过小型 Preact islands 提供交互。Pagefind 负责本地搜索，Shiki 负责代码高亮，IBM Plex 是所用字体。静态文件由 CDN 提供，浏览器运行时仅在需要它们的页面加载。',
+  'about.built.source': '源代码在 GitHub 上公开，其中包括内容、构建检查和编辑规则。',
+  'about.contact.title': '联系与贡献',
+  'about.contact.before': '如需报告错误、建议新主题、改进翻译或贡献代码，请通过',
+  'about.contact.link': '「参与贡献」',
+  'about.contact.after': '链接前往 codewiki 仓库。',
   'topic.level': '难度',
   'topic.time': '时长',
   'topic.checked': '验证时间',

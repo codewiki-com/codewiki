@@ -102,17 +102,19 @@ export default function DailyKata({ locale, buildDay, entries, labels }: DailyKa
           aria-label={fill(labels.peek, { title: entry.title })}
           data-daily-peek
         >
-          <div class="peek-body" dangerouslySetInnerHTML={{ __html: entry.peekHtml }} />
+          <div class="peek-body">
+            <div dangerouslySetInnerHTML={{ __html: entry.peekHtml }} />
+            {entry.peekMoreSmall > 0 && (
+              <span class={`peek-fade${entry.peekMore > 0 ? '' : ' peek-small'}`} aria-hidden="true" />
+            )}
+            {entry.peekMore > 0 && (
+              <span class="lbl peek-more" data-daily-more>
+                {fill(labels.more, { count: entry.peekMore })}
+              </span>
+            )}
+          </div>
           {entry.peekMoreSmall > 0 && (
-            <span class={`peek-fade${entry.peekMore > 0 ? '' : ' peek-small'}`} aria-hidden="true" />
-          )}
-          {entry.peekMore > 0 && (
-            <span class="lbl peek-more" data-daily-more>
-              {fill(labels.more, { count: entry.peekMore })}
-            </span>
-          )}
-          {entry.peekMoreSmall > 0 && (
-            <span class="lbl peek-more peek-small">{fill(labels.more, { count: entry.peekMoreSmall })}</span>
+            <span class="lbl peek-caption">{fill(labels.more, { count: entry.peekMoreSmall })}</span>
           )}
         </a>
       </section>

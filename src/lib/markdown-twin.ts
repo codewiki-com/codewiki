@@ -38,7 +38,8 @@ const TERM = /<Term\s+id="[^"]*"\s*>([\s\S]*?)<\/Term>/g;
 const CHECKPOINT = /<Checkpoint\s+id="([^"]*)"\s*\/>/g;
 const DEPTH = /<Depth\s+level="([a-z]+)"\s*>|<\/Depth>/g;
 const SHEET = /<Sheet\s+title="([^"]*)"\s*>([\s\S]*?)<\/Sheet>/g;
-const ROW = /<Row\s+code="([^"]*)"\s*>([\s\S]*?)<\/Row>/g;
+/** A Row code attribute may use either quote; an escaped matching quote stays inside the value. */
+const ROW = /<Row\s+code=(["'])((?:\\.|(?!\1)[^\\])*)\1\s*>([\s\S]*?)<\/Row>/g;
 /** A callout or cell label left alone on its line, and the quoted line that should join it. */
 const LABEL_LINE = /^(> (?:\*\*[^\n*]+:\*\*|- \*\*[^\n*]+\*\*:))[ \t]*\n(?:>[ \t]*\n)*> (?!```)/gm;
 
@@ -137,7 +138,8 @@ function convertTldr(text: string): string {
 
 /** `<Sheet>` and `<Row>` become the headings and terse bullets a Markdown reference expects. */
 function convertSheets(text: string): string {
-  const row = (_match: string, code: string, note: string) => `- ${inlineCode(code)} — ${collapse(note)}`;
+  const row = (_match: string, _quote: string, code: string, note: string) =>
+    `- ${inlineCode(code)} — ${collapse(note)}`;
   return text
     .replace(SHEET, (_match, title: string, inner: string) => {
       const rows = inner.replace(ROW, row).replace(/^[ \t]+(?=- )/gm, '');
@@ -161,8 +163,8 @@ export function extractCheatsheetRows(mdxSource: string): CheatsheetRow[] {
     for (const row of (sheet[2] ?? '').matchAll(ROW)) {
       rows.push({
         section,
-        code: decodeAttribute(row[1] ?? ''),
-        note: collapse(row[2] ?? '').replace(COMPONENT, ''),
+        code: decodeAttribute(row[2] ?? ''),
+        note: collapse(row[3] ?? '').replace(COMPONENT, ''),
       });
     }
   }

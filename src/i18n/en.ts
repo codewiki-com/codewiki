@@ -141,6 +141,33 @@ export default {
   // Always names the *other* language, in that language.
   'footer.otherLocale': '中文',
 
+  'about.title': 'About codewiki',
+  'about.description':
+    'How codewiki combines a bilingual programming reference, runnable lessons, code review practice and local-first browser tools.',
+  'about.what.title': 'What codewiki is',
+  'about.what.body':
+    'codewiki is a programming reference and a course in one place, for programmers from beginner to advanced. Every topic gives its answer in the first screen, includes examples that run in the browser, and has a clean Markdown twin that can be handed directly to an AI. The English and Chinese editions contain the same text, paragraph for paragraph.',
+  'about.why.title': 'Why “Master code in the AI era”',
+  'about.why.body':
+    'Coding agents now write most first drafts. The scarce skill is the ability to read code, review it, and specify the next change precisely. Every codewiki topic therefore ends with an “In the AI era” section that names the characteristic failure modes of generated code for that subject. Review katas train the same judgment on concrete examples. Rules packs and the prompt builder carry those pitfalls into the instructions you give an agent.',
+  'about.verified.title': 'How content is verified',
+  'about.verified.body':
+    'Versions are pinned rather than implied: Python 3.14, Node 24, TypeScript 6, Go 1.27, Rust 1.98, Java 25, C++23, and the corresponding versions for other tracks. Every runnable example was executed, and its observed output was pasted into the page. Builds check external links and reject English and Chinese topics that fall out of alignment. The repository publishes the editorial standard and verification tooling.',
+  'about.verified.date': 'Each topic also shows its verified date, so readers can judge the age of a claim.',
+  'about.local.title': 'What stays on your machine',
+  'about.local.body':
+    'There are no accounts. Reading progress, flashcards, and settings live in your browser’s localStorage and can be reset from the Settings page. After a page has been visited, the site can work offline. Runnable Python, JavaScript or TypeScript, and SQL examples execute in your browser through Pyodide, esbuild, and sql.js. Your code, progress, and settings are not sent anywhere.',
+  'about.built.title': 'Built with',
+  'about.built.body':
+    'The site is built with Astro and small Preact islands. Pagefind provides local search; Shiki highlights source code; IBM Plex is the type family. Static files are served from a CDN, while browser runtimes are loaded only by pages that need them.',
+  'about.built.source':
+    'The source is open on GitHub, including the content, build checks, and editorial rules.',
+  'about.contact.title': 'Contact / contribute',
+  'about.contact.before':
+    'To report an error, propose a topic, improve a translation, or contribute code, use the',
+  'about.contact.link': 'Contribute',
+  'about.contact.after': ' link to open the codewiki repository.',
+
   'topic.level': 'level',
   'topic.time': 'time',
   'topic.checked': 'checked',

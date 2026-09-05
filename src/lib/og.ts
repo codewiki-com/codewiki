@@ -180,6 +180,7 @@ export function ogEntries(): OgEntry[] {
   const out: OgEntry[] = [];
 
   const pages = [
+    { path: 'about', title: 'about.title', description: 'about.description' },
     { path: 'glossary', title: 'glossary.title', description: 'glossary.sub' },
     { path: 'tracks', title: 'tracks.title', description: 'tracks.sub' },
     { path: 'search', title: 'search.title', description: 'search.sub' },
