@@ -117,11 +117,21 @@ export default {
   'home.promptMeta': 'Claude · ChatGPT · Copy',
 
   'home.continue': 'continue',
-  'home.kata': 'kata today',
   'home.recall': 'recall',
   'home.review': 'Review',
   'home.due': '{count} due',
   'home.progress': 'Reading progress: {title}',
+
+  // The daily kata panel — docs/design/daily-kata.md.
+  'daily.eyebrow': 'Daily kata',
+  'daily.hook': '{issues} issues hide in {lines} lines. Find them before you would ship it.',
+  'daily.hookOne': '1 issue hides in {lines} lines. Find it before you would ship it.',
+  'daily.found': 'You found {found} of {issues} issues.',
+  'daily.start': 'Start the kata',
+  'daily.done': 'Done today · review again',
+  'daily.from': 'from {topic}',
+  'daily.more': '+{count} more lines',
+  'daily.peek': 'Preview of the kata code: {title}',
 
   'footer.tagline': 'codewiki · static site · progress stays in your browser',
   'footer.about': 'About',
