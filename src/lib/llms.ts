@@ -105,6 +105,7 @@ export function buildLlmsIndex(
   const chinese = byTrack(topics, 'zh', (track) => track.name.zh);
 
   const optional = [
+    `- [About codewiki](${SITE.url}/about/): How the reference is built, verified, localized, and kept private.`,
     `- [Glossary](${SITE.url}/api/glossary.json): ${plural(glossaryCount, 'term')}, defined in English and Chinese, as JSON.`,
     `- [Learning paths](${SITE.url}/api/paths.json): ${plural(pathsCount, 'ordered path')}, milestones included, as JSON.`,
     `- [Full text](${SITE.url}/llms-full.txt): every article above concatenated into one file.`,

@@ -103,6 +103,7 @@ describe('buildLlmsIndex', () => {
 
   it('ends with the optional resources, counted', () => {
     const optional = index.slice(index.indexOf('## Optional'));
+    expect(optional).toContain('https://codewiki.com/about/');
     expect(optional).toContain('https://codewiki.com/api/glossary.json');
     expect(optional).toContain('https://codewiki.com/api/paths.json');
     expect(optional).toContain('https://codewiki.com/llms-full.txt');

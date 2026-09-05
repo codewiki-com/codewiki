@@ -10,6 +10,8 @@ import { test, expect } from '@playwright/test';
 const SAMPLES: { path: string; ld: string }[] = [
   { path: '/', ld: 'WebSite' },
   { path: '/zh/', ld: 'WebSite' },
+  { path: '/about/', ld: 'BreadcrumbList' },
+  { path: '/zh/about/', ld: 'BreadcrumbList' },
   { path: '/python/', ld: 'Course' },
   { path: '/python/closures/', ld: 'TechArticle' },
   { path: '/zh/python/closures/', ld: 'TechArticle' },
@@ -29,6 +31,8 @@ test('the sitemap index points at a child sitemap', async ({ request }) => {
 test('the child sitemap carries both locales and their alternates', async ({ request }) => {
   const body = await (await request.get('/sitemap-0.xml')).text();
 
+  expect(body).toContain('<loc>https://codewiki.com/about/</loc>');
+  expect(body).toContain('<loc>https://codewiki.com/zh/about/</loc>');
   expect(body).toContain('<loc>https://codewiki.com/python/closures/</loc>');
   expect(body).toContain('<loc>https://codewiki.com/zh/python/closures/</loc>');
   expect(body).toContain(
@@ -37,6 +41,29 @@ test('the child sitemap carries both locales and their alternates', async ({ req
   expect(body).toContain(
     '<xhtml:link rel="alternate" hreflang="en" href="https://codewiki.com/python/closures/"/>',
   );
+});
+
+test('both About pages carry alternates and are linked from their footer', async ({ page }) => {
+  for (const { path, footerLabel } of [
+    { path: '/about/', footerLabel: 'About' },
+    { path: '/zh/about/', footerLabel: '关于' },
+  ]) {
+    const response = await page.goto(path);
+    expect(response?.status()).toBe(200);
+
+    await expect(page.locator('link[rel="alternate"][hreflang="en"]')).toHaveAttribute(
+      'href',
+      'https://codewiki.com/about/',
+    );
+    await expect(page.locator('link[rel="alternate"][hreflang="zh-Hans"]')).toHaveAttribute(
+      'href',
+      'https://codewiki.com/zh/about/',
+    );
+
+    const footerLink = page.locator(`footer a[href="${path}"]`);
+    await expect(footerLink).toHaveCount(1);
+    await expect(footerLink).toHaveText(footerLabel);
+  }
 });
 
 test('the sitemap carries one page per track practice catalogue', async ({ request }) => {
