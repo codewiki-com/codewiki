@@ -19,6 +19,12 @@ export type Track = {
   name: L;
   description: L;
   sections: Section[];
+  /**
+   * The tracks with the deepest coverage today — docs/design/flagship-tracks.md. Home and
+   * `/tracks/` promise these first; everything else keeps its place under "More tracks".
+   * Nothing else in the site reads the flag, so the set can change without a layout edit.
+   */
+  flagship?: true;
 };
 
 /** Shorthand for a section entry; keeps the table below readable. */
@@ -27,6 +33,7 @@ const s = (slug: string, en: string, zh: string): Section => ({ slug, name: { en
 export const TRACKS: Track[] = [
   {
     slug: 'python',
+    flagship: true,
     kind: 'language',
     glyph: 'py',
     name: { en: 'Python', zh: 'Python' },
@@ -45,6 +52,7 @@ export const TRACKS: Track[] = [
   },
   {
     slug: 'javascript',
+    flagship: true,
     kind: 'language',
     glyph: 'js',
     name: { en: 'JavaScript', zh: 'JavaScript' },
@@ -63,6 +71,7 @@ export const TRACKS: Track[] = [
   },
   {
     slug: 'typescript',
+    flagship: true,
     kind: 'language',
     glyph: 'ts',
     name: { en: 'TypeScript', zh: 'TypeScript' },
@@ -80,6 +89,7 @@ export const TRACKS: Track[] = [
   },
   {
     slug: 'go',
+    flagship: true,
     kind: 'language',
     glyph: 'go',
     name: { en: 'Go', zh: 'Go' },
@@ -97,6 +107,7 @@ export const TRACKS: Track[] = [
   },
   {
     slug: 'rust',
+    flagship: true,
     kind: 'language',
     glyph: 'rs',
     name: { en: 'Rust', zh: 'Rust' },
@@ -400,6 +411,7 @@ export const TRACKS: Track[] = [
   },
   {
     slug: 'foundations',
+    flagship: true,
     kind: 'pillar',
     glyph: 'cs',
     name: { en: 'CS foundations', zh: '计算机基础' },
@@ -418,21 +430,8 @@ export const TRACKS: Track[] = [
   },
 ];
 
-/** The twelve tracks featured on the home page, in display order. */
-export const HOME_TRACKS: string[] = [
-  'python',
-  'javascript',
-  'typescript',
-  'go',
-  'rust',
-  'java',
-  'cpp',
-  'frontend',
-  'backend',
-  'ai',
-  'devops',
-  'ai-era',
-];
+/** The flagship tracks, in registry order — the six the home page and `/tracks/` lead with. */
+export const FLAGSHIP_TRACKS: Track[] = TRACKS.filter((track) => track.flagship === true);
 
 const BY_SLUG = new Map(TRACKS.map((t) => [t.slug, t]));
 

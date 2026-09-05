@@ -62,10 +62,11 @@ export default {
   'home.browseTracks': 'Browse tracks',
   'home.verified': 'Currently verified against',
   'home.tracks': 'Tracks',
-  'home.allTracks': 'All tracks',
+  'home.allTracks': 'All {count} tracks',
   // The hero and the search row under it — docs/design/home-hero-kata.md.
   'home.startReviewing': 'Start reviewing',
   'home.searchAll': 'Search {topics} topics, {terms} terms and {exercises} exercises',
+  'home.startTrack': 'Start with a track',
 
   // The static command-palette panel in the hero. Arrows and slashes are template chrome.
   'home.palette.move': 'move',
@@ -244,6 +245,13 @@ export default {
   'tracks.languages': 'Languages',
   'tracks.domains': 'Domains',
   'tracks.pillars': 'Pillars',
+  // The flagship split — docs/design/flagship-tracks.md.
+  'tracks.flagship': 'Flagship',
+  'tracks.flagshipHint': 'deepest coverage today',
+  'tracks.more': 'More tracks',
+  'tracks.moreHint': 'growing',
+  'tracks.intro': '{flagship} deep tracks to start with, {rest} more growing behind them.',
+  'tracks.counts': '{topics} topics · {exercises} exercises',
 
   'track.topics': '{count}',
   // English needs the singular; Chinese does not, so its value is the same either way.
