@@ -16,7 +16,7 @@ Small changes with the largest effect on first impressions and credibility.
 - [ ] **A4. Report an error.** [Codex] A "Report an error" link on every topic, kata and interview page that opens a prefilled GitHub issue (title, URL, section). Requires the repository URL to be real (see A7).
 - [ ] **A5. Flagship tracks first.** [design → Codex] Home and `/tracks/` show 5–6 flagship tracks first (candidates by depth today: JavaScript, Python, TypeScript, Go, Rust, CS foundations, Backend); the rest sit under "More tracks" with the existing `preview` tag. No content is deleted.
 - [ ] **A6. Cursor rules in the correct shape.** [Codex] `/rules/{track}/cursor.mdc` becomes a downloadable `.cursor/rules/codewiki-{track}.mdc` with the frontmatter Cursor expects (`description`, `globs`, `alwaysApply`); `CLAUDE.md`/`AGENTS.md` unchanged. Document the install path on the rules page.
-- [ ] **A7. Repository decision.** [user] Public or private, licence for content (CC BY-SA 4.0 suggested) and code (MIT suggested). Then replace the placeholder `repo` in `src/data/site.ts`, add `CONTRIBUTING.md`, and enable "Edit on GitHub".
+- [x] **A7. Repository decision.** [user, 2026-09-05] **Public, `codewiki-com/codewiki`, content CC BY-SA 4.0, code MIT.** Remaining work (Codex): replace the placeholder `repo` in `src/data/site.ts`, add `CONTRIBUTING.md`, and enable "Edit on GitHub".
 - [ ] **A8. Launch.** [user + Claude] Runbook: `plans/2026-09-05-launch-checklist.md`. Add to its verification list: access speed from mainland China (the Chinese edition's audience), because Cloudflare Pages is slow or blocked for some Chinese networks.
 
 ## Phase B — first weeks after launch

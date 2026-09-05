@@ -9,6 +9,7 @@ Read this first in any new session. Update it at every milestone and before star
 - Language rule: all repo artefacts (docs, comments, commits, identifiers) in English; chat with the user in Chinese.
 
 ## Decisions log
+- 2026-09-05: repository will be public at `github.com/codewiki-com/codewiki`; content licence CC BY-SA 4.0, code MIT (user). Phase A of the ROADMAP started: design notes `docs/design/home-hero-kata.md`, `verification-panel.md`, `flagship-tracks.md`.
 - 2026-09-03 Content strategy: tiered restructure + Codex polish in waves; publish only `status: reviewed`.
 - 2026-09-03 Translation: Codex does polish and translation; no Claude QA pass.
 - 2026-09-03 Framework: plain Astro 7 + custom design system (no Starlight). Static output, no accounts; localStorage + export/import.
