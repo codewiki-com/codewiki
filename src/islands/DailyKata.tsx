@@ -6,6 +6,12 @@ import type { Locale } from '@/lib/urls';
 
 export interface DailyKataProps {
   locale: Locale;
+  /**
+   * `hero` is the narrow card in the home page's first screen — docs/design/home-hero-kata.md:
+   * no brief, a shorter peek and a "new one every day" caption. `section` is the full-width
+   * panel of docs/design/daily-kata.md.
+   */
+  variant?: 'section' | 'hero';
   /** UTC day the page was built; entry 0 belongs to it. */
   buildDay: number;
   /** That day and the six after it — docs/design/daily-kata.md, "Rotation without rebuild". */
@@ -36,7 +42,13 @@ const fill = (text: string, values: Record<string, number | string>) =>
  * One concrete kata on the home page, server-rendered for the build day and hydrated only to
  * rotate to the visitor's own UTC day and to show that they already did it.
  */
-export default function DailyKata({ locale, buildDay, entries, labels }: DailyKataProps) {
+export default function DailyKata({
+  locale,
+  variant = 'section',
+  buildDay,
+  entries,
+  labels,
+}: DailyKataProps) {
   const [offset, setOffset] = useState(0);
   const [done, setDone] = useState<QuizProgress | undefined>(undefined);
 
@@ -65,59 +77,68 @@ export default function DailyKata({ locale, buildDay, entries, labels }: DailyKa
         lines: entry.lines,
       });
 
-  return (
-    <div class="wrap daily-wrap">
-      <section class="panel daily" data-daily aria-labelledby="daily-title">
-        <div class="daily-eyebrow">
-          <span class="lbl daily-label">
-            <span class="daily-dot" aria-hidden="true" />
-            {labels.eyebrow} · {date}
-          </span>
-          <span class="lbl daily-meta">
-            {entry.typeLabel} · {entry.trackLabel} · {entry.minutesLabel}
-          </span>
-        </div>
+  const hero = variant === 'hero';
 
-        <div class="daily-text">
-          <h2 id="daily-title">{entry.title}</h2>
-          {entry.task ? <p class="daily-task">{entry.task}</p> : null}
-          <p class="daily-hook" data-daily-hook>
-            {hook}
-          </p>
-        </div>
+  const card = (
+    <section
+      class={`panel daily${hero ? ' daily-hero' : ''}`}
+      data-daily
+      data-daily-variant={variant}
+      aria-labelledby="daily-title"
+    >
+      <div class="daily-eyebrow">
+        <span class="lbl daily-label">
+          <span class="daily-dot" aria-hidden="true" />
+          {labels.eyebrow} · {date}
+        </span>
+        <span class="lbl daily-meta">
+          {entry.typeLabel} · {entry.trackLabel} · {entry.minutesLabel}
+        </span>
+      </div>
 
-        <div class="daily-actions">
-          <a class={`btn daily-start ${done ? 'btn-g' : 'btn-p'}`} href={entry.kataUrl} data-daily-start>
-            {done ? labels.done : labels.start}
-            <span aria-hidden="true">→</span>
-          </a>
-          <a class="daily-from" href={entry.topicUrl}>
-            {fill(labels.from, { topic: entry.topicTitle })}
-          </a>
-        </div>
+      <div class="daily-text">
+        <h2 id="daily-title">{entry.title}</h2>
+        {!hero && entry.task ? <p class="daily-task">{entry.task}</p> : null}
+        <p class="daily-hook" data-daily-hook>
+          {hook}
+        </p>
+      </div>
 
-        <a
-          class="peek"
-          href={entry.kataUrl}
-          aria-label={fill(labels.peek, { title: entry.title })}
-          data-daily-peek
-        >
-          <div class="peek-body">
-            <div dangerouslySetInnerHTML={{ __html: entry.peekHtml }} />
-            {entry.peekMoreSmall > 0 && (
-              <span class={`peek-fade${entry.peekMore > 0 ? '' : ' peek-small'}`} aria-hidden="true" />
-            )}
-            {entry.peekMore > 0 && (
-              <span class="lbl peek-more" data-daily-more>
-                {fill(labels.more, { count: entry.peekMore })}
-              </span>
-            )}
-          </div>
-          {entry.peekMoreSmall > 0 && (
-            <span class="lbl peek-caption">{fill(labels.more, { count: entry.peekMoreSmall })}</span>
-          )}
+      <div class="daily-actions">
+        <a class={`btn daily-start ${done ? 'btn-g' : 'btn-p'}`} href={entry.kataUrl} data-daily-start>
+          {done ? labels.done : labels.start}
+          <span aria-hidden="true">→</span>
         </a>
-      </section>
-    </div>
+        <a class="daily-from" href={entry.topicUrl}>
+          {fill(labels.from, { topic: entry.topicTitle })}
+        </a>
+        {hero && <span class="lbl daily-every">{labels.everyDay}</span>}
+      </div>
+
+      <a
+        class="peek"
+        href={entry.kataUrl}
+        aria-label={fill(labels.peek, { title: entry.title })}
+        data-daily-peek
+      >
+        <div class="peek-body">
+          <div dangerouslySetInnerHTML={{ __html: entry.peekHtml }} />
+          {entry.peekMoreSmall > 0 && (
+            <span class={`peek-fade${entry.peekMore > 0 ? '' : ' peek-small'}`} aria-hidden="true" />
+          )}
+          {entry.peekMore > 0 && (
+            <span class="lbl peek-more" data-daily-more>
+              {fill(labels.more, { count: entry.peekMore })}
+            </span>
+          )}
+        </div>
+        {entry.peekMoreSmall > 0 && (
+          <span class="lbl peek-caption">{fill(labels.more, { count: entry.peekMoreSmall })}</span>
+        )}
+      </a>
+    </section>
   );
+
+  // The hero places the card in its own grid column, so it brings no `.wrap` of its own.
+  return hero ? card : <div class="wrap daily-wrap">{card}</div>;
 }

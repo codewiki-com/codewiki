@@ -43,6 +43,17 @@ test('the English home page renders its headline', async ({ page }) => {
 test('the P2 navigation and path call to action point at public routes', async ({ page }) => {
   await page.goto('/');
 
+  // Practice leads the bar: the training side is the signature, not the catalogue.
+  await expect(page.locator('.links a')).toHaveText([
+    'Practice',
+    'Paths',
+    'Tracks',
+    'Cheatsheets',
+    'Playground',
+    'Glossary',
+    'AI era',
+  ]);
+
   const desktop = page.locator('.links');
   await expect(desktop.getByRole('link', { name: 'Paths', exact: true })).toHaveAttribute('href', '/paths/');
   await expect(desktop.getByRole('link', { name: 'Practice', exact: true })).toHaveAttribute(
@@ -65,26 +76,43 @@ test('the P2 navigation and path call to action point at public routes', async (
   await expect(mobile.locator('a[href="/cheatsheets/"]')).toHaveText('Cheatsheets');
   await expect(mobile.locator('a[href="/playground/"]')).toHaveText('Playground');
 
-  await expect(page.getByRole('link', { name: 'Start a path' })).toHaveAttribute('href', '/paths/');
+  await expect(page.getByRole('link', { name: t('en', 'home.startReviewing') })).toHaveAttribute(
+    'href',
+    /^\/practice\//,
+  );
 });
 
-/* The kata of the day is the `DailyKata` panel now; tests/e2e/daily-kata.spec.ts covers the card. */
-test('the daily kata panel sits between the hero and the feature grid', async ({ page }) => {
+/* docs/design/home-hero-kata.md: the kata is the hero's right column, not a section of its own.
+   tests/e2e/daily-kata.spec.ts covers the card itself. */
+test('the review kata is the first screen, and its two buttons share one destination', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('[data-personal-kata]')).toHaveCount(0);
-  await expect(page.locator('[data-daily] [data-daily-start]')).toHaveAttribute('href', /^\/practice\//);
 
-  const placed = await page.evaluate(() => {
-    const [hero, daily, features] = ['.hero', '[data-daily]', '.features'].map((selector) =>
-      document.querySelector(selector),
-    );
-    if (!hero || !daily || !features) return null;
-    return {
-      afterHero: Boolean(hero.compareDocumentPosition(daily) & Node.DOCUMENT_POSITION_FOLLOWING),
-      beforeFeatures: Boolean(features.compareDocumentPosition(daily) & Node.DOCUMENT_POSITION_PRECEDING),
-    };
-  });
-  expect(placed).toEqual({ afterHero: true, beforeFeatures: true });
+  const card = page.locator('.hero [data-daily][data-daily-variant="hero"]');
+  await expect(card).toBeVisible();
+  expect(((await card.locator('h2').textContent()) ?? '').trim().length).toBeGreaterThan(0);
+
+  const href = await card.locator('[data-daily-start]').getAttribute('href');
+  expect(href).toMatch(/^\/practice\//);
+  await expect(page.getByRole('link', { name: t('en', 'home.startReviewing') })).toHaveAttribute(
+    'href',
+    href ?? '',
+  );
+  expect((await page.request.get(href ?? '')).status()).toBe(200);
+
+  // The hero's brief is dropped in this variant; the hook line carries the promise instead.
+  await expect(card.locator('.daily-task')).toHaveCount(0);
+  await expect(card.locator('.daily-every')).toHaveText(t('en', 'daily.everyDay'));
+});
+
+test('the tracks section follows the personal strip, before the feature grid', async ({ page }) => {
+  await page.goto('/');
+  const order = await page.evaluate(() =>
+    [...document.querySelectorAll('.wrap.hero, .wrap.search-row, .wrap.tracks, .features')].map(
+      (node) => node.className,
+    ),
+  );
+  expect(order).toEqual(['wrap hero', 'wrap search-row', 'wrap tracks', 'features']);
 });
 
 test('the Chinese home page renders the same headline in Chinese', async ({ page }) => {
@@ -94,20 +122,21 @@ test('the Chinese home page renders the same headline in Chinese', async ({ page
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://codewiki.com/zh/');
 });
 
-test('the palette on the home page is a static list of real pages without JavaScript', async ({ page }) => {
+test('the search row replaces the palette mock and opens the real palette', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
-  // Server-rendered rows: two recent topics from different tracks, one glossary term and one
-  // practice item. They remain ordinary links, so the palette is useful with scripting off.
-  const rows = page.locator('.hero-palette .row');
-  await expect(rows).toHaveCount(4);
-  await expect(rows.first()).toHaveClass(/\bon\b/);
-  await expect(page.locator('.hero-palette .row[href="/glossary/closure/"]')).toBeVisible();
 
-  const topicTracks = await rows.evaluateAll((links) =>
-    links.slice(0, 2).map((link) => new URL((link as HTMLAnchorElement).href).pathname.split('/')[1]),
-  );
-  expect(new Set(topicTracks).size).toBe(2);
+  // The four-row mock is gone; the palette itself is the only place those rows now live.
+  await expect(page.locator('.hero-palette, .hero .palette-rows')).toHaveCount(0);
+
+  const bar = page.locator('.search-row [data-palette-open]');
+  await expect(bar).toBeVisible();
+  // The numbers are counted at build time, so the row can never promise more than exists.
+  await expect(bar).toHaveText(/Search [\d,]+ topics, [\d,]+ terms and [\d,]+ exercises/);
+
+  await expect(page.locator('[data-palette-ready="true"]')).toBeAttached();
+  await bar.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
 
   const pageHeight = await page.evaluate(() => document.documentElement.scrollHeight);
   expect(pageHeight).toBeLessThan(3_000);

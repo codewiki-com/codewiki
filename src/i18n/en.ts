@@ -58,17 +58,16 @@ export default {
   'home.eyebrow': 'programming, explained precisely · en / zh',
   'home.h1': 'Master code in the AI era.',
   'home.sub':
-    'A reference and a course in one place. Every topic answers in the first screen, runs in the browser, and can be handed to your AI as clean Markdown.',
-  'home.startPath': 'Start a path',
+    'AI writes more of the code; you still have to read it, review it and say precisely what you need. Every topic here runs in the browser and ends with what to check in generated code.',
   'home.browseTracks': 'Browse tracks',
   'home.verified': 'Currently verified against',
   'home.tracks': 'Tracks',
   'home.allTracks': 'All tracks',
-  'home.tagTerm': 'term',
-  'home.tagQuiz': 'quiz',
+  // The hero and the search row under it — docs/design/home-hero-kata.md.
+  'home.startReviewing': 'Start reviewing',
+  'home.searchAll': 'Search {topics} topics, {terms} terms and {exercises} exercises',
 
   // The static command-palette panel in the hero. Arrows and slashes are template chrome.
-  'home.palette.query': 'closure',
   'home.palette.move': 'move',
   'home.palette.open': 'open',
   'home.palette.playground': 'open in playground',
@@ -132,6 +131,7 @@ export default {
   'daily.from': 'from {topic}',
   'daily.more': '+{count} more lines',
   'daily.peek': 'Preview of the kata code: {title}',
+  'daily.everyDay': 'new one every day',
 
   'footer.tagline': 'codewiki · static site · progress stays in your browser',
   'footer.about': 'About',

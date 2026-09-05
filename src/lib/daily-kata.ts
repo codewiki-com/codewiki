@@ -26,9 +26,17 @@ import type { QuizItem } from '@/schemas/quiz';
 /** Today plus the next six days: one week of rotation from a single build. */
 export const DAILY_KATA_DAYS = 7;
 
-/** Lines of code the peek shows, at the two column counts of the card. */
+/** Lines of code the peek shows, at the two column counts of the section card. */
 export const DAILY_PEEK_LINES = 8;
 export const DAILY_PEEK_LINES_SMALL = 6;
+
+/**
+ * The hero card is narrower than the full-width section card, so it shows fewer lines —
+ * docs/design/home-hero-kata.md. The counts are props rather than a CSS clamp because the
+ * "+N more lines" chip has to name the lines the reader cannot see.
+ */
+export const HERO_PEEK_LINES = 6;
+export const HERO_PEEK_LINES_SMALL = 5;
 
 /** One day of the window, carrying only what the card draws. */
 export interface DailyKataEntry {
@@ -62,6 +70,7 @@ export interface DailyKataLabels {
   from: string;
   more: string;
   peek: string;
+  everyDay: string;
 }
 
 export interface DailyKataData {
@@ -86,14 +95,25 @@ function labelsFor(locale: Locale): DailyKataLabels {
     from: t(locale, 'daily.from', { topic: '{topic}' }),
     more: t(locale, 'daily.more', { count: '{count}' }),
     peek: t(locale, 'daily.peek', { title: '{title}' }),
+    everyDay: t(locale, 'daily.everyDay'),
   };
+}
+
+export interface DailyKataOptions {
+  now?: Date;
+  /** Peek height at the wide and the narrow column counts; the hero card asks for fewer. */
+  peekLines?: number;
+  peekLinesSmall?: number;
 }
 
 /**
  * Builds the seven cards. Runs during the static build, so the window starts on the build day;
  * a visitor further ahead than the window keeps its last entry rather than an empty card.
  */
-export async function dailyKataData(locale: Locale, now = new Date()): Promise<DailyKataData> {
+export async function dailyKataData(locale: Locale, options: DailyKataOptions = {}): Promise<DailyKataData> {
+  const now = options.now ?? new Date();
+  const peekLines = options.peekLines ?? DAILY_PEEK_LINES;
+  const peekLinesSmall = options.peekLinesSmall ?? DAILY_PEEK_LINES_SMALL;
   const { getCollection } = await import('astro:content');
   const banks: CollectionEntry<'quizzes'>[] = await getCollection('quizzes');
   const bankById = new Map(banks.map((bank) => [bank.id, bank] as const));
@@ -139,9 +159,9 @@ export async function dailyKataData(locale: Locale, now = new Date()): Promise<D
       minutesLabel: t(locale, 'practice.minutes', {
         count: formatCount(locale, pick.minutes, 'unit.minute', 'unit.minutes'),
       }),
-      peekHtml: await renderCodePeek(item.code, item.lang, DAILY_PEEK_LINES),
-      peekMore: Math.max(0, lines - DAILY_PEEK_LINES),
-      peekMoreSmall: Math.max(0, lines - DAILY_PEEK_LINES_SMALL),
+      peekHtml: await renderCodePeek(item.code, item.lang, peekLines),
+      peekMore: Math.max(0, lines - peekLines),
+      peekMoreSmall: Math.max(0, lines - peekLinesSmall),
     });
   }
 

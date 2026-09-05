@@ -67,12 +67,13 @@ test('the card names one kata and links to it', async ({ page }) => {
   await expect(page.locator('h1')).toHaveText(title);
 });
 
-test('the code peek shows at most eight lines and counts the rest', async ({ page }) => {
+test('the code peek shows at most six lines and counts the rest', async ({ page }) => {
   await page.goto('/');
   const lines = page.locator('[data-daily-peek] .peek-code .l');
   const count = await lines.count();
   expect(count).toBeGreaterThan(0);
-  expect(count).toBeLessThanOrEqual(8);
+  // The hero variant's peek — docs/design/home-hero-kata.md.
+  expect(count).toBeLessThanOrEqual(6);
 
   const more = page.locator('[data-daily-more]');
   if (await more.count()) await expect(more).toHaveText(/^\+\d+ more lines$/);
