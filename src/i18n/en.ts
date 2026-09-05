@@ -228,6 +228,7 @@ export default {
   'track.compare': 'Compare',
   'track.playground': 'Playground',
   'track.soon': 'soon',
+  'track.preview': 'preview',
   'track.comingSoon': 'coming soon',
   'track.pathMeta': '{topics} · {checkpoints} · about {hours}',
   'track.continueTopic': 'Continue: {title}',

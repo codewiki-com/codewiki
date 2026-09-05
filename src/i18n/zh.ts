@@ -200,6 +200,7 @@ export default {
   'track.compare': '语言对比',
   'track.playground': '试验场',
   'track.soon': '即将上线',
+  'track.preview': '预览',
   'track.comingSoon': '即将上线',
   'track.pathMeta': '{topics} · {checkpoints} · 约 {hours}',
   'track.continueTopic': '继续：{title}',
