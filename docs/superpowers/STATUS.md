@@ -19,7 +19,7 @@ Read this first in any new session. Update it at every milestone and before star
 - 2026-09-04 P2 sub-spec `docs/superpowers/specs/2026-09-04-p2-learning-layer-design.md` approved (user: “你自己决策，选最佳的”); decisions: 4 flashcard ratings, 2-column print, paired bilingual default, kata with line comments, CodeMirror 6 lazy. Next: P2 plan.
 - 2026-09-03 Spec approved by user: `docs/superpowers/specs/2026-09-03-codewiki-design.md` (including §6.1 AI-era integration).
 
-## Where things are (updated 2026-09-05 00:30 local)
+## Where things are (updated 2026-09-05 09:30 local)
 | Item | State |
 |---|---|
 | Specs / mockups | approved; P1 `docs/design/mockups/`, P2 `docs/design/mockups/p2/` |
@@ -28,12 +28,12 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-05 06:40 local)
-- **Merged into `main`:** everything, including the site-review fix round (7b38f2d; screenshots of `/practice/`, `/practice/javascript/`, `/tracks/`, `/cheatsheets/python/` reviewed by the design lead). Report: `docs/superpowers/ledgers/2026-09-05-site-review-fix-round.md`.
-- **Running:** full gate on `main` (root checkout, `nohup`, log `main-full-gate.log` in the session scratchpad, ends with `end … exit=`): lint → check → test → build → check:links → test:e2e → lhci. Expected ~40 min.
-- **Running — Codex** on `fix-followups` (worktree; brief `.superpowers/sdd/followups/brief.md`, log `codex.log`, report `report.md` there): docker cheatsheet single-quoted row, daily-kata mobile chip under the peek, About page (`/about/`, `/zh/about/`, footer link).
-- **Then:** review + merge `fix-followups`; rerun `pnpm lint && pnpm check && pnpm test` on main. Deploy is **not urgent** (user, 2026-09-05): when asked, create the GitHub repo with `gh`, push, Cloudflare Pages (user), verify headers/CSP/sw on the live site.
-- Stale preview servers were killed (ports 4399/4400); no other background processes belong to us.
+## Active work (updated 2026-09-05 09:30 local)
+- **Pre-launch work is complete on `main` (HEAD fbeac0c).** Everything from P0–P2, the content wave (290 topics → 287 after retiring 3 duplicates), the site review and its fix round, daily kata (每日一练), PWA offline, kata titles, interview coverage + QA, About page.
+- **Last full gate on `main`** (2026-09-05, root checkout, before the follow-ups merge): lint, check, 2,383 unit → after follow-ups 2,392 unit green; build 5,866 pages, 0 warnings; 134k+ links + 6 redirects resolve; e2e 259/259 (4 load-induced flakes passed in isolation); Lighthouse: two performance medians missed 0.95 (`/python/` 0.88, `/cheatsheets/python/` 0.81) while the load average was 12–17 — a quiet-machine rerun is scheduled (log `main-lhci-2.log` in the session scratchpad). If it still fails on a quiet machine, treat it as a real finding and open an Opus fix task (hub and cheatsheet main-thread work).
+- **No agent running** except that Lighthouse rerun watcher. Deploy is deferred (see TODO / launch checklist).
+- Housekeeping: stale worktrees `p0-t13-extract` and `p1-site-foundation` can be removed (`git worktree remove`); `p0-content-pipeline` stays for future tier-2 runs. Kill any leftover `python3 -m http.server` preview before screenshotting (check `ss -ltnp`).
+
 ## TODO (deferred by the user)
 - **Deploy / launch: deferred by the user on 2026-09-05.** Runbook: `docs/superpowers/plans/2026-09-05-launch-checklist.md` (GitHub repo via `gh`, Cloudflare Pages settings, domain, post-deploy verification incl. the PWA on iOS).
 - **MCP server: dropped** by the user on 2026-09-04 (do not build). **Visualizer tools and compare pages: deferred until after launch** (2026-09-05; decide then, based on which topics readers actually use). The daily kata surface is done.
