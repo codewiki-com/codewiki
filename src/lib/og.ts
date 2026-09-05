@@ -36,6 +36,7 @@ const ROOT = process.cwd();
 const TOKENS_FILE = path.join(ROOT, 'src', 'styles', 'tokens.css');
 const TOPICS_DIR = path.join(ROOT, 'src', 'content', 'topics');
 const GLOSSARY_DIR = path.join(ROOT, 'src', 'content', 'glossary');
+const QUIZZES_DIR = path.join(ROOT, 'src', 'content', 'quizzes');
 const FONT_DIR = path.join(ROOT, '.cache', 'fonts');
 
 const OG_TOKEN_NAMES = ['bg', 'line', 'ink', 'ink2', 'ink3', 'acc', 'acc-soft'] as const;
@@ -143,6 +144,23 @@ function readGlossary(): GlossaryRow[] {
     });
 }
 
+/**
+ * Tracks with a practice catalogue, i.e. with at least one quiz bank on disk. `getStaticPaths`
+ * for `/practice/{track}/` derives the same set from the `quizzes` collection, which is these
+ * files; reading the directory keeps `ogPaths()` a pure function of the repository.
+ */
+function practiceTracks(): string[] {
+  return readdirSync(QUIZZES_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter(
+      (slug) =>
+        Boolean(getTrack(slug)) &&
+        readdirSync(path.join(QUIZZES_DIR, slug)).some((file) => file.endsWith('.yaml')),
+    )
+    .sort();
+}
+
 /** Prefix for a locale's cards: English at the root, Chinese under `zh/`, as `seo.ts` expects. */
 const prefix = (locale: Locale) => (locale === 'zh' ? 'zh/' : '');
 
@@ -158,6 +176,7 @@ export function ogEntries(): OgEntry[] {
   if (entries) return entries;
   const topics = readTopics();
   const glossary = readGlossary();
+  const practice = practiceTracks();
   const out: OgEntry[] = [];
 
   const pages = [
@@ -210,6 +229,18 @@ export function ogEntries(): OgEntry[] {
         title: track.name[locale],
         subtitle: track.description[locale],
         track: t(locale, `tracks.${track.kind}s`),
+        glyph: track.glyph,
+      });
+    }
+
+    for (const slug of practice) {
+      const track = getTrack(slug)!;
+      out.push({
+        path: `${p}practice/${slug}`,
+        locale,
+        title: t(locale, 'practice.trackTitle', { track: track.name[locale] }),
+        subtitle: t(locale, 'practice.trackLead', { track: track.name[locale] }),
+        track: t(locale, 'practice.title'),
         glyph: track.glyph,
       });
     }

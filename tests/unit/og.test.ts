@@ -52,6 +52,15 @@ describe('ogPaths', () => {
     }
   });
 
+  it('covers the per-track practice catalogues in both locales', () => {
+    for (const track of ['python', 'javascript', 'rust']) {
+      expect(paths).toContain(`practice/${track}`);
+      expect(paths).toContain(`zh/practice/${track}`);
+    }
+    expect(ogImageUrl('en', '/practice/javascript/')).toBe(`${SITE.url}/og/practice/javascript.png`);
+    expect(ogImageUrl('zh', '/zh/practice/javascript/')).toBe(`${SITE.url}/og/zh/practice/javascript.png`);
+  });
+
   it('emits no duplicates and no leading slashes', () => {
     expect(new Set(paths).size).toBe(paths.length);
     expect(paths.filter((p) => p.startsWith('/'))).toEqual([]);

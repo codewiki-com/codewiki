@@ -84,6 +84,13 @@ export default function PracticeFilters({ locale, labels }: PracticeFiltersProps
       }
     };
 
+    /**
+     * The DOM order the grid is currently in. Re-appending every card is a full layout of the
+     * whole grid; on the old single-page catalogue that was 1,748 anchors on every filter tap.
+     * Sorting is cheap, moving nodes is not, so the move only happens when the result differs.
+     */
+    let order: HTMLElement[] = [...cards];
+
     const orderCards = () => {
       const sorted = [...cards].sort((a, b) => {
         const original = Number(a.dataset.order) - Number(b.dataset.order);
@@ -97,6 +104,9 @@ export default function PracticeFilters({ locale, labels }: PracticeFiltersProps
         const bSolved = b.dataset.status === 'done' ? 1 : 0;
         return aSolved - bSolved || original;
       });
+
+      if (sorted.every((card, index) => card === order[index])) return;
+      order = sorted;
       grid.append(...sorted);
     };
 

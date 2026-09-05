@@ -1,17 +1,21 @@
 ---
 /**
- * The bilingual practice catalogue. Every exercise and filter link is useful as static HTML;
- * the two idle islands only add browser-local progress, filtering, sorting and disclosure.
+ * The bilingual practice hub.
+ *
+ * It used to server-render all 1,748 exercise cards into one document — 1.77 MB of HTML, 17,726
+ * DOM elements and up to 16.7 s of blocking time before the filter island could answer a tap. The
+ * catalogue now lives at `/practice/{track}/`, one static page per track, and this page is the
+ * index: what to do today, and how much there is to do in each track.
+ *
+ * Nothing here is a card, so the page needs no filter island. The one script it carries sends a
+ * legacy `?track=` link on to the route that replaced it.
  */
 import { getCollection, type CollectionEntry } from 'astro:content';
 
 import { collections } from '@/content.config';
-import PracticeCard from '@/components/PracticeCard.astro';
-import Seg from '@/components/Seg.astro';
 import Tag from '@/components/Tag.astro';
 import { TRACKS } from '@/data/tracks';
 import { formatCount, t } from '@/i18n';
-import PracticeFilters from '@/islands/PracticeFilters';
 import TodayStrip, { type TodayPath, type TodayKata } from '@/islands/TodayStrip';
 import Base from '@/layouts/Base.astro';
 import { listTopics, topicMeta } from '@/lib/content';
@@ -52,8 +56,34 @@ const topicById = new Map(
     return [`${track}/${slug}`, topic] as const;
   }),
 );
-const presentTracks = TRACKS.filter((track) => items.some((item) => item.track === track.slug));
-const trackCount = new Set(items.map((item) => item.track)).size;
+
+/** Per-track totals and the per-type breakdown each cell states. */
+const byTrack = new Map<string, { total: number; types: Map<ItemType, number> }>();
+for (const item of items) {
+  const entry = byTrack.get(item.track) ?? { total: 0, types: new Map<ItemType, number>() };
+  entry.total += 1;
+  entry.types.set(item.type, (entry.types.get(item.type) ?? 0) + 1);
+  byTrack.set(item.track, entry);
+}
+
+const trackCells = TRACKS.filter((track) => byTrack.has(track.slug)).map((track) => {
+  const entry = byTrack.get(track.slug)!;
+  return {
+    track,
+    href: localizePath(`/practice/${track.slug}/`, locale),
+    // One line of text rather than one element per count: this page's whole point is a DOM
+    // small enough that the browser is never busy when the reader arrives.
+    breakdown: [
+      formatCount(locale, entry.total, 'unit.exercise', 'unit.exercises'),
+      ...ITEM_TYPES.filter((type) => entry.types.has(type)).map((type) =>
+        t(locale, 'practice.typeCount', {
+          label: t(locale, `practice.type.${type}`),
+          count: entry.types.get(type) ?? 0,
+        }),
+      ),
+    ].join(' · '),
+  };
+});
 
 const firstBankUrl = new Map<string, string>();
 for (const item of items) {
@@ -98,56 +128,6 @@ const todayKata: TodayKata | undefined = daily
 const getNamedCollection = getCollection as unknown as (name: string) => Promise<InterviewEntry[]>;
 const interviewBanks = Object.hasOwn(collections, 'interview') ? await getNamedCollection('interview') : [];
 
-const typeTabs = [
-  { value: 'all', label: t(locale, 'practice.all'), href: currentPath },
-  ...ITEM_TYPES.map((type) => ({
-    value: type,
-    label: t(locale, `practice.type.${type}`),
-    href: `${currentPath}?type=${type}`,
-  })),
-];
-
-const trackFilters = [
-  { label: t(locale, 'practice.allTracks'), value: 'all', on: true, href: currentPath },
-  ...presentTracks.map((track) => ({
-    label: track.name[locale],
-    value: track.slug,
-    // "Go" is a whole accessible name on its own, and Lighthouse marks it as a link with no
-    // discernible purpose. The chip says what it does; the label stays the track's own name.
-    ariaLabel: t(locale, 'practice.filterBy', { track: track.name[locale] }),
-    href: `${currentPath}?track=${track.slug}`,
-  })),
-];
-
-const levels = ['beginner', 'intermediate', 'advanced'] as const;
-const levelFilters = [
-  { label: t(locale, 'practice.all'), value: 'all', on: true, href: currentPath },
-  ...levels.map((level) => ({
-    label: t(locale, `difficulty.${level}`),
-    value: level,
-    href: `${currentPath}?level=${level}`,
-  })),
-];
-
-const sortFilters = [
-  {
-    label: t(locale, 'practice.sort.unsolved'),
-    value: 'unsolved',
-    on: true,
-    href: currentPath,
-  },
-  {
-    label: t(locale, 'practice.sort.newest'),
-    value: 'newest',
-    href: `${currentPath}?sort=newest`,
-  },
-  {
-    label: t(locale, 'practice.sort.hardest'),
-    value: 'hardest',
-    href: `${currentPath}?sort=hardest`,
-  },
-];
-
 const lead = t(locale, 'practice.lead');
 const head = buildHead({
   locale,
@@ -158,8 +138,6 @@ const head = buildHead({
   // Task 6 does not add a new OG renderer; use the existing locale-specific site card.
   ogImagePath: locale === 'zh' ? '/og/zh/home.png' : '/og/home.png',
 });
-
-const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
 ---
 
 <Base
@@ -168,6 +146,25 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
   currentPath={currentPath}
   pagefind={{ filter: { lang: locale }, meta: { type: 'page' } }}
 >
+  <script is:inline data-practice-legacy-track={trackCells.map((cell) => cell.track.slug).join(',')}>
+    /* `?track=go` was how this page filtered before the catalogue was split by track. Old links,
+       bookmarks and search results still carry it, so send one on to the route that replaced it.
+       Inline and first in the document: a redirect owes the reader no idle callback. */
+    (function () {
+      var known = (document.currentScript.dataset.practiceLegacyTrack || '').split(',');
+      try {
+        var url = new URL(location.href);
+        var track = url.searchParams.get('track');
+        if (!track || known.indexOf(track) < 0) return;
+        url.searchParams.delete('track');
+        var prefix = location.pathname.indexOf('/zh/') === 0 ? '/zh' : '';
+        location.replace(prefix + '/practice/' + track + '/' + url.search + url.hash);
+      } catch {
+        /* a hand-edited URL is not worth a broken page */
+      }
+    })();
+  </script>
+
   <header class="wrap practice-header">
     <div class="practice-kicker">
       <Tag>{t(locale, 'practice.title')}</Tag>
@@ -185,7 +182,7 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
         }
       </Tag>
       <Tag>
-        {formatCount(locale, trackCount, 'unit.track', 'unit.tracks')}
+        {formatCount(locale, trackCells.length, 'unit.track', 'unit.tracks')}
       </Tag>
       <Tag>{t(locale, 'practice.offline')}</Tag>
       <Tag><span lang="zh-Hans">{t(locale, 'practice.synced')}</span></Tag>
@@ -223,89 +220,22 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
 
   <div class="wrap practice-body">
     <div class="practice-main">
-      <div class="practice-controls" data-practice-controls>
-        <nav class="practice-tabs" aria-label={t(locale, 'practice.title')} data-filter-group="type">
-          {
-            typeTabs.map((tab, index) => (
-              <a
-                class:list={[index === 0 && 'on']}
-                href={tab.href}
-                data-value={tab.value}
-                aria-current={index === 0 ? 'true' : undefined}
-              >
-                {tab.label}
-              </a>
-            ))
-          }
-        </nav>
-
-        <div class="practice-filter-row">
-          <div class="track-filter-scroll">
-            <Seg
-              class="track-chips"
-              items={trackFilters}
-              label={t(locale, 'practice.allTracks')}
-              data-filter-group="track"
-            />
-          </div>
-          <div class="filter-pair">
-            <span class="lbl">{t(locale, 'practice.level')}</span>
-            <div class="filter-scroll">
-              <Seg items={levelFilters} label={t(locale, 'practice.level')} data-filter-group="level" />
-            </div>
-          </div>
-        </div>
-
-        <div class="practice-count-row">
-          <span class="lbl" data-practice-count>
-            {
-              t(locale, 'practice.results', {
-                count: formatCount(locale, items.length, 'unit.exercise', 'unit.exercises'),
-                done: 0,
-              })
-            }
-          </span>
-          <div class="filter-pair">
-            <span class="lbl">{t(locale, 'practice.sort')}</span>
-            <div class="filter-scroll">
-              <Seg items={sortFilters} label={t(locale, 'practice.sort')} data-filter-group="sort" />
-            </div>
-          </div>
-        </div>
+      <div class="practice-intro">
+        <h2 class="lbl">{t(locale, 'practice.byTrack')}</h2>
+        <span class="lbl">{t(locale, 'practice.byTrackLead')}</span>
       </div>
 
-      <div class="practice-grid" data-practice-grid>
+      <div class="practice-tracks" data-practice-tracks>
         {
-          items.map((item, index) => {
-            const topic = topicById.get(`${item.track}/${item.slug}`);
-            const track = trackBySlug.get(item.track);
-            return (
-              <PracticeCard
-                item={item}
-                locale={locale}
-                trackGlyph={track?.glyph ?? item.track}
-                topicTitle={topic?.data.title ?? item.slug}
-                topicDescription={topic?.data.description ?? difficultyLabel(item.type)}
-                order={index}
-                more={index >= 24}
-              />
-            );
-          })
+          trackCells.map((cell) => (
+            <a class:list={['track', cell.track.slug === 'ai-era' && 'ai-era']} href={cell.href}>
+              <Tag variant="acc">{cell.track.glyph}</Tag>
+              <span class="track-name">{cell.track.name[locale]}</span>
+              <span class="lbl track-types">{cell.breakdown}</span>
+            </a>
+          ))
         }
       </div>
-
-      <p class="panel practice-empty" data-practice-empty hidden>
-        {t(locale, 'practice.noResults')}
-      </p>
-      {
-        items.length > 24 && (
-          <div class="practice-more">
-            <button class="btn btn-g" type="button" data-practice-more hidden>
-              {t(locale, 'practice.showMore', { count: items.length - 24 })}
-            </button>
-          </div>
-        )
-      }
     </div>
 
     <aside class="practice-rail">
@@ -340,7 +270,7 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
                   class="interview-row"
                   href={localizePath(`/practice/interview/${bank.data.track}/`, locale)}
                 >
-                  <span>{track?.name[locale] ?? bank.data.track}</span>
+                  {track?.name[locale] ?? bank.data.track}
                   <span class="lbl">
                     {t(locale, 'practice.questions', {
                       count: formatCount(locale, bank.data.items.length, 'unit.question', 'unit.questions'),
@@ -360,17 +290,6 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
       </div>
     </aside>
   </div>
-
-  <PracticeFilters
-    client:idle
-    locale={locale}
-    labels={{
-      results: t(locale, 'practice.results', { count: '{count}', done: '{done}' }),
-      showMore: t(locale, 'practice.showMore', { count: '{count}' }),
-      done: t(locale, 'practice.done', { score: '{score}', total: '{total}' }),
-      missed: t(locale, 'practice.missed'),
-    }}
-  />
 </Base>
 
 <style>
@@ -406,12 +325,13 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
   .practice-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 300px;
+    align-items: start;
     gap: 48px;
     padding-bottom: 72px;
   }
 
   .practice-main,
-  .practice-controls,
+  .practice-intro,
   .practice-rail,
   .practice-rail-panel {
     display: flex;
@@ -423,111 +343,68 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
     gap: 18px;
   }
 
-  .practice-controls {
-    gap: 14px;
-    min-width: 0;
+  .practice-intro {
+    gap: 6px;
   }
 
-  .practice-tabs {
-    display: flex;
-    gap: 22px;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    border-bottom: 1px solid var(--line);
-    scrollbar-width: none;
+  .practice-intro h2 {
+    font-weight: 400;
   }
 
-  .practice-tabs::-webkit-scrollbar {
-    display: none;
-  }
-
-  .practice-tabs a {
-    flex: none;
-    margin-bottom: -1px;
-    padding: 8px 0 10px;
-    border-bottom: 2px solid transparent;
-    color: var(--ink3);
-    font-size: 13.5px;
-    white-space: nowrap;
-  }
-
-  .practice-tabs a:hover,
-  .practice-tabs a.on {
-    color: var(--ink);
-  }
-
-  .practice-tabs a.on {
-    border-bottom-color: var(--ink);
-    font-weight: 500;
-  }
-
-  .practice-filter-row,
-  .practice-count-row,
-  .filter-pair,
-  .interview-row {
-    display: flex;
-    align-items: center;
-  }
-
-  .practice-filter-row,
-  .practice-count-row {
-    justify-content: space-between;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .practice-filter-row {
-    align-items: flex-end;
-    flex-direction: column;
-  }
-
-  .filter-pair {
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .filter-scroll {
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .track-filter-scroll {
-    flex: 1 1 auto;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-    overflow: hidden;
-  }
-
-  .filter-scroll :global(.seg) {
-    width: max-content;
-  }
-
-  .practice-grid {
+  /* The same `.track` material as `/tracks/`, laid out as a two-line cell so the per-type
+     counts have a line of their own. */
+  .practice-tracks {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
   }
 
-  .practice-empty {
-    margin: 0;
-    padding: 24px;
-    color: var(--ink2);
-    font-size: 14px;
+  .practice-tracks .track {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    color: var(--ink);
+    transition: border-color var(--t-state) var(--ease);
+  }
+
+  .practice-tracks .track:hover {
+    color: var(--ink);
+    border-color: var(--ink3);
+  }
+
+  .practice-tracks .ai-era {
+    border-color: var(--acc2);
+  }
+
+  .practice-tracks .track :global(.tag) {
+    flex: none;
+    width: 46px;
+    padding-inline: 0;
     text-align: center;
   }
 
-  .practice-more {
-    display: flex;
-    justify-content: center;
-    min-height: 40px;
-    padding-top: 6px;
+  .track-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
   }
 
-  .practice-more .btn {
-    white-space: nowrap;
+  .track-types {
+    flex-basis: 100%;
+    min-width: 0;
+    line-height: 1.5;
+  }
+
+  .interview-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--ink);
+    font-size: 14px;
+  }
+
+  .interview-row:hover {
+    color: var(--acc);
   }
 
   .practice-rail {
@@ -544,17 +421,6 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
-  }
-
-  .interview-row {
-    justify-content: space-between;
-    gap: 12px;
-    color: var(--ink);
-    font-size: 14px;
-  }
-
-  .interview-row:hover {
-    color: var(--acc);
   }
 
   .practice-ai {
@@ -577,10 +443,6 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
       grid-template-columns: minmax(0, 1fr);
       gap: 32px;
     }
-
-    .practice-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
   }
 
   @media (max-width: 767px) {
@@ -602,37 +464,9 @@ const difficultyLabel = (type: ItemType) => t(locale, `practice.type.${type}`);
       padding-bottom: 40px;
     }
 
-    .practice-filter-row,
-    .practice-count-row {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .filter-pair,
-    .filter-scroll,
-    .track-filter-scroll {
-      width: 100%;
-    }
-
-    .track-filter-scroll {
-      overflow-x: auto;
-      overflow-y: hidden;
-      scrollbar-width: none;
-    }
-
-    .track-filter-scroll::-webkit-scrollbar {
-      display: none;
-    }
-
-    .filter-pair {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .practice-grid {
+    .practice-tracks {
       grid-template-columns: minmax(0, 1fr);
-      gap: 10px;
+      gap: 8px;
     }
   }
 </style>
