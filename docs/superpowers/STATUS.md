@@ -29,11 +29,11 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-05 09:30 local)
-- **Pre-launch work is complete on `main` (HEAD fbeac0c).** Everything from P0–P2, the content wave (290 topics → 287 after retiring 3 duplicates), the site review and its fix round, daily kata (每日一练), PWA offline, kata titles, interview coverage + QA, About page.
-- **Last full gate on `main`** (2026-09-05, root checkout, before the follow-ups merge): lint, check, 2,383 unit → after follow-ups 2,392 unit green; build 5,866 pages, 0 warnings; 134k+ links + 6 redirects resolve; e2e 259/259 (4 load-induced flakes passed in isolation); Lighthouse: **exit 0 on the rerun** (11 URLs, median of 3, all assertions pass; only warnings). An earlier run had two performance medians at 0.81–0.88 while the load average was 12–17 from other projects' jobs — load-induced, not a finding.
-- **No agent or background job running.** Deploy is deferred (see TODO / launch checklist).
-- Housekeeping: stale worktrees `p0-t13-extract` and `p1-site-foundation` can be removed (`git worktree remove`); `p0-content-pipeline` stays for future tier-2 runs. Kill any leftover `python3 -m http.server` preview before screenshotting (check `ss -ltnp`).
+## Active work (updated 2026-09-05 — Phase A running)
+- **Running — Opus** on `phase-a-ui`: A1 hero kata + search row + nav order, A5 flagship tracks, A3 verification sidecars (`reports/verify/**`) + panel + per-block labels, A4 report-an-error links. Design notes in `docs/design/{home-hero-kata,verification-panel,flagship-tracks}.md`. Report → `ledgers/2026-09-05-phase-a-ui.md`.
+- **Running — Codex** on `phase-a-repo` (brief `.superpowers/sdd/phase-a/brief.md`, log `codex.log`, report `report.md` in that worktree): A7 files (site repo URL `codewiki-com/codewiki`, LICENSE MIT, LICENSE-CONTENT CC BY-SA 4.0, CONTRIBUTING, issue/PR templates), A2 honest copy + About "How this content is made", A6 Cursor `.mdc` format.
+- **Then:** design-lead review of the Phase A screenshots, merge both branches (i18n files may conflict trivially), full gate on `main`, then ask the user before creating and pushing the public GitHub repository (A8 step 1; deploy itself stays deferred).
+- Pre-launch baseline before Phase A: `main` fbeac0c, full gate green (see the 2026-09-05 entries above / ROADMAP "Done").
 
 ## TODO
 All open work, deferred items and decisions-against live in **`docs/superpowers/ROADMAP.md`** (Phase A before launch, Phase B after, Phase C later). Deploy is deferred by the user; runbook `plans/2026-09-05-launch-checklist.md`.
