@@ -34,12 +34,8 @@ Read this first in any new session. Update it at every milestone and before star
 - **No agent or background job running.** Deploy is deferred (see TODO / launch checklist).
 - Housekeeping: stale worktrees `p0-t13-extract` and `p1-site-foundation` can be removed (`git worktree remove`); `p0-content-pipeline` stays for future tier-2 runs. Kill any leftover `python3 -m http.server` preview before screenshotting (check `ss -ltnp`).
 
-## TODO (deferred by the user)
-- **Deploy / launch: deferred by the user on 2026-09-05.** Runbook: `docs/superpowers/plans/2026-09-05-launch-checklist.md` (GitHub repo via `gh`, Cloudflare Pages settings, domain, post-deploy verification incl. the PWA on iOS).
-- **MCP server: dropped** by the user on 2026-09-04 (do not build). **Visualizer tools and compare pages: deferred until after launch** (2026-09-05; decide then, based on which topics readers actually use). The daily kata surface is done.
-- **Tier 2 polish (423 topics)** — decided 2026-09-04 by the user: not now. Estimate at 10-way parallelism: ~6 h wall, ~79 M Codex tokens (tier 1 averaged 187 k per topic). Command when the time comes: `pnpm content:polish --tier 2 --n 10 --max 100` per batch from `.worktrees/p0-content-pipeline`.
-- **Tier 3 polish (238 topics)** — same, after tier 2.
-- Codex usage so far (2026-09-04, logs on disk): ~48 M polish, ~3 M generation, ~4 M code tasks ≈ 55 M.
+## TODO
+All open work, deferred items and decisions-against live in **`docs/superpowers/ROADMAP.md`** (Phase A before launch, Phase B after, Phase C later). Deploy is deferred by the user; runbook `plans/2026-09-05-launch-checklist.md`.
 
 ## How to resume
 1. `git worktree list` and `git log --oneline --all | head` to see the active branch and last milestone.
