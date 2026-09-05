@@ -286,10 +286,10 @@ export default {
   'tracks.pillars': 'Pillars',
   // The flagship split — docs/design/flagship-tracks.md.
   'tracks.flagship': 'Flagship',
-  'tracks.flagshipHint': 'deepest coverage today',
+  'tracks.flagshipHint': 'where to start',
   'tracks.more': 'More tracks',
   'tracks.moreHint': 'growing',
-  'tracks.intro': '{flagship} deep tracks to start with, {rest} more growing behind them.',
+  'tracks.intro': '{flagship} tracks to start with, {rest} more growing behind them.',
   'tracks.counts': '{topics} topics · {exercises} exercises',
 
   'track.topics': '{count}',

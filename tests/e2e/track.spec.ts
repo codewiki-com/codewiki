@@ -85,15 +85,15 @@ test('the difficulty filter is a keyboard radio group', async ({ page }) => {
   await expect(page.locator('.topic[data-topic-id="python/closures"]')).toBeHidden();
 });
 
-/* docs/design/flagship-tracks.md: the six deepest tracks are promised first, and every card on
-   the index states the counts behind the promise. */
+/* docs/design/flagship-tracks.md: the six curated starting tracks are promised first, and every
+   card on the index states its counts. */
 
 test('the tracks index leads with the six flagship tracks', async ({ page }) => {
   await page.goto('/tracks/');
 
   const sections = page.locator('.page > section');
   await expect(sections.first().locator('h2')).toHaveText('Flagship');
-  await expect(sections.first().locator('.hint')).toHaveText('deepest coverage today');
+  await expect(sections.first().locator('.hint')).toHaveText('where to start');
 
   const flagship = sections.first().locator('.grid .track');
   await expect(flagship).toHaveCount(6);
@@ -115,9 +115,7 @@ test('the tracks index leads with the six flagship tracks', async ({ page }) => 
   await expect(page.locator('.rest-head .hint')).toHaveText('growing');
   // Nothing is deleted: the six are listed once, and the other sixteen follow.
   await expect(page.locator('.rest .grid .track')).toHaveCount(16);
-  await expect(page.locator('.head p')).toHaveText(
-    '6 deep tracks to start with, 16 more growing behind them.',
-  );
+  await expect(page.locator('.head p')).toHaveText('6 tracks to start with, 16 more growing behind them.');
 });
 
 test('a flagship hub says so on its eyebrow line, an ordinary one does not', async ({ page }) => {
