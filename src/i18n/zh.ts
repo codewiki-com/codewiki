@@ -190,6 +190,7 @@ export default {
   //P2
   'topic.addedToFlashcards': '已添加 {count}',
   'topic.edit': '在 GitHub 上编辑',
+  'report.error': '报告错误',
   'topic.clear': '讲清楚了吗？',
   'topic.yes': '清楚',
   'topic.notQuite': '不太清楚',

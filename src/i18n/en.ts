@@ -216,6 +216,7 @@ export default {
   'topic.addFlash': 'Add to flashcards',
   'topic.addedToFlashcards': 'Added {count}',
   'topic.edit': 'Edit on GitHub',
+  'report.error': 'Report an error',
   'topic.clear': 'Was this clear?',
   'topic.yes': 'yes',
   'topic.notQuite': 'not quite',

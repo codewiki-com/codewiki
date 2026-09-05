@@ -6,7 +6,7 @@ import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
 import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 
-import { firstNudgeItems, firstRunnable, topicFacts } from './fixtures/content';
+import { firstNudgeItems, firstRunnable, quizItemIds, topicFacts } from './fixtures/content';
 
 /** Everything the article itself decides — its title, its first runnable example, its dates. */
 const closures = topicFacts('python', 'closures');
@@ -457,4 +457,40 @@ test('the Chinese page shows the same numbers in Chinese', async ({ page }) => {
   await expect(page.locator('.verify .state')).toContainText('已验证');
   await expect(page.locator('.verify .facts')).toContainText('处输出一致');
   await expect(page.locator('figure#b1 .coderuntime')).toContainText('记录于 Python');
+});
+
+/* "Report an error" — ROADMAP A4: one prefilled issue, on every page that claims something
+   about code. The repository comes from `SITE.repo`, so this asserts the shape, not the host. */
+
+async function assertReport(
+  page: import('@playwright/test').Page,
+  path: string,
+  name = 'Report an error',
+): Promise<void> {
+  await page.goto(path);
+  const link = page.getByRole('link', { name });
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', /noopener/);
+
+  const url = new URL((await link.getAttribute('href')) ?? '');
+  expect(url.pathname.endsWith('/issues/new')).toBe(true);
+  expect(url.searchParams.get('labels')).toBe('content');
+  expect(url.searchParams.get('title')).toBe(`Error on ${path}`);
+  expect(url.searchParams.get('body')).toContain(`https://codewiki.com${path}`);
+}
+
+test('a topic offers a prefilled issue for its own URL', async ({ page }) => {
+  await assertReport(page, '/python/closures/');
+});
+
+test('the Chinese topic reports the Chinese page, under a Chinese link', async ({ page }) => {
+  await assertReport(page, '/zh/python/closures/', '报告错误');
+});
+
+test('katas and interview banks carry the same link', async ({ page }) => {
+  const [id] = quizItemIds('python', 'closures', 'review');
+  const kata = `/practice/review/python/closures/${id}/`;
+  expect((await page.request.get(kata)).status()).toBe(200);
+  await assertReport(page, kata);
+  await assertReport(page, '/practice/interview/python/');
 });
