@@ -29,11 +29,11 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Next | Opus whole-site review with real content (`docs/superpowers/briefs/site-review-with-content.md`) → fix round → deploy (Cloudflare Pages) |
 
-## Active work (updated 2026-09-05 — Phase A running)
-- **Running — Opus** on `phase-a-ui`: A1 hero kata + search row + nav order, A5 flagship tracks, A3 verification sidecars (`reports/verify/**`) + panel + per-block labels, A4 report-an-error links. Design notes in `docs/design/{home-hero-kata,verification-panel,flagship-tracks}.md`. Report → `ledgers/2026-09-05-phase-a-ui.md`.
-- **Running — Codex** on `phase-a-repo` (brief `.superpowers/sdd/phase-a/brief.md`, log `codex.log`, report `report.md` in that worktree): A7 files (site repo URL `codewiki-com/codewiki`, LICENSE MIT, LICENSE-CONTENT CC BY-SA 4.0, CONTRIBUTING, issue/PR templates), A2 honest copy + About "How this content is made", A6 Cursor `.mdc` format.
-- **Then:** design-lead review of the Phase A screenshots, merge both branches (i18n files may conflict trivially), full gate on `main`, then ask the user before creating and pushing the public GitHub repository (A8 step 1; deploy itself stays deferred).
-- Pre-launch baseline before Phase A: `main` fbeac0c, full gate green (see the 2026-09-05 entries above / ROADMAP "Done").
+## Active work (updated 2026-09-05 evening — Phase A merged)
+- **Merged into `main`:** `phase-a-repo` (5cd0a0f: licences, CONTRIBUTING, templates, `/contribute/`, About "How this content is made", Cursor `.mdc` format + rules install pages; four flattened home feature strings restored in a0ce92c) and `phase-a-ui` (hero = review kata, search row, nav order, flagship tracks, verification panel + `reports/verify/**` sidecars, report-an-error links; ledger `ledgers/2026-09-05-phase-a-ui.md`; screenshots `docs/design/screenshots/phase-a/` reviewed by the design lead). Branch gate on `phase-a-ui` was fully green (2,419 unit, 275 e2e, lhci exit 0; script budget raised to 66 KiB — see ROADMAP B10).
+- **Running — Codex** on `phase-a-followups` (brief/log/report under `.superpowers/sdd/followups/` in that worktree): flagship copy "where to start", `python/tuples` recorded-output drift + `foundations/regular-expressions` nocheck fence, hero `llms.txt` link placement.
+- **Running:** lint/check/test on `main` after the UI merge (log `main-gate-4.log`, session scratchpad).
+- **Then:** merge the follow-ups, full gate on `main` (build → links → e2e → lhci, on a quiet machine), then ask the user before creating and pushing the public repository `codewiki-com/codewiki`. Deploy stays deferred. After that: ROADMAP Phase B (B1 kata schema v2 first — design lead designs, Opus implements, Codex authors).
 
 ## TODO
 All open work, deferred items and decisions-against live in **`docs/superpowers/ROADMAP.md`** (Phase A before launch, Phase B after, Phase C later). Deploy is deferred by the user; runbook `plans/2026-09-05-launch-checklist.md`.
