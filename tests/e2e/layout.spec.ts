@@ -19,6 +19,8 @@ const PATHS = [
   '/zh/python/closures/',
   '/practice/',
   '/zh/practice/',
+  '/practice/python/',
+  '/zh/practice/python/',
   '/practice/flashcards/',
   '/zh/practice/flashcards/',
   '/practice/interview/python/',
