@@ -654,7 +654,7 @@ export default {
 
   // Task 14
   'promptBuilder.eyebrow': '提示词构建器',
-  'promptBuilder.title': '构建带核对项的提示词。',
+  'promptBuilder.title': '构建真正能教会你的提示词。',
   'promptBuilder.sub':
     '选择主题、目标和你的水平。结果会包含所选来源链接、准确术语与明确核对项。你粘贴的代码只会在打开自己的 AI 助手时离开此页面。',
   'promptBuilder.step.topic': '主题',

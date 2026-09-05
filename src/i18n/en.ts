@@ -696,7 +696,7 @@ export default {
 
   // Task 14
   'promptBuilder.eyebrow': 'prompt builder',
-  'promptBuilder.title': 'Build a prompt with checks.',
+  'promptBuilder.title': 'Build a prompt that teaches.',
   'promptBuilder.sub':
     'Pick a topic, a goal and your level. The result includes selected source links, precise vocabulary and explicit checks. Code you paste stays in the page until you open your assistant.',
   'promptBuilder.step.topic': 'Topic',
