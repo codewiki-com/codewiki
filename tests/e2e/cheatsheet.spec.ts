@@ -1,23 +1,41 @@
 import { test, expect } from '@playwright/test';
 
-test('the cheatsheet index lists the reviewed Python sheet', async ({ page }) => {
+import { cheatsheetFacts, cheatsheetSlugs, interviewFacts } from './fixtures/content';
+
+/** Counts and titles come from the authored MDX, so adding a sheet is not a test failure. */
+const SLUGS = cheatsheetSlugs();
+const python = cheatsheetFacts('python');
+
+test('the cheatsheet index lists every reviewed sheet', async ({ page }) => {
   await page.goto('/cheatsheets/');
   await expect(page.locator('h1')).toHaveText('Cheatsheets');
-  await expect(page.locator('.cheatsheet-card')).toHaveCount(1);
-  await expect(page.locator('.cheatsheet-card')).toHaveAttribute('href', '/cheatsheets/python/');
+  await expect(page.locator('.cheatsheet-card')).toHaveCount(SLUGS.length);
+  for (const slug of SLUGS) {
+    await expect(page.locator(`.cheatsheet-card[href="/cheatsheets/${slug}/"]`)).toHaveCount(1);
+  }
 });
 
-test('the sheet page renders three authored panels and nine rows', async ({ page }) => {
+test('the sheet page renders every authored panel and row', async ({ page }) => {
   await page.goto('/cheatsheets/python/');
-  await expect(page.locator('h1')).toHaveText('Python cheatsheet');
-  expect(await page.locator('.cheat').count()).toBeGreaterThanOrEqual(3);
-  await expect(page.locator('.cr')).toHaveCount(9);
+  await expect(page.locator('h1')).toHaveText(python.title);
+  // The vocabulary panel reuses the `.cheat` card material but is not an authored sheet.
+  await expect(page.locator('.cheat:not(.vocab-panel)')).toHaveCount(python.sheets);
+  await expect(page.locator('.cr')).toHaveCount(python.rows);
+
   const related = page.locator('.related-card');
-  await expect(related).toContainText('Python track · 1 topic');
-  await expect(related).toContainText('Interview bank · 3 questions');
+  await expect(related).toContainText('Python track');
+  await expect(related).toContainText(`Interview bank · ${interviewFacts('python').items.length} questions`);
   await expect(related).toContainText('Glossary · Python terms');
   await expect(related).toContainText('Python compared with other languages');
   await expect(related.locator('.related-row .lbl')).toHaveText('soon');
+});
+
+test('no snippet is a scroll region a keyboard cannot reach', async ({ page }) => {
+  await page.goto('/cheatsheets/python/');
+  const scrollable = await page
+    .locator('.snip')
+    .evaluateAll((cells) => cells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length);
+  expect(scrollable).toBe(0);
 });
 
 test('print media hides navigation and lays the sheet grid into two columns', async ({ page }) => {
@@ -32,7 +50,7 @@ test('the Markdown twin contains the authored Row as a plain bullet', async ({ p
   const response = await page.request.get('/cheatsheets/python.md');
   expect(response.status()).toBe(200);
   expect(response.headers()['content-type']).toContain('text/markdown');
-  expect(await response.text()).toContain('- `x: int = 5` — annotation is a hint');
+  expect(await response.text()).toContain(python.firstRowBullet);
 });
 
 test('a row question opens the explain preset with that row as context', async ({ page }) => {
@@ -56,6 +74,9 @@ test('the cheatsheet API exposes both localized sheets and their rows', async ({
   const response = await request.get('/api/cheatsheets.json');
   expect(response.status()).toBe(200);
   const sheets = (await response.json()) as { id: string; rows: unknown[] }[];
-  expect(sheets.map((sheet) => sheet.id)).toEqual(['python/en', 'python/zh']);
-  expect(sheets.every((sheet) => sheet.rows.length === 9)).toBe(true);
+  expect(sheets.map((sheet) => sheet.id)).toEqual(SLUGS.flatMap((slug) => [`${slug}/en`, `${slug}/zh`]));
+  for (const sheet of sheets) {
+    const [slug, lang] = sheet.id.split('/') as [string, 'en' | 'zh'];
+    expect(sheet.rows.length, sheet.id).toBe(cheatsheetFacts(slug, lang).twinRows);
+  }
 });

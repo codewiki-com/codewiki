@@ -91,7 +91,9 @@ test('checkpoint completion and Add misses recover from corrupt learning stores'
   await expect(result).toContainText('You scored 1 of 3');
   await expect(result.locator('.checkpoint-misses')).toBeVisible();
   await expect(result.locator('[data-add-misses]')).toBeEnabled();
-  await expect(result.getByRole('link', { name: 'Back to the track' })).toHaveAttribute('href', '/python/');
+  // The continuation is the topic's first written related topic when there is one, and the track
+  // hub otherwise; either way it must be a real destination inside this track.
+  await expect(result.getByRole('link').first()).toHaveAttribute('href', /^\/python\//);
 
   await page.evaluate(() => localStorage.setItem('cw:v1:flashcards', JSON.stringify({ cards: null })));
   await result.locator('[data-add-misses]').click();

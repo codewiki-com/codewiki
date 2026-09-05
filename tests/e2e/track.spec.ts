@@ -64,7 +64,11 @@ test('both hubs carry hreflang links to each other', async ({ page }) => {
 
 test('sections with nothing written yet say so', async ({ page }) => {
   await page.goto('/python/');
-  await expect(page.locator('.quick', { hasText: 'Concurrency' })).toContainText('coming soon');
+  // Which sections are still empty is a content fact; that an empty one says so is the behaviour.
+  const empty = page.locator('.collapsed .quick');
+  expect(await empty.count()).toBeGreaterThan(0);
+  await expect(empty.first()).toContainText('coming soon');
+  await expect(empty.first().locator('.collapsed-name')).not.toBeEmpty();
 });
 
 test('the difficulty filter is a keyboard radio group', async ({ page }) => {

@@ -1,7 +1,10 @@
 import { test, expect } from '@playwright/test';
 
+import { quizItemIds, reviewKataFacts } from './fixtures/content';
+
 const PREDICT = '/practice/predict/python/closures/predict-loop-binding/';
-const REVIEW = '/practice/review/python/closures/review-config-loader/';
+const REVIEW_ITEM = quizItemIds('python', 'closures', 'review')[0]!;
+const REVIEW = `/practice/review/python/closures/${REVIEW_ITEM}/`;
 
 test('standalone kata HTML contains no answer material', async ({ request }) => {
   const predictHtml = await (await request.get(PREDICT)).text();
@@ -103,8 +106,9 @@ test('number keys select a prediction and Enter answers it', async ({ page }) =>
 
 test('a review kata walks through four steps and compares with a score ring', async ({ page }) => {
   await page.goto(REVIEW);
-  const shell = page.locator('[data-quiz="python/closures#review-config-loader"]');
-  await expect(page.locator('h1')).toHaveText('Review a generated config loader');
+  const kata = reviewKataFacts('python', 'closures', REVIEW_ITEM);
+  const shell = page.locator(`[data-quiz="python/closures#${REVIEW_ITEM}"]`);
+  await expect(page.locator('h1')).toHaveText(kata.title);
   await expect(page.locator('.crumbs .tag.acc2')).toHaveText('Review AI code');
   await expect(shell.locator('[data-quiz-controller="review"]')).toHaveAttribute('data-ready', 'true');
   await expect(shell.locator('[data-review-steps] .step')).toHaveCount(4);

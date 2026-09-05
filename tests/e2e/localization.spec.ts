@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { IDENTIFIERS } from './fixtures/identifiers';
+
 const ALLOWED = new Set([
   'py',
   'js',
@@ -48,6 +50,7 @@ const ALLOWED = new Set([
   'codewiki',
   'llms.txt',
   'RSS',
+  ...IDENTIFIERS,
 ]);
 
 const PAGES = [
@@ -73,6 +76,14 @@ async function findEnglishOnly(page: import('@playwright/test').Page): Promise<s
       const allowedProduct =
         /^(?:Python|Node|JavaScript|TypeScript|Go|Rust|React|Java|Kotlin|C\+\+|C#|Swift|PHP)(?: [\w.]+(?: LTS)?)?$/;
       const allowedFilename = /^[\w.-]+\.(?:py|js|ts|sql|html|css)$/i;
+      /*
+       * A technical identifier, which the editorial standard requires to stay in English: one
+       * token, no spaces, carrying a digit, a dot, a `+`, a `#` or a capital inside the word.
+       * That covers `C++23`, `AGENTS.md`, `CORS`, `FastAPI` and `gpt-5.6` without a list; the
+       * lower-case and plainly-capitalised names live in `fixtures/identifiers.ts`.
+       */
+      const allowedIdentifier = (text: string) =>
+        !/\s/.test(text) && (/[\d.+#]/.test(text) || /[A-Z]/.test(text.slice(1)));
       const visible = (element: Element) =>
         element.getClientRects().length > 0 &&
         !element.closest('[hidden], [aria-hidden="true"]') &&
@@ -85,6 +96,7 @@ async function findEnglishOnly(page: import('@playwright/test').Page): Promise<s
           !allowed.includes(text) &&
           !allowedProduct.test(text) &&
           !allowedFilename.test(text) &&
+          !allowedIdentifier(text) &&
           !/^[A-Z]$/.test(text)
         ) {
           found.add(text);

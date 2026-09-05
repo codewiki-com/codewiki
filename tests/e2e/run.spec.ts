@@ -1,5 +1,7 @@
 import { test, expect, type Locator } from '@playwright/test';
 
+import { firstRunnable } from './fixtures/content';
+
 /**
  * The runners end to end — spec §5.4. These are the tests that prove the claim on the home page:
  * the examples on a topic page really execute, in this browser, with no network round trip.
@@ -25,8 +27,8 @@ test('runs the JavaScript example and prints the event loop in scheduling order'
   await expect(out).toBeVisible();
   await expect(out).toContainText('exit 0');
 
-  // 1 and 4 are synchronous, 3 is the microtask, 2 is the timer task Node would drain last.
-  expect(await stdout(out)).toEqual(['1', '4', '3', '2']);
+  // The article publishes the output it expects; the runner must reproduce it exactly.
+  expect(await stdout(out)).toEqual(firstRunnable('javascript', 'event-loop').output);
 });
 
 test('resets an edited example back to what the page shipped', async ({ page }) => {
@@ -63,6 +65,6 @@ test.describe('Python', () => {
     await box.locator('button[data-run]').click();
     await expect(out).toContainText('exit 0', { timeout: 55_000 });
 
-    expect((await stdout(out)).join('\n')).toContain('1 2 3');
+    expect((await stdout(out)).join('\n')).toBe(firstRunnable('python', 'closures').output.join('\n'));
   });
 });
