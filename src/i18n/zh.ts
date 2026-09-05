@@ -75,14 +75,15 @@ export default {
   'home.feature.2.desc':
     '「速览」先给出 TL;DR 和一个示例；「标准」补充原理和易踩的坑；「深入」再讲内部机制与边界情况。',
   'home.feature.3.title': '一篇文章，两种语言',
-  'home.feature.3.desc': '英文与中文内容一致，逐段对应。并排阅读，顺手掌握专业术语。',
-  'home.feature.4.title': '真正记得住的练习',
-  'home.feature.4.desc': '根据阅读内容设计输出预测题、找错题、阶段测验和间隔复习闪卡。',
-  'home.feature.5.title': '你的 AI 也能读',
+  'home.feature.3.desc':
+    '中英文主题采用相同结构，并由构建检查验证对齐。并排阅读对应段落，对照两种语言的专业术语。',
+  'home.feature.4.title': '与主题对应的练习',
+  'home.feature.4.desc': '输出预测题、找错题、阶段测验和间隔复习闪卡都会链接回它们所考查的内容。',
+  'home.feature.5.title': '供 AI 助手读取的格式',
   'home.feature.5.desc':
-    '每个页面都有对应的 Markdown 和 llms.txt 索引。一键在 Claude 或 ChatGPT 中打开相关章节，并附上引导学习的提示词。',
+    '主题页面提供对应的 Markdown 和 llms.txt 索引。页面操作会为 Claude 或 ChatGPT 准备所选上下文与具体请求。',
   'home.feature.6.title': '注明日期与版本',
-  'home.feature.6.desc': '每个主题都会注明验证所用的语言版本和时间。过时页面会明确标记，不会隐藏。',
+  'home.feature.6.desc': '每个主题都会注明目标版本和验证日期，读者可据此判断内容是否适用于自己的环境。',
   'home.mode.learn.label': '学习',
   'home.mode.learn.title': '一图看清学习路径',
   'home.mode.learn.desc':
@@ -128,14 +129,19 @@ export default {
     'codewiki 如何把双语编程参考、可运行课程、代码审查练习与本地优先的浏览器工具放在一起。',
   'about.what.title': 'codewiki 是什么',
   'about.what.body':
-    'codewiki 把编程参考手册和系统课程放在同一个地方，面向从初学者到高级工程师的读者。每个主题都会在首屏给出答案，包含可直接在浏览器中运行的示例，同时提供整洁的 Markdown 对应版本，可直接交给 AI。英文版与中文版逐段对应，内容一致。',
+    'codewiki 把编程参考手册和系统课程放在同一个地方，面向从初学者到高级工程师的读者。每个已发布主题都会在首屏给出答案，并提供整洁的 Markdown 对应版本。语言受支持时，示例可直接在浏览器中运行。英文版与中文版结构对齐，覆盖相同内容。',
   'about.why.title': '为什么是「在 AI 时代精通编程」',
   'about.why.body':
-    '如今，编码智能体已经承担大多数初稿。真正稀缺的能力，是准确阅读和审查代码，并清楚说明下一步需要什么。每个 codewiki 主题都以「在 AI 时代」一节收尾，列出生成代码在该主题上常见的失效方式。代码审查 kata 用具体示例训练同一种判断力；规则包和提示词构建器则把这些易错点带进你交给智能体的指令。',
+    'AI 正在越来越多地编写代码；开发者仍要理解实现、说明约束并验证结果。每个 codewiki 主题都以「在 AI 时代」一节收尾，列出该主题下需要检查的生成代码失效模式。代码审查 kata 用具体示例练习同一种判断力；规则包和提示词构建器则把这些检查项带进你交给智能体的指令。',
   'about.verified.title': '内容如何验证',
   'about.verified.body':
     '版本不会含糊带过，而是明确固定为 Python 3.14、Node 24、TypeScript 6、Go 1.27、Rust 1.98、Java 25、C++23，以及其他方向各自对应的版本。所有可运行示例都实际执行过，观察到的输出也已粘贴到页面中。构建流程会检查外部链接，并在中英文主题失去对齐时拒绝发布。仓库公开编辑规范与验证工具。',
   'about.verified.date': '每个主题还会显示 verified 日期，方便读者判断结论的新旧。',
+  'about.made.title': '这些内容如何制作',
+  'about.made.body':
+    '内容初稿会在公开编辑规范下借助 AI 完成。每个可运行示例都会实际执行，并记录观察到的输出；构建门禁还会检查中英文版本是否保持对齐。编辑会抽查解释、来源和结果。每个页面都提供「报告错误」链接，公开仓库也接受修正。codewiki 主张生成文本不能直接采信，必须经过验证，因此也用同一标准要求自身：限定断言范围，提供可复现的示例和可见的验证日期，并让读者能够检查来源或质疑结果。',
+  'about.made.standard': '阅读编辑规范',
+  'about.made.report': '报告错误',
   'about.local.title': '哪些内容只留在你的设备上',
   'about.local.body':
     '网站不设账号。阅读进度、闪卡和设置保存在浏览器的 localStorage 中，可在「设置」页面重置。页面访问过一次后，网站即可离线使用。可运行的 Python、JavaScript 或 TypeScript 与 SQL 示例分别通过 Pyodide、esbuild 和 sql.js 在浏览器中执行。你的代码、进度和设置不会发送到任何地方。',
@@ -626,9 +632,9 @@ export default {
 
   // Task 14
   'promptBuilder.eyebrow': '提示词构建器',
-  'promptBuilder.title': '构建真正能教会你的提示词。',
+  'promptBuilder.title': '构建带核对项的提示词。',
   'promptBuilder.sub':
-    '选择主题、目标和你的水平，生成带可靠来源、准确术语与核对项的提示词。在你打开自己的 AI 助手前，任何内容都不会离开此页面。',
+    '选择主题、目标和你的水平。结果会包含所选来源链接、准确术语与明确核对项。你粘贴的代码只会在打开自己的 AI 助手时离开此页面。',
   'promptBuilder.step.topic': '主题',
   'promptBuilder.step.goal': '目标',
   'promptBuilder.step.level': '你的水平',

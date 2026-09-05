@@ -4,6 +4,9 @@ codewiki is a bilingual, static knowledge base for learning programming concepts
 builds the content and Preact islands add browser-local interaction; reading history, settings and
 practice data never require an account.
 
+AI increasingly writes code; developers still have to understand implementations, state
+constraints and verify results. codewiki focuses on making those checks concrete and reproducible.
+
 ## Features
 
 - Depth-aware English and Simplified Chinese topic pages with aligned bilingual reading.
