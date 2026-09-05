@@ -6,6 +6,12 @@ import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
 import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 
+import { firstNudgeItems, firstRunnable, topicFacts } from './fixtures/content';
+
+/** Everything the article itself decides — its title, its first runnable example, its dates. */
+const closures = topicFacts('python', 'closures');
+const runnable = firstRunnable('python', 'closures');
+
 /** The dial writes `prefs.depth`, so a test that changes depth must not leak into the next one. */
 async function openTopic(page: import('@playwright/test').Page, path = '/python/closures/') {
   await page.goto(path);
@@ -14,7 +20,7 @@ async function openTopic(page: import('@playwright/test').Page, path = '/python/
 
 test('the English topic page renders the article', async ({ page }) => {
   await page.goto('/python/closures/');
-  await expect(page.locator('h1')).toHaveText('Closures');
+  await expect(page.locator('h1')).toHaveText(closures.title);
 
   // The answer before the article: three labelled cells.
   await expect(page.locator('#article .tldr .tldr-cell')).toHaveCount(3);
@@ -22,7 +28,7 @@ test('the English topic page renders the article', async ({ page }) => {
 
   // A runnable example, with the header the markdown pipeline builds.
   const codebox = page.locator('#article .codebox[data-run]').first();
-  await expect(codebox.locator('.codetitle')).toHaveText('make_counter.py');
+  await expect(codebox.locator('.codetitle')).toHaveText(runnable.title);
   await expect(codebox.locator('button[data-run]')).toHaveText('Run');
 
   await expect(page.locator('#article')).toHaveAttribute('data-depth-mode', 'standard');
@@ -102,13 +108,16 @@ test('the depth dial switches depth and remembers it', async ({ page }) => {
 test('the contents follow the depth', async ({ page }) => {
   await openTopic(page);
 
-  const deepEntry = page.locator('[data-toc="how-cpython-stores-cells"]');
-  await expect(deepEntry).toHaveClass(/deep/);
+  // Which heading is deep is an editorial choice; that the contents follow depth is behaviour.
+  const deepEntry = page.locator('[data-toc-nav] a.deep').first();
+  await expect(deepEntry).toBeVisible();
+  const standardEntry = page.locator('[data-toc-nav] a[data-toc]:not(.deep)').first();
+  await expect(standardEntry).toBeVisible();
 
   await page.locator('[data-depth-tab="quick"]').click();
   // Quick shows the answer and the checkpoint, and no section headings at all.
   await expect(deepEntry).toBeHidden();
-  await expect(page.locator('[data-toc="what-a-closure-is"]')).toBeHidden();
+  await expect(standardEntry).toBeHidden();
   await expect(page.locator('[data-toc-fixed="tldr"]')).toBeVisible();
 });
 
@@ -238,7 +247,7 @@ test('the page describes itself as a TechArticle', async ({ page }) => {
   const article = JSON.parse(blocks[types.indexOf('TechArticle')]!);
   expect(article.headline).toBe('Closures');
   expect(article.inLanguage).toBe('en');
-  expect(article.dateModified).toBe('2026-09-03');
+  expect(article.dateModified).toBe(closures.modified);
 });
 
 test('every section offers to hand itself to an assistant', async ({ page }) => {
@@ -276,7 +285,7 @@ test('a code block opens its three focused Ask-AI presets', async ({ page }) => 
 
   const portHref = await dialog.locator('.ask-row').nth(1).getByRole('link').first().getAttribute('href');
   expect(decodeURIComponent(portHref ?? '')).toContain('Port this code block to Rust.');
-  expect(decodeURIComponent(portHref ?? '')).toContain('def make_counter():');
+  expect(decodeURIComponent(portHref ?? '')).toContain(runnable.code.split('\n')[0]);
 });
 
 test('a pitfall asks for reader code and a nudge offers two challenges', async ({ page }) => {
@@ -294,7 +303,7 @@ test('a pitfall asks for reader code and a nudge offers two challenges', async (
 
   await page.keyboard.press('Escape');
   const nudge = page.locator('#article .nudge').first();
-  await expect(nudge.locator('li')).toHaveCount(2);
+  await expect(nudge.locator('li')).toHaveCount(firstNudgeItems('python', 'closures').length);
 });
 
 for (const [topicPath, playgroundPath] of [
@@ -341,6 +350,18 @@ test('the action row opens the six Ask-AI presets for the page', async ({ page }
 });
 
 test('the action row adds every page term to flashcards once', async ({ page }) => {
+  /*
+   * Automatic term cards off: the button sits below the article, so clicking it scrolls the page
+   * to the end, which legitimately completes the read and enrols the same terms with source
+   * `terms` a frame earlier. Turning that source off leaves the action as the only writer, which
+   * is what this test is about. `flashcards.spec.ts` covers the automatic source.
+   */
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      'cw:v1:prefs',
+      JSON.stringify({ cardSources: { terms: false, quiz: true, manual: true } }),
+    );
+  });
   await openTopic(page);
   const button = page.locator('[data-add-flashcards]');
   await expect(button).toHaveAttribute('data-ready', 'true');

@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { pathIds, topicFacts } from './fixtures/content';
+
 test('llms.txt indexes the Markdown twins', async ({ request }) => {
   const response = await request.get('/llms.txt');
   expect(response.ok()).toBe(true);
@@ -32,7 +34,7 @@ test('the topics API lists every public topic in both languages', async ({ reque
   );
   expect(closures.url).toBe('https://codewiki.com/python/closures/');
   expect(closures.md).toBe('https://codewiki.com/python/closures.md');
-  expect(closures.reviewed).toBe('2026-09-03');
+  expect(closures.reviewed).toBe(topicFacts('python', 'closures').modified);
 });
 
 test('a concept card carries both languages of one pair', async ({ request }) => {
@@ -76,7 +78,7 @@ test('the glossary and paths APIs are readable JSON', async ({ request }) => {
 
   const paths = await (await request.get('/api/paths.json')).json();
   expect(paths[0].milestones.length).toBeGreaterThan(0);
-  expect(paths[0].url).toBe('https://codewiki.com/paths/python-from-zero/');
+  expect(paths[0].url).toBe(`https://codewiki.com/paths/${pathIds()[0]}/`);
 });
 
 test('each locale has its own feed', async ({ request }) => {

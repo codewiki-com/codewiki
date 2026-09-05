@@ -14,8 +14,14 @@ test('the Chinese card lives under /og/zh', async ({ request }) => {
   expect((await res.body()).byteLength).toBeGreaterThan(10_000);
 });
 
-test('track hubs and the home page get cards too', async ({ request }) => {
-  for (const path of ['/og/python.png', '/og/home.png', '/og/zh/home.png']) {
+test('track hubs, practice catalogues and the home page get cards too', async ({ request }) => {
+  for (const path of [
+    '/og/python.png',
+    '/og/home.png',
+    '/og/zh/home.png',
+    '/og/practice/javascript.png',
+    '/og/zh/practice/javascript.png',
+  ]) {
     const res = await request.get(path);
     expect(res.status(), path).toBe(200);
   }

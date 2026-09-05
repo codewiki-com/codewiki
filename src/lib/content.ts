@@ -12,8 +12,49 @@ export function isPublic<T extends { data: { status: string } }>(t: T): boolean 
   return import.meta.env.DEV || t.data.status === 'reviewed';
 }
 
+/**
+ * Every topic entry by id, built once per build.
+ *
+ * `related:` and `prerequisites:` name topics the curriculum plans but nobody has written yet, and
+ * that is by design — `PrevNext` renders those as plain text. Asking `getEntry` for one of them
+ * logs `[WARN] [content] Entry topics → …/… was not found`, which the build emitted 1,964 times
+ * and which buried every warning that mattered. Looking the id up in this index instead answers
+ * the same question silently, and {@link reportMissingTopicReferences} states the total once.
+ */
+let index: Promise<Map<string, Topic>> | undefined;
+
+async function topicIndex(): Promise<Map<string, Topic>> {
+  index ??= (async () => {
+    const all: Topic[] = await getCollection('topics');
+    const map = new Map(all.map((topic) => [topic.id, topic] as const));
+    reportMissingTopicReferences(all);
+    return map;
+  })();
+  return index;
+}
+
+/** One build line for every planned-but-unwritten reference, in place of one warning each. */
+function reportMissingTopicReferences(all: Topic[]): void {
+  const ids = new Set(all.map((topic) => topic.id));
+  const missing = new Set<string>();
+  let references = 0;
+  for (const topic of all) {
+    const { lang } = parseTopicId(topic.id);
+    for (const ref of [...topic.data.prerequisites, ...topic.data.related]) {
+      if (ids.has(`${ref}/${lang}`)) continue;
+      references += 1;
+      missing.add(ref);
+    }
+  }
+  if (missing.size === 0) return;
+  console.info(
+    `[content] ${references} reference(s) to ${missing.size} unwritten topic(s) in related/prerequisites; ` +
+      'they render as plain "soon" text, not as links.',
+  );
+}
+
 export async function getTopic(track: string, slug: string, lang: Locale): Promise<Topic | undefined> {
-  return getEntry('topics', `${track}/${slug}/${lang}`);
+  return (await topicIndex()).get(`${track}/${slug}/${lang}`);
 }
 
 /** Both language variants of one topic, for the language switch and the alignment check. */

@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+import { glossaryIds } from './fixtures/content';
+
 test('the English index lists the terms in both languages', async ({ page }) => {
   await page.goto('/glossary/');
   await expect(page.locator('h1')).toHaveText('Glossary');
@@ -20,8 +22,10 @@ test('a term page names its topics and its neighbours', async ({ page }) => {
   await expect(page.locator('h1 .alt')).toHaveText('闭包');
 
   await expect(page.locator('.used-row[href="/python/closures/"]')).toContainText('Closures');
-  // The glossary order is alphabetical, so Cell comes before Closure.
-  await expect(page.locator('.pager-link').first()).toHaveAttribute('href', '/glossary/cell/');
+  // The glossary order is alphabetical, so the pager's first link is the preceding term.
+  const ids = glossaryIds();
+  const previous = ids[ids.indexOf('closure') - 1];
+  await expect(page.locator('.pager-link').first()).toHaveAttribute('href', `/glossary/${previous}/`);
 });
 
 test('the Chinese term page is Chinese and describes itself as a DefinedTerm', async ({ page }) => {

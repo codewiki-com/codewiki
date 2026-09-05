@@ -1,5 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
+
+/*
+ * The Run button is addressed by a pattern, not by an exact name: hydrated it reads "Run ⌘↵",
+ * and a substring match on "Run" also catches the offline card's "Download runtimes" button.
+ */
 import { runnableFences } from '@/lib/examples';
 import { encodeState } from '@/lib/lz';
 
@@ -9,7 +14,7 @@ test('loads shared Python state and runs it in the browser', async ({ page }) =>
   const code = encodeURIComponent(encodeState({ lang: 'python', code: 'print(1 + 1)' }));
   await page.goto(`/playground/?lang=python&code=${code}`);
 
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
   await expect(page.locator('.playground-terminal')).toContainText('2', { timeout: 55_000 });
   await expect(page.locator('.playground-terminal')).toContainText('exit 0');
 });
@@ -25,7 +30,7 @@ test('shows a localized notice for rejected shared state', async ({ page }) => {
 test('runs SQL and formats the result as a table', async ({ page }) => {
   await page.goto('/playground/');
   await page.getByRole('tab', { name: 'sql' }).click();
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
 
   await expect(page.locator('.playground-terminal')).toContainText('x');
   await expect(page.locator('.playground-terminal')).toContainText('1');
@@ -40,7 +45,7 @@ test('runs a seeded SQL fixture before its visible query', async ({ page }) => {
   );
 
   await page.goto(`/playground/?code=${state}`);
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
 
   await expect(page.locator('.playground-terminal')).toContainText('Ada');
   await expect(page.locator('.playground-terminal')).toContainText('Grace');
@@ -49,7 +54,7 @@ test('runs a seeded SQL fixture before its visible query', async ({ page }) => {
 test('renders HTML in a sandboxed srcdoc iframe', async ({ page }) => {
   await page.goto('/playground/');
   await page.getByRole('tab', { name: 'html' }).click();
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
 
   const frame = page.locator('.runner-html-preview');
   await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
@@ -86,7 +91,7 @@ test('shows kata pass and failure states with an AI repair action', async ({ pag
   );
   await page.goto(`/playground/?lang=js&code=${passing}`);
   await expect(page.getByRole('tab', { name: 'Tests' })).toBeVisible();
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
   await expect(page.locator('.playground-test-summary.passed')).toContainText('All tests passed');
 
   const failing = encodeURIComponent(
@@ -97,7 +102,7 @@ test('shows kata pass and failure states with an AI repair action', async ({ pag
     }),
   );
   await page.goto(`/playground/?lang=js&code=${failing}`);
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
   await expect(page.locator('.playground-test-summary.failed')).toContainText('A test failed');
   await expect(page.getByRole('link', { name: 'Ask AI to fix' })).toBeVisible();
 });
@@ -110,7 +115,7 @@ test('has no console errors while loading and running JavaScript', async ({ page
 
   await page.goto('/playground/');
   await page.getByRole('tab', { name: 'js' }).click();
-  await page.getByRole('button', { name: 'Run' }).click();
+  await page.getByRole('button', { name: /^Run\b/ }).click();
   await expect(page.locator('.playground-terminal')).toContainText('2');
   expect(errors).toEqual([]);
 });

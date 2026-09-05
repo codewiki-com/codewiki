@@ -148,11 +148,34 @@ function resolveTarget(pathname) {
   return existsSync(index) && statSync(index).isFile() ? index : undefined;
 }
 
+/**
+ * The host-level rule file. Its targets are ordinary internal URLs, so they are checked exactly
+ * like a link in a page: a 301 that lands on a 404 is worse than the URL it replaced.
+ */
+async function redirectTargets() {
+  const file = path.join(DIST, '_redirects');
+  if (!existsSync(file)) return [];
+  const rules = [];
+  for (const line of (await readFile(file, 'utf8')).split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const [from, to] = trimmed.split(/\s+/);
+    if (from && to) rules.push({ from, to });
+  }
+  return rules;
+}
+
 const origin = await siteOrigin();
 const base = origin || 'https://example.invalid';
 const pages = await htmlFiles(DIST);
 const failures = [];
 let checked = 0;
+
+const redirects = await redirectTargets();
+for (const rule of redirects) {
+  checked += 1;
+  if (!resolveTarget(rule.to)) failures.push({ page: `/_redirects (${rule.from})`, target: rule.to });
+}
 
 for (const page of pages) {
   const html = await readFile(path.join(DIST, page), 'utf8');
@@ -178,4 +201,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log(`check:links — ${checked} internal link(s) across ${pages.length} page(s), all resolve.`);
+console.log(
+  `check:links — ${checked} internal link(s) across ${pages.length} page(s) ` +
+    `and ${redirects.length} redirect target(s), all resolve.`,
+);

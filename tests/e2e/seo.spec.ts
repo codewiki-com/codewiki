@@ -39,6 +39,15 @@ test('the child sitemap carries both locales and their alternates', async ({ req
   );
 });
 
+test('the sitemap carries one page per track practice catalogue', async ({ request }) => {
+  const body = await (await request.get('/sitemap-0.xml')).text();
+
+  for (const track of ['python', 'javascript', 'rust']) {
+    expect(body).toContain(`<loc>https://codewiki.com/practice/${track}/</loc>`);
+    expect(body).toContain(`<loc>https://codewiki.com/zh/practice/${track}/</loc>`);
+  }
+});
+
 test('the sitemap leaves out the pages that must not be indexed', async ({ request }) => {
   const body = await (await request.get('/sitemap-0.xml')).text();
 
