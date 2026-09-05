@@ -30,8 +30,8 @@ Read this first in any new session. Update it at every milestone and before star
 
 ## Active work (updated 2026-09-05 09:30 local)
 - **Pre-launch work is complete on `main` (HEAD fbeac0c).** Everything from P0–P2, the content wave (290 topics → 287 after retiring 3 duplicates), the site review and its fix round, daily kata (每日一练), PWA offline, kata titles, interview coverage + QA, About page.
-- **Last full gate on `main`** (2026-09-05, root checkout, before the follow-ups merge): lint, check, 2,383 unit → after follow-ups 2,392 unit green; build 5,866 pages, 0 warnings; 134k+ links + 6 redirects resolve; e2e 259/259 (4 load-induced flakes passed in isolation); Lighthouse: two performance medians missed 0.95 (`/python/` 0.88, `/cheatsheets/python/` 0.81) while the load average was 12–17 — a quiet-machine rerun is scheduled (log `main-lhci-2.log` in the session scratchpad). If it still fails on a quiet machine, treat it as a real finding and open an Opus fix task (hub and cheatsheet main-thread work).
-- **No agent running** except that Lighthouse rerun watcher. Deploy is deferred (see TODO / launch checklist).
+- **Last full gate on `main`** (2026-09-05, root checkout, before the follow-ups merge): lint, check, 2,383 unit → after follow-ups 2,392 unit green; build 5,866 pages, 0 warnings; 134k+ links + 6 redirects resolve; e2e 259/259 (4 load-induced flakes passed in isolation); Lighthouse: **exit 0 on the rerun** (11 URLs, median of 3, all assertions pass; only warnings). An earlier run had two performance medians at 0.81–0.88 while the load average was 12–17 from other projects' jobs — load-induced, not a finding.
+- **No agent or background job running.** Deploy is deferred (see TODO / launch checklist).
 - Housekeeping: stale worktrees `p0-t13-extract` and `p1-site-foundation` can be removed (`git worktree remove`); `p0-content-pipeline` stays for future tier-2 runs. Kill any leftover `python3 -m http.server` preview before screenshotting (check `ss -ltnp`).
 
 ## TODO (deferred by the user)
