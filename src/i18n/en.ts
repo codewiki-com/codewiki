@@ -322,11 +322,8 @@ export default {
     "Predict-the-output puzzles, spot-the-bug katas, review-the-AI's-code exercises, interview banks and flashcards, every one built from a topic you can open next to it. Scores stay in this browser.",
   'practice.scope': 'all tracks',
   'practice.byTrack': 'browse by track',
-  'practice.byTrackLead': 'Every exercise in one track, on one page, with its own filters.',
   'practice.trackTitle': '{track} practice',
-  'practice.trackLead':
-    'Every {track} exercise built from a topic you can open next to it. Scores stay in this browser.',
-  'practice.typeCount': '{label} {count}',
+  'practice.trackLead': 'Every {track} exercise, built from a topic you can open beside it.',
   'practice.items': '{count}',
   'practice.trackOne': '{count}',
   'practice.tracks': '{count}',
