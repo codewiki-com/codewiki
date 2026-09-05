@@ -1,4 +1,4 @@
-import { TRACKS, getTrack, getSection, HOME_TRACKS } from '@/data/tracks';
+import { TRACKS, getTrack, getSection, FLAGSHIP_TRACKS } from '@/data/tracks';
 import { SITE } from '@/data/site';
 
 describe('tracks', () => {
@@ -20,9 +20,18 @@ describe('tracks', () => {
       for (const x of s) expect(x).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
     }
   });
-  it('home list references real tracks', () => {
-    for (const s of HOME_TRACKS) expect(getTrack(s)).toBeDefined();
-    expect(HOME_TRACKS).toHaveLength(12);
+  it('names six flagship tracks, in registry order', () => {
+    // docs/design/flagship-tracks.md: the home page and /tracks/ lead with these six.
+    expect(FLAGSHIP_TRACKS.map((t) => t.slug)).toEqual([
+      'python',
+      'javascript',
+      'typescript',
+      'go',
+      'rust',
+      'foundations',
+    ]);
+    for (const t of FLAGSHIP_TRACKS) expect(getTrack(t.slug)).toBe(t);
+    expect(TRACKS.filter((t) => t.flagship).length).toBe(FLAGSHIP_TRACKS.length);
   });
 
   it('track slugs are kebab-case and glyphs are unique', () => {

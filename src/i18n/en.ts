@@ -58,17 +58,17 @@ export default {
   'home.eyebrow': 'programming, explained precisely · en / zh',
   'home.h1': 'Master code in the AI era.',
   'home.sub':
-    'A reference and a course in one place. Every topic answers in the first screen, runs in the browser, and can be handed to your AI as clean Markdown.',
-  'home.startPath': 'Start a path',
+    'AI writes more of the code; you still have to read it, review it and say precisely what you need. Every topic here runs in the browser and ends with what to check in generated code.',
   'home.browseTracks': 'Browse tracks',
   'home.verified': 'Currently verified against',
   'home.tracks': 'Tracks',
-  'home.allTracks': 'All tracks',
-  'home.tagTerm': 'term',
-  'home.tagQuiz': 'quiz',
+  'home.allTracks': 'All {count} tracks',
+  // The hero and the search row under it — docs/design/home-hero-kata.md.
+  'home.startReviewing': 'Start reviewing',
+  'home.searchAll': 'Search {topics} topics, {terms} terms and {exercises} exercises',
+  'home.startTrack': 'Start with a track',
 
   // The static command-palette panel in the hero. Arrows and slashes are template chrome.
-  'home.palette.query': 'closure',
   'home.palette.move': 'move',
   'home.palette.open': 'open',
   'home.palette.playground': 'open in playground',
@@ -132,6 +132,7 @@ export default {
   'daily.from': 'from {topic}',
   'daily.more': '+{count} more lines',
   'daily.peek': 'Preview of the kata code: {title}',
+  'daily.everyDay': 'new one every day',
 
   'footer.tagline': 'codewiki · static site · progress stays in your browser',
   'footer.about': 'About',
@@ -197,6 +198,23 @@ export default {
   'topic.readTime': '{count} at Standard depth',
   'topic.transparency': 'Drafted with AI · verified by running the code · reviewed {date}',
 
+  // The verification panel — docs/design/verification-panel.md.
+  'verify.verified': 'Verified',
+  'verify.partial': '{matched} of {executed} matched',
+  'verify.notRun': 'Not run',
+  'verify.outputs': '{matched} of {executed} outputs matched',
+  'verify.reviewed': 'Reviewed by an editor {date} · drafted with AI',
+  'verify.browser': 'In your browser: {runner} — outputs may differ from the recorded {runtime} run.',
+  'verify.browserSame': 'Runs in your browser with {runner}.',
+  'verify.browserEngine': "your browser's JavaScript engine",
+  'verify.details': 'Verification details',
+  'verify.recordedOn': 'recorded on {runtime}',
+  'verify.runsHere': 'runs here on {runner}',
+  'verify.noRunnable': 'No example on this page runs by itself.',
+  'verify.status.matched': 'matched',
+  'verify.status.mismatched': 'differs',
+  'verify.status.skipped': 'not run here',
+
   'depth.quick': 'Quick',
   'depth.standard': 'Standard',
   'depth.deep': 'Deep',
@@ -219,6 +237,7 @@ export default {
   'topic.addFlash': 'Add to flashcards',
   'topic.addedToFlashcards': 'Added {count}',
   'topic.edit': 'Edit on GitHub',
+  'report.error': 'Report an error',
   'topic.clear': 'Was this clear?',
   'topic.yes': 'yes',
   'topic.notQuite': 'not quite',
@@ -265,6 +284,13 @@ export default {
   'tracks.languages': 'Languages',
   'tracks.domains': 'Domains',
   'tracks.pillars': 'Pillars',
+  // The flagship split — docs/design/flagship-tracks.md.
+  'tracks.flagship': 'Flagship',
+  'tracks.flagshipHint': 'deepest coverage today',
+  'tracks.more': 'More tracks',
+  'tracks.moreHint': 'growing',
+  'tracks.intro': '{flagship} deep tracks to start with, {rest} more growing behind them.',
+  'tracks.counts': '{topics} topics · {exercises} exercises',
 
   'track.topics': '{count}',
   // English needs the singular; Chinese does not, so its value is the same either way.

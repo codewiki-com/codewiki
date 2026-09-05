@@ -6,7 +6,7 @@ import remarkParse from 'remark-parse';
 import remarkRehype from 'remark-rehype';
 import { rehypeMermaidDiagrams } from '@/markdown/mermaid';
 
-import { firstNudgeItems, firstRunnable, topicFacts } from './fixtures/content';
+import { firstNudgeItems, firstRunnable, quizItemIds, topicFacts } from './fixtures/content';
 
 /** Everything the article itself decides — its title, its first runnable example, its dates. */
 const closures = topicFacts('python', 'closures');
@@ -387,4 +387,110 @@ test('the Markdown twin serves the page as plain Markdown', async ({ page }) => 
   expect(body.startsWith('# Closures')).toBe(true);
   expect(body).toContain('Source: https://codewiki.com/python/closures/');
   expect(body).not.toContain('<TLDR>');
+});
+
+/* The verification panel — docs/design/verification-panel.md. Every number on it comes from
+   `reports/verify/{track}/{slug}.json`, which `pnpm content:check` writes by executing the page. */
+
+test('the panel states the runtime, the match count and what the browser will run', async ({ page }) => {
+  const sidecar = JSON.parse(readFileSync('reports/verify/python/closures.json', 'utf8'));
+  await page.goto('/python/closures/');
+
+  const panel = page.locator('.verify');
+  await expect(panel).toHaveAttribute('data-verify', 'verified');
+  await expect(panel.locator('.state')).toContainText('Verified');
+
+  // The patch version is the one the interpreter reported, not the `Python 3.14` frontmatter pin.
+  expect(sidecar.runtime.version).toMatch(/^\d+\.\d+\.\d+$/);
+  await expect(panel.locator('.facts')).toContainText(`Python ${sidecar.runtime.version}`);
+  await expect(panel.locator('.facts')).toContainText(
+    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} outputs matched`,
+  );
+
+  // Line 3 names the runtime the reader's own tab loads, which is not the one that recorded it.
+  await expect(panel.locator('.runner')).toContainText('Pyodide');
+  await expect(panel.locator('.runner')).toContainText('Python 3.1');
+
+  await expect(panel.locator('.transparency')).toContainText('drafted with AI');
+});
+
+test('the disclosure lists every runnable block and links to it', async ({ page }) => {
+  await page.goto('/python/closures/');
+  const details = page.locator('.verify-details');
+  await expect(details.locator('li')).toHaveCount(4);
+  await expect(details.locator('li').first().locator('.block-status')).toHaveText('matched');
+
+  const href = await details.locator('.block-title').first().getAttribute('href');
+  expect(href).toBe('#b1');
+  await expect(page.locator('figure#b1')).toBeVisible();
+  // The block says which interpreter recorded its output, next to the Run button.
+  await expect(page.locator('figure#b1 .coderuntime')).toHaveText(/^recorded on Python \d+\.\d+\.\d+$/);
+});
+
+test('a topic whose output has drifted renders the partial state', async ({ page }) => {
+  const sidecar = JSON.parse(readFileSync('reports/verify/python/tuples.json', 'utf8'));
+  expect(sidecar.blocks.matched).toBeLessThan(sidecar.blocks.executed);
+
+  await page.goto('/python/tuples/');
+  const panel = page.locator('.verify');
+  await expect(panel).toHaveAttribute('data-verify', 'partial');
+  await expect(panel.locator('.state')).toContainText(
+    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} matched`,
+  );
+  // Drift is named, not hidden: the block that differs says so in the list.
+  await expect(panel.locator('.block-status.mismatched')).toHaveCount(
+    sidecar.blocks.executed - sidecar.blocks.matched,
+  );
+});
+
+test('a topic with nothing this machine can run says so rather than claiming a run', async ({ page }) => {
+  await page.goto('/cpp/references/');
+  const panel = page.locator('.verify');
+  await expect(panel).toHaveAttribute('data-verify', 'notRun');
+  await expect(panel.locator('.state')).toContainText('Not run');
+  await expect(panel.locator('.facts')).toContainText('C++23');
+  await expect(panel.locator('.verify-details')).toHaveCount(0);
+});
+
+test('the Chinese page shows the same numbers in Chinese', async ({ page }) => {
+  await page.goto('/zh/python/closures/');
+  await expect(page.locator('.verify .state')).toContainText('已验证');
+  await expect(page.locator('.verify .facts')).toContainText('处输出一致');
+  await expect(page.locator('figure#b1 .coderuntime')).toContainText('记录于 Python');
+});
+
+/* "Report an error" — ROADMAP A4: one prefilled issue, on every page that claims something
+   about code. The repository comes from `SITE.repo`, so this asserts the shape, not the host. */
+
+async function assertReport(
+  page: import('@playwright/test').Page,
+  path: string,
+  name = 'Report an error',
+): Promise<void> {
+  await page.goto(path);
+  const link = page.getByRole('link', { name });
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', /noopener/);
+
+  const url = new URL((await link.getAttribute('href')) ?? '');
+  expect(url.pathname.endsWith('/issues/new')).toBe(true);
+  expect(url.searchParams.get('labels')).toBe('content');
+  expect(url.searchParams.get('title')).toBe(`Error on ${path}`);
+  expect(url.searchParams.get('body')).toContain(`https://codewiki.com${path}`);
+}
+
+test('a topic offers a prefilled issue for its own URL', async ({ page }) => {
+  await assertReport(page, '/python/closures/');
+});
+
+test('the Chinese topic reports the Chinese page, under a Chinese link', async ({ page }) => {
+  await assertReport(page, '/zh/python/closures/', '报告错误');
+});
+
+test('katas and interview banks carry the same link', async ({ page }) => {
+  const [id] = quizItemIds('python', 'closures', 'review');
+  const kata = `/practice/review/python/closures/${id}/`;
+  expect((await page.request.get(kata)).status()).toBe(200);
+  await assertReport(page, kata);
+  await assertReport(page, '/practice/interview/python/');
 });
