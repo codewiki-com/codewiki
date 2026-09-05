@@ -5,6 +5,8 @@ import sitemap from '@astrojs/sitemap';
 import preact from '@astrojs/preact';
 import tailwindcss from '@tailwindcss/vite';
 
+import pwa from './scripts/build-sw.mjs';
+
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
 import { rehypeBlockIds } from './src/markdown/rehype-block-ids.ts';
 import { rehypeDepthHeadings } from './src/markdown/rehype-depth-headings.ts';
@@ -56,10 +58,13 @@ export default defineConfig({
     preact(),
     sitemap({
       i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } },
-      // Settings is `noindex` and search is a query interface, not a document: neither belongs
-      // in the sitemap, and listing an unindexable URL is a Search Console warning.
-      filter: (page) => !/^\/(zh\/)?(settings|search)\/$/.test(new URL(page).pathname),
+      // Settings is `noindex`, search is a query interface and the offline notice only ever
+      // renders without a network: none belongs in the sitemap, and listing an unindexable URL is
+      // a Search Console warning.
+      filter: (page) => !/^\/(zh\/)?(settings|search|offline)\/$/.test(new URL(page).pathname),
     }),
+    // Writes dist/sw.js once the real, content-hashed file names exist.
+    pwa(),
   ],
   vite: { plugins: [tailwindcss()] },
 });
