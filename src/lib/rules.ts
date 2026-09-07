@@ -103,7 +103,10 @@ function proseLines(source: string): string[] {
   return lines;
 }
 
-/** Extract pitfall first sentences and the review checklist inside `## In the AI era`. */
+/**
+ * Extract pitfall first sentences. Older topics may also contribute a review checklist from an
+ * `## In the AI era` section; that section is optional and is not needed to produce a rules pack.
+ */
 export function extractRules(mdxSource: string, topic: RuleTopic): Rule[] {
   const lines = proseLines(mdxSource);
   const rules: Rule[] = [];

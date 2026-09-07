@@ -175,9 +175,11 @@ the nearest preceding runnable source into its Playground links.
 
 ## Rules and context-pack endpoints
 
-Rules are generated from reviewed English topics. `src/lib/rules.ts` extracts PITFALL callouts and
-bullets under `## In the AI era` → `**Review checklist**`, ignoring fenced examples. Every rule
-keeps its canonical topic source. Tracks with at least one rule receive:
+Rules are generated from reviewed English topics. `src/lib/rules.ts` extracts PITFALL callouts,
+ignoring fenced examples. A topic's optional `## In the AI era` section is not required for rule
+generation; for backward compatibility, bullets under its `**Review checklist**` lead-in are also
+extracted when present. Every rule keeps its canonical topic source. Tracks with at least one rule
+receive:
 
 - `/rules/{track}/CLAUDE.md`
 - `/rules/{track}/AGENTS.md`

@@ -39,7 +39,7 @@ Required beats, in this order (on top of the editorial standard's structure):
   (default argument or `functools.partial`), each shown as runnable code with real output.
 - At least one `> [!PITFALL]` callout followed by the fix (the standard asks for three to six
   pitfalls; late binding is one of them).
-- `## In the AI era` with the four bold lead-ins from the standard (§2, item 7).
+- An `## In the AI era` / `## AI 时代` pair only if closures supports concrete, durable human–AI collaboration guidance beyond the explanation and pitfalls. Do not add it to satisfy the outline.
 - `<Depth level="deep">` wrapping `## How CPython stores cells` — `__closure__`, cell objects,
   `nonlocal`, what `dis` shows. No performance claims without measured numbers.
 - `<Checkpoint id="python/closures" />` before the further-reading section.

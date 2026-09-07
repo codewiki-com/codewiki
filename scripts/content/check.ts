@@ -11,8 +11,8 @@
  *
  * Checks that cost network time are skippable with `--no-links`; the book-title part of
  * the link check still runs, because it needs no network and catches the "further
- * reading" entries nobody has verified. `--relaxed` lowers the length floor for the short
- * reference samples that predate the 400-line standard.
+ * reading" entries nobody has verified. Every topic uses the same 100-line floor; `--relaxed`
+ * remains accepted as a compatibility no-op for older authoring commands.
  *
  * A topic check also executes the topic's runnable examples and writes what it observed to
  * `reports/verify/{track}/{slug}.json` — the sidecar the verification panel on the topic
@@ -55,9 +55,8 @@ type Lang = (typeof LANGS)[number];
 /** Frontmatter fields that are meant to differ between the two languages. */
 const TRANSLATED_KEYS = new Set(['title', 'description']);
 
-/** A polished topic is this long; `--relaxed` lowers the floor for the short samples. */
-const MIN_LINES = 400;
-const RELAXED_MIN_LINES = 100;
+/** Enough room for the required teaching components without rewarding line-count padding. */
+const MIN_LINES = 100;
 const MAX_LINES = 900;
 
 /** A quiz bank worth linking to has at least this many items. */
@@ -65,8 +64,8 @@ const MIN_QUIZ_ITEMS = 3;
 
 /** Level-2 headings every polished topic carries, per language. */
 const REQUIRED_HEADINGS: Record<Lang, string[]> = {
-  en: ['In the AI era', 'Further reading'],
-  zh: ['AI 时代', '延伸阅读'],
+  en: ['What it is and why it exists', 'How it works', 'Examples', 'Pitfalls', 'Further reading'],
+  zh: ['是什么，为什么存在', '工作原理', '示例', '陷阱', '延伸阅读'],
 };
 
 /** Components every polished topic carries, in both languages. */
@@ -75,7 +74,7 @@ const REQUIRED_COMPONENTS = ['<TLDR', '<Checkpoint'];
 export interface CheckOptions {
   /** Skip the network part of the link check; book titles are still reported. */
   noLinks?: boolean;
-  /** Lower the length floor to {@link RELAXED_MIN_LINES}. */
+  /** Deprecated compatibility flag; every topic now uses the same length floor. */
   relaxed?: boolean;
   /** Topics root; defaults to `src/content/topics`. */
   root?: string;
@@ -134,7 +133,7 @@ export async function checkTopic(id: string, options: CheckOptions = {}): Promis
   record(3, await codeFindings(documents));
   record(4, await linkFindings(documents, options));
   record(5, alignmentFindings(documents));
-  record(6, structureFindings(documents, options.relaxed === true));
+  record(6, structureFindings(documents));
   record(7, await sidecarFindings(id, documents, options));
   record(8, statusFindings(documents));
   record(9, await mdxFindings(documents));
@@ -301,9 +300,8 @@ function alignmentFindings(documents: Documents): string[] {
 // 6. Article structure
 // ---------------------------------------------------------------------------
 
-/** The house shape: a TL;DR, a checkpoint, the two fixed sections, and a sane length. */
-function structureFindings(documents: Documents, relaxed: boolean): string[] {
-  const minimum = relaxed ? RELAXED_MIN_LINES : MIN_LINES;
+/** The house shape: a TL;DR, a checkpoint, further reading, and a sane length. */
+function structureFindings(documents: Documents): string[] {
   const out: string[] = [];
   for (const lang of LANGS) {
     const { body, text } = documents[lang];
@@ -317,7 +315,7 @@ function structureFindings(documents: Documents, relaxed: boolean): string[] {
       if (!titles.includes(required)) out.push(`${lang}: no "## ${required}" section`);
     }
     const lines = lineCount(text);
-    if (lines < minimum) out.push(`${lang}: ${lines} lines, below the ${minimum}-line minimum`);
+    if (lines < MIN_LINES) out.push(`${lang}: ${lines} lines, below the ${MIN_LINES}-line minimum`);
     if (lines > MAX_LINES) out.push(`${lang}: ${lines} lines, above the ${MAX_LINES}-line maximum`);
   }
   return out;

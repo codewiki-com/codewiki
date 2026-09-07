@@ -41,12 +41,12 @@ Do not edit `reports/polish/state.json`, `src/content/glossary/`, the approved p
 
 ## Article requirements
 
-Each language file must be 400–900 lines and use the standard's order. Use exactly these skeleton H2s: `What it is and why it exists`, `How it works`, `Examples`, `Pitfalls`, `In the AI era`, `Further reading`; use their exact Chinese counterparts in the zh file. Put one topic-specific H2 deep section inside `<Depth level="deep">`, and place `<Checkpoint id="{{TOPIC_ID}}" />` before further reading.
+Each language file must be 100–900 lines and use the standard's order. The required skeleton H2s are `What it is and why it exists`, `How it works`, `Examples`, `Pitfalls`, and `Further reading`; use their exact Chinese counterparts in the zh file. Put one topic-specific H2 deep section inside `<Depth level="deep">`, and place `<Checkpoint id="{{TOPIC_ID}}" />` before further reading. The line floor guards against missing substance; do not pad to meet it.
 
 - Start with `<TLDR>` and three concise `<TLDRCell>` entries. Wrap the first example in `<Depth level="quick">`.
 - Provide two to four self-contained, realistic runnable examples. Execute each with the local toolchain from a scratch file and paste its real output in the immediately following `text` fence. Never guess output. Use `run title="file.ext"` fence metadata where the standard requires it.
 - Explain three to six real pitfalls as `> [!PITFALL]` callouts, each followed by a concrete fix.
-- Give `In the AI era` the four bold lead-ins required by the standard, with specific generated-code failure modes, checks, a three-item review list, and precise prompt vocabulary.
+- Add `In the AI era` / `AI 时代` only when this topic supports concrete, durable human–AI collaboration guidance. Let the material determine its shape; omit model stereotypes, generic checks, boilerplate review lists, and prompt-vocabulary lists.
 - Verify three to six further-reading URLs with HEAD or GET, put official sources first, and drop any URL that does not resolve.
 - Keep English and natural Simplified Chinese aligned heading for heading, paragraph for paragraph, list item for list item, and code block for code block. Code must be identical except translated comments.
 

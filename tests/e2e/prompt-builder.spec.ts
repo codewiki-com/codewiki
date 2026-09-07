@@ -21,9 +21,9 @@ test('the Markdown-link option updates the preview', async ({ page }) => {
   );
 });
 
-test('Copy writes the current prompt to the clipboard', async ({ page, context }) => {
+test('Copy writes the current prompt to the clipboard', async ({ page, context, baseURL }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-    origin: 'http://localhost:4321',
+    origin: baseURL,
   });
   await page.goto('/ai/prompt-builder/?topic=python/closures&goal=review');
   await expect(page.locator('[data-topic-chip="python/closures"]')).toBeVisible();

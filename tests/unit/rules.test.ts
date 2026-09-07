@@ -19,11 +19,33 @@ const topic = { title: 'Iterator safety', url: 'https://codewiki.com/python/iter
 describe('rules', () => {
   const rules = extractRules(source, topic);
 
-  it('extracts three pitfalls and the AI-era review checklist fixture', () => {
+  it('extracts three pitfalls and a legacy AI-era review checklist', () => {
     expect(rules).toHaveLength(4);
     expect(rules.map((rule) => rule.topic)).toEqual([topic, topic, topic, topic]);
     expect(rules[0]?.why).toContain('The index no longer matches');
     expect(rules[3]?.text).toBe('Verify that iteration order remains stable after each mutation.');
+  });
+
+  it('exports pitfall rules when the topic has no AI-era section', () => {
+    const sourceWithoutAiSection = [
+      '# Iterator safety',
+      '',
+      '> [!PITFALL]',
+      '> Mutating the collection during iteration skips elements. The index no longer matches the next item.',
+      '',
+      '## Further reading',
+      '',
+      '- [Iterator protocol](https://example.com/iterator)',
+      '',
+    ].join('\n');
+
+    expect(extractRules(sourceWithoutAiSection, topic)).toEqual([
+      {
+        text: 'Do not assume this is safe: mutating the collection during iteration skips elements.',
+        why: 'The index no longer matches the next item.',
+        topic,
+      },
+    ]);
   });
 
   it('uses the documented small imperative heuristic', () => {
@@ -171,7 +193,7 @@ describe('generated rules over the published corpus', () => {
     }),
   );
 
-  it('reads a non-trivial number of rules', () => {
+  it('reads a non-trivial number of rules from the published topics', () => {
     expect(files.length).toBeGreaterThan(100);
     expect(rules.length).toBeGreaterThan(500);
   });

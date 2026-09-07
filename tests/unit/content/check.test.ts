@@ -12,6 +12,17 @@ function failedChecks(failures: string[]): number[] {
   return [...new Set(failures.map((failure) => Number(failure.split('.')[0])))].sort((a, b) => a - b);
 }
 
+/** Remove one H2 and its body while keeping the following H2. */
+function withoutSection(source: string, heading: string): string {
+  const start = source.indexOf(`## ${heading}\n`);
+  if (start < 0) return source;
+  const nextDepth = source.indexOf('\n<Depth ', start);
+  const nextHeading = source.indexOf('\n## ', start + heading.length + 4);
+  const end = [nextDepth, nextHeading].filter((position) => position >= 0).sort((a, b) => a - b)[0];
+  if (end === undefined) return source.slice(0, start);
+  return `${source.slice(0, start)}${source.slice(end + 1)}`;
+}
+
 describe('checkTopic', () => {
   it('reports JSX-like angle brackets in prose as numbered MDX findings', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'codewiki-mdx-check-'));
@@ -37,6 +48,70 @@ describe('checkTopic', () => {
     const result = await checkTopic('python/closures', { noLinks: true, relaxed: true });
     expect(result.failures).toEqual([]);
     expect(result.ok).toBe(true);
+  }, 120_000);
+
+  it('accepts a substantive topic without an AI-era section below 400 lines', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'codewiki-optional-ai-section-'));
+    await mkdir(path.join(root, 'python'), { recursive: true });
+    const enBase = withoutSection(
+      await readFile(path.join(TOPICS, 'python/closures.en.mdx'), 'utf8'),
+      'In the AI era',
+    );
+    const zhBase = withoutSection(
+      await readFile(path.join(TOPICS, 'python/closures.zh.mdx'), 'utf8'),
+      'AI 时代',
+    );
+    const enWithAi = enBase.replace(
+      '<Depth level="deep">',
+      '## In the AI era\n\nLegacy review advice.\n\n<Depth level="deep">',
+    );
+    const zhWithAi = zhBase.replace(
+      '<Depth level="deep">',
+      '## AI 时代\n\n旧版审查建议。\n\n<Depth level="deep">',
+    );
+    expect(enWithAi).toContain('## In the AI era');
+    expect(zhWithAi).toContain('## AI 时代');
+    const en = withoutSection(enWithAi, 'In the AI era');
+    const zh = withoutSection(zhWithAi, 'AI 时代');
+    expect(en).not.toContain('## In the AI era');
+    expect(zh).not.toContain('## AI 时代');
+    expect(en.length).toBeLessThan(enWithAi.length);
+    expect(zh.length).toBeLessThan(zhWithAi.length);
+    expect(en.trimEnd().split('\n').length).toBeGreaterThanOrEqual(100);
+    expect(en.trimEnd().split('\n').length).toBeLessThan(400);
+    expect(zh.trimEnd().split('\n').length).toBeGreaterThanOrEqual(100);
+    expect(zh.trimEnd().split('\n').length).toBeLessThan(400);
+    await writeFile(path.join(root, 'python/closures.en.mdx'), en);
+    await writeFile(path.join(root, 'python/closures.zh.mdx'), zh);
+
+    const result = await checkTopic('python/closures', { noLinks: true, root });
+
+    expect(result.failures).toEqual([]);
+    expect(result.ok).toBe(true);
+  }, 120_000);
+
+  it('rejects a topic missing a required core section in both languages', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'codewiki-missing-core-section-'));
+    await mkdir(path.join(root, 'python'), { recursive: true });
+    const en = withoutSection(
+      await readFile(path.join(TOPICS, 'python/closures.en.mdx'), 'utf8'),
+      'How it works',
+    );
+    const zh = withoutSection(
+      await readFile(path.join(TOPICS, 'python/closures.zh.mdx'), 'utf8'),
+      '工作原理',
+    );
+    expect(en).not.toContain('## How it works');
+    expect(zh).not.toContain('## 工作原理');
+    await writeFile(path.join(root, 'python/closures.en.mdx'), en);
+    await writeFile(path.join(root, 'python/closures.zh.mdx'), zh);
+
+    const result = await checkTopic('python/closures', { noLinks: true, root });
+
+    expect(result.ok).toBe(false);
+    expect(failedChecks(result.failures)).toEqual([6]);
+    expect(result.failures).toContain('6. en: no "## How it works" section');
+    expect(result.failures).toContain('6. zh: no "## 工作原理" section');
   }, 120_000);
 
   it('reports the typography and alignment checks on a broken pair', async () => {

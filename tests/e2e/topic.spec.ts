@@ -129,16 +129,16 @@ test('the contents mark the section being read', async ({ page }) => {
   await expect(page.locator('[data-toc-nav] a.on')).toBeVisible();
 });
 
-test('progress is measured over the sections the depth shows', async ({ page }) => {
+test('progress is measured over the visible required sections', async ({ page }) => {
   await openTopic(page);
-  await page.locator('#in-the-ai-era').scrollIntoViewIfNeeded();
+  await page.locator('#pitfalls').scrollIntoViewIfNeeded();
 
   // A deep section is hidden at Standard depth, so it is not part of what this reader was shown.
   const expected = await page.evaluate(() => {
     const shown = [...document.querySelectorAll<HTMLElement>('#article h2')].filter(
       (heading) => heading.getClientRects().length > 0,
     );
-    const index = shown.findIndex((heading) => heading.id === 'in-the-ai-era');
+    const index = shown.findIndex((heading) => heading.id === 'pitfalls');
     return Math.round(((index + 1) / shown.length) * 100);
   });
 

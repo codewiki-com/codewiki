@@ -4,17 +4,17 @@ This is the contract every topic on codewiki.com must meet before it is publishe
 
 ## 1. Purpose of a topic
 
-A topic explains one concept or tool so that a smart colleague can (a) understand what it is and why it exists, (b) see it work in runnable code, (c) avoid the mistakes people actually make, (d) know how it interacts with AI-assisted coding, and (e) check their understanding. It is a reference first and a lesson second: the first screen must already answer the question in the title.
+A topic explains one concept or tool so that a smart colleague can understand what it is and why it exists, see it work in runnable code, avoid the mistakes people actually make, and check their understanding. It is a reference first and a lesson second: the first screen must already answer the question in the title.
 
 ## 2. Structure (in this order)
 
 1. **Frontmatter** (see §8).
 2. **TL;DR** — `<TLDR>` with three cells. Default labels `what` / `trap` / `fix`; for tool topics use `what` / `when` / `how`. Each cell is one or two sentences.
-3. **What it is and why it exists** — `## ` heading in the reader's language. The skeleton sections use exactly these H2 names (en / zh): `What it is and why it exists` / `是什么，为什么存在`, `How it works` / `工作原理`, `Examples` / `示例`, `Pitfalls` / `陷阱`, `In the AI era` / `AI 时代`, `Further reading` / `延伸阅读`; only deep-dive sections choose their own headings. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
+3. **What it is and why it exists** — `## ` heading in the reader's language. The required skeleton sections use these exact H2 names (en / zh): `What it is and why it exists` / `是什么，为什么存在`, `How it works` / `工作原理`, `Examples` / `示例`, `Pitfalls` / `陷阱`, `Further reading` / `延伸阅读`; only deep-dive sections choose their own headings. Definition, the problem it solves, when you meet it. No history lesson unless the history explains a design decision.
 4. **How it works** — the mechanics. One Mermaid diagram (` ```mermaid `) if a structure or flow is clearer drawn than described; none otherwise.
 5. **Examples** — two to four runnable examples that build on each other. Every example that the language allows to run in the browser carries the fence meta `run title="file.ext"` (Python, JavaScript, TypeScript; SQL when the example is self-contained). Every example shows its output in a fenced block ` ```text ` immediately after it, and that output was produced by actually running the code (see §6).
 6. **Pitfalls** — three to six, each as `> [!PITFALL]` followed by the fix. "Best practices" belong here as the fix side of a pitfall; do not write a separate best-practices list.
-7. **In the AI era** — `## ` heading, then four short parts under bold lead-ins: **What generated code gets wrong here** (the specific mistakes models make with this concept), **Ask your AI to check** (two or three concrete verification requests), **Review checklist** (three bullet points a reviewer runs on generated code touching this concept), **Prompt vocabulary** (the exact English terms that make prompts precise, with the Chinese equivalents in the zh version). Do not write unevidenced generalisations such as “AI often does X.” Name the failure modes to check in that scenario, and give each one a counterexample or failing test.
+7. **AI collaboration, when it earns a section** — optional. Include `## In the AI era` / `## AI 时代` only when this particular topic creates a concrete way for a person and an AI coding tool to work better together that is likely to remain useful as models improve. Ground it in the topic's mechanics, examples, or tests. Omit unsupported claims about what models tend to get wrong, generic requests to check code, review checklists that restate the pitfalls, and prompt-vocabulary lists. Put ordinary engineering guidance in the explanation or Pitfalls section instead. Do not force a fixed internal structure or length on an included section.
 8. **Deep dive** — `<Depth level="deep">` around one or more `## ` sections: internals, edge cases, performance with measured numbers or no performance claims at all.
 9. **Checkpoint** — `<Checkpoint id="{track}/{slug}" />`. The questions live in the sidecar (§9).
 10. **Further reading** — `## ` heading, three to six links, official docs first, every URL fetched and confirmed to resolve. No book titles unless the ISBN or publisher page was verified.
@@ -23,7 +23,7 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 
 ## 3. Length and density
 
-- 400–900 lines including code, frontmatter and sidecar references. A topic that needs more should be split into two topics with a `related` link.
+- 100–900 lines including code and frontmatter. Treat the floor as a guardrail against missing substance, not a target: never pad an article to reach a line count. A topic that needs more than the maximum should be split into two topics with a `related` link.
 - Every paragraph earns its place. If a sentence can be deleted without losing information, delete it.
 - Paragraphs are two to five sentences that develop one idea. Never put every sentence in its own paragraph; a run of one-sentence paragraphs reads like a slide deck. Use a single-sentence paragraph only for a deliberate emphasis or a transition.
 - No introductions ("In this article we will…"), no outros ("By mastering…"), no rule-of-three padding, no "comprehensive", "deep dive into", "it is worth noting", "in today's fast-paced world".
@@ -108,4 +108,4 @@ How many, how long, how hard:
 
 ## 11. Definition of done
 
-A topic is `status: reviewed` only when: the structure in §2 is present; length is within §3; all runnable blocks executed and outputs recorded; `pnpm content:check {track}/{slug}` passes (schema, zh typography, code syntax, links, alignment); the zh and en files are aligned (`aligned: true` was set by the checker); the quiz sidecar validates; `reviewed` and `verified` are set to the date of this pass.
+A topic is `status: reviewed` only when: the required structure in §2 is present; length is within §3; runnable outputs have real execution evidence; `pnpm content:check {track}/{slug}` passes (schema, zh typography, code syntax, links, alignment); the zh and en files are aligned (`aligned: true` was set by the checker); the quiz sidecar validates; and `reviewed` is set to the date of this editorial pass. Preserve `verified.date` during a prose-only review; update it only when the runnable examples are executed again against the stated target.
