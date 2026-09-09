@@ -1,23 +1,25 @@
 # Launch checklist — deploying codewiki.com (deferred by the user on 2026-09-05)
 
-Everything before deployment is done on `main`; this is the runbook for the day the site goes live. `docs/dev/deploy.md` has the host-independent facts (build command, headers, budgets); this file is the ordered to-do with who does what. Estimated wall time: about one hour, of which the user spends ~15 minutes in the Cloudflare dashboard.
+Local implementation is complete on `main`; repository publication, hosted CI and deployment remain pending. This is the runbook for the day the site goes live. `docs/dev/deploy.md` has the host-independent facts (build command, headers, budgets); this file is the ordered to-do with who does what. Estimated wall time: about one hour, of which the user spends ~15 minutes in the Cloudflare dashboard.
 
 ## 0. Preconditions (check, do not skip)
 
 - [ ] `main` is green: `pnpm lint && pnpm check && pnpm test && pnpm build && pnpm check:links && pnpm test:e2e && pnpm exec lhci autorun` (last full run recorded in `docs/superpowers/STATUS.md`).
-- [ ] `dist` file count is under 20,000 and no file exceeds 25 MiB (`find dist -type f | wc -l`; largest today: `llms-full.txt` 13.9 MB). At 2026-09-05 the build has 15,964 files. If tier-2/3 content lands first, cut Pagefind fragments (6,050 files, raise the chunk size in the `pagefind` call) and/or OG images (2,262) before deploying, or use a host without the limit.
-- [ ] `src/data/site.ts` `repo` points at the real repository (today a placeholder `codewiki-dev/codewiki`); `site.url` is `https://codewiki.com`.
+- [ ] `dist` file count is under 20,000 and no file exceeds 25 MiB (`find dist -type f | wc -l`; largest measured on 2026-09-09: `vendor/esbuild.wasm`, 13.33 MiB). The local build inspected on that date has 16,097 files; recheck the release build. If tier-2/3 content lands first, cut Pagefind fragments (6,050 files, raise the chunk size in the `pagefind` call) and/or OG images (2,262) before deploying, or use a host without the limit.
+- [x] `src/data/site.ts` uses the approved repository URL `https://github.com/codewiki-com/codewiki` and canonical origin `https://codewiki.com`. Repository publication remains pending below.
 - [ ] The About page and the Contribute page name the real repository.
 
-## 1. Repository on GitHub (Claude, with `gh`, ~5 min)
+## 1. Repository on GitHub (GPT, with `gh`, ~5 min)
 
 ```bash
-gh repo create codewiki --private --source=. --remote=origin --push
+gh repo create codewiki-com/codewiki --public --source=. --remote=origin --push
 ```
 
-- [ ] Decide public vs private (the "Edit on GitHub" links only work when public).
+- [x] Public repository `codewiki-com/codewiki`, code MIT and content CC BY-SA 4.0, approved by the user on 2026-09-05.
+- [x] CI resolves Chromium through the direct dependency `@playwright/test` (2026-09-09).
+- [ ] Create or connect the approved repository, add `origin`, and push `main`. Run the command above only when publication resumes; if the repository already exists, connect it instead of creating it again.
 - [ ] Push `main`; confirm `.github/workflows/ci.yml` runs green on GitHub (it runs the same gate; the font cache warms on the first run).
-- [ ] Replace the placeholder `repo` in `src/data/site.ts`, rebuild once, commit.
+- [x] Repository URL, `CONTRIBUTING.md`, licence files and topic "Edit on GitHub" links are implemented locally.
 
 ## 2. Cloudflare Pages project (user, in the dashboard, ~10 min)
 
@@ -32,7 +34,7 @@ Workers & Pages → Create → Pages → Connect to Git → pick the repository.
 | root directory | `/` |
 | environment variables | `NODE_VERSION=24` (Cloudflare reads `.nvmrc`, set it anyway); nothing else |
 
-- [ ] First build finishes (expect 8–12 min: fonts download, 5,866 pages, OG images, Pagefind).
+- [ ] First build finishes (expect 8–12 min: fonts download, 5,909 pages in the last local build, OG images, Pagefind).
 - [ ] Open the `*.pages.dev` preview and run the smoke checks in §4 against it before touching DNS.
 
 ## 3. Domain (user, ~5 min)
@@ -40,7 +42,7 @@ Workers & Pages → Create → Pages → Connect to Git → pick the repository.
 - [ ] Add `codewiki.com` (and `www.codewiki.com` redirecting to the apex) under the project's *Custom domains*; Cloudflare creates the CNAME records when the zone is on Cloudflare.
 - [ ] Confirm HTTPS is active and the apex serves the site.
 
-## 4. Post-deploy verification (Claude, ~20 min)
+## 4. Post-deploy verification (GPT, ~20 min)
 
 Against the live domain:
 
@@ -50,6 +52,7 @@ Against the live domain:
 - [ ] Playground: run a Python and an SQL example (runtimes load from `/vendor/`); search "closure" and "闭包".
 - [ ] PWA: install prompt appears on Chrome desktop and Android; visit a topic, go offline, reload; "Save this track offline" on `/python/` completes; on iOS Safari "Add to Home Screen" works and the offline page shows (iOS was never tested locally).
 - [ ] Lighthouse on the live `/`, `/python/closures/`, `/practice/` (mobile) ≥ 0.95 performance.
+- [ ] Check access from mainland China, recording the network, load time and whether search and code runtimes load.
 - [ ] No console errors on `/`, a topic, a kata, the playground.
 
 ## 5. After launch

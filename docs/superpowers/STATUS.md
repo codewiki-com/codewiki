@@ -30,9 +30,10 @@ Read this first in any new session. Update it at every milestone and before star
 | Content pipeline | `content:check` now compiles MDX; `content:write` kinds quiz/kata/interview/path/cheatsheet/topic; tier 2/3 deferred (TODO) |
 | Subsequent work | Whole-site review and Phase A completed; see current work below. |
 
-## Active work (updated 2026-09-07 — AI collaboration refresh)
+## Active work (updated 2026-09-09 — local launch preparation complete)
 - **B3 is complete.** The `content/ai-era-refresh` change starts from `0afd825`; local integration uses a fast-forward to `main`. All 287 live bilingual topic pairs reviewed; 279 optional AI-era sections removed, eight rewritten. The 18 AI-era-track articles remain. Prompts and the checker now permit omission and discourage padding. Code fences and verification dates are unchanged. Ledger: `docs/superpowers/ledgers/2026-09-07-ai-era-refresh.md`.
 - **Validation:** lint, Astro/TypeScript, 2,426 unit tests, all 287 content checks, production build (5,909 pages), 160,258 internal links plus six redirects, and 283 browser tests passed. Lighthouse passed all required assertions across 11 URLs and 33 runs; minimum per-page median scores: performance 98, accessibility/best practices/SEO 100.
+- **Launch preparation (2026-09-09):** CI Chromium lookup now uses the direct dependency `@playwright/test`; the launch checklist uses the approved public repository and GPT assignments. Targeted validation passed: workflow YAML parsing, execution of its Chromium lookup, executable-path check, Prettier and `git diff --check`. The full site gate above was last run on 2026-09-07. Repository publication, hosted CI, Pages deployment, domain/HTTPS and live verification remain pending under ROADMAP A8.
 - **Remaining product work:** ROADMAP B1 (kata v2) and B2 (specification exercises), then B4–B10 and deferred Phase C items. Design notes for B1/B2: `docs/design/kata-v2.md` and `docs/design/spec-items.md`. GPT-only execution applies to future assignments; older roadmap model labels are historical.
 - Publication and deployment remain deferred (`plans/2026-09-05-launch-checklist.md`). Phase A was already complete before this refresh.
 
