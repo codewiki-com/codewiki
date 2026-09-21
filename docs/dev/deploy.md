@@ -86,7 +86,8 @@ Two details are worth knowing before editing that file:
   must run inline in `<head>` before first paint. Moving them to an external file would trade a
   flash of the wrong palette for a stricter policy; if that trade is ever wanted, load them with
   `blocking="render"` and drop the keyword.
-- **`/sandbox.html` has its own rule.** The JavaScript runner compiles the reader's snippet with
+- **`/sandbox.html` and `/sandbox` have their own rules.** Pages redirects the former to the
+  extensionless URL, so both responses need the sandbox policy. The JavaScript runner compiles the reader's snippet with
   `new Function`, which CSP counts as eval, so that one document adds `'unsafe-eval'`. Pages
   merges every matching rule, so the sandbox block uses `! Content-Security-Policy` to detach the
   global value before setting its own complete policy. The frame is embedded with

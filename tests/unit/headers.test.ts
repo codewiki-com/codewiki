@@ -30,11 +30,11 @@ describe('Cloudflare response headers', () => {
     expect(policies[0]).not.toContain("'unsafe-eval'");
   });
 
-  it('detaches the global CSP and sets one sandbox policy with the required exceptions', () => {
-    const sandbox = blocks.get('/sandbox.html') ?? [];
+  it.each(['/sandbox.html', '/sandbox'])('sets the isolated runner policy for %s', (route) => {
+    const sandbox = blocks.get(route) ?? [];
     expect(sandbox.filter((line) => /^!\s+Content-Security-Policy$/i.test(line))).toHaveLength(1);
 
-    const policies = cspLines('/sandbox.html');
+    const policies = cspLines(route);
     expect(policies).toHaveLength(1);
     expect(policies[0]).toContain("'unsafe-eval'");
     expect(policies[0]).toContain("frame-ancestors 'self'");
