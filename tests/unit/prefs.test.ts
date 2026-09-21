@@ -89,10 +89,8 @@ describe('guarded preference reads', () => {
       JSON.stringify({
         theme: 'purple',
         depth: 'quick',
-        bilingual: 'sideways',
         fontSize: 'huge',
         plan: 45,
-        bilingualLayout: 'columns',
         interviewReveal: 'sometimes',
       }),
     );
@@ -102,15 +100,17 @@ describe('guarded preference reads', () => {
     });
   });
 
-  it('preserves valid learning-layer preferences', () => {
+  it('preserves valid learning-layer preferences and ignores retired reading options', () => {
     const stored: Prefs = {
       ...DEFAULT_PREFS,
       plan: 60,
-      bilingualLayout: 'side',
       interviewReveal: 'all',
       cardSources: { terms: false, quiz: true, manual: false },
     };
-    localStorage.setItem(KEYS.prefs, JSON.stringify(stored));
+    localStorage.setItem(
+      KEYS.prefs,
+      JSON.stringify({ ...stored, bilingual: 'zh-en', bilingualLayout: 'side' }),
+    );
     expect(readStore<Prefs>(KEYS.prefs, DEFAULT_PREFS)).toEqual(stored);
   });
 

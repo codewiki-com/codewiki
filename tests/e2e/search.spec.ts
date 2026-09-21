@@ -52,7 +52,7 @@ test('the language toggle searches the other locale', async ({ page }) => {
   // Filtered to English, a Chinese query matches nothing.
   await expect(dialog.getByRole('option')).toHaveCount(0);
 
-  await dialog.getByRole('button', { name: '中文' }).click();
+  await dialog.getByRole('button', { name: 'Chinese' }).click();
   await expect(dialog.locator('[role="option"][href="/zh/python/closures/"]')).toHaveCount(1);
 });
 
@@ -87,7 +87,7 @@ test('Enter belongs to whichever control has focus', async ({ page }) => {
   // Past the field, past the EN half, onto 中文.
   await page.keyboard.press('Tab');
   await page.keyboard.press('Tab');
-  const zh = dialog.getByRole('button', { name: '中文' });
+  const zh = dialog.getByRole('button', { name: 'Chinese' });
   await expect(zh).toBeFocused();
 
   // Enter here switches the filter; it must not open the row the cursor is on.

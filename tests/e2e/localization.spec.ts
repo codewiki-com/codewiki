@@ -48,8 +48,11 @@ const ALLOWED = new Set([
   'English',
   // Product/identifier links stay verbatim in both locales.
   'codewiki',
+  'CodeWiki',
+  'GitHub',
+  'MIT',
+  'CC BY-SA 4.0',
   'llms.txt',
-  'RSS',
   ...IDENTIFIERS,
 ]);
 

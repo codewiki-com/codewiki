@@ -51,7 +51,6 @@ export default {
 
   'a11y.skip': 'Skip to content',
 
-  'theme.system': 'System',
   'theme.light': 'Light',
   'theme.dark': 'Dark',
 
@@ -82,7 +81,7 @@ export default {
     'Quick shows the TL;DR and one example. Standard adds mechanics and pitfalls. Deep adds internals and edge cases.',
   'home.feature.3.title': 'One article, two languages',
   'home.feature.3.desc':
-    'English and Chinese are the same text, paragraph for paragraph. Read them side by side and learn the terminology as you go.',
+    'Read each topic in English or Chinese. Switch languages from any page to open the same topic in your preferred language.',
   'home.feature.4.title': 'Practice that sticks',
   'home.feature.4.desc':
     'Predict-the-output, spot-the-bug, checkpoint quizzes and spaced-repetition flashcards built from what you read.',
@@ -105,9 +104,6 @@ export default {
   'home.mode.practice.title': 'Small, daily, measurable',
   'home.mode.practice.desc':
     'Predict-the-output puzzles, spot-the-bug katas with tests, interview banks per track, and flashcards that come back when you are about to forget.',
-
-  'home.bilingual.label': 'bilingual mode',
-  'home.bilingual.title': 'Paragraph-aligned English and Chinese',
 
   'home.ai.label': 'ask your ai',
   'home.ai.title': 'Prompts that carry the page with them',
@@ -134,13 +130,15 @@ export default {
   'daily.peek': 'Preview of the kata code: {title}',
   'daily.everyDay': 'new one every day',
 
-  'footer.tagline': 'codewiki · static site · progress stays in your browser',
+  'footer.tagline': 'CodeWiki · static site · progress stays in your browser',
+  'footer.codeLicense': 'Code:',
+  'footer.contentLicense': 'Content:',
+  'footer.githubRepo': 'GitHub repo',
   'footer.about': 'About',
   'footer.contribute': 'Contribute',
   'footer.llms': 'llms.txt',
-  'footer.rss': 'RSS',
-  // Always names the *other* language, in that language.
-  'footer.otherLocale': '中文',
+  // Names the other language in the current page's locale.
+  'footer.otherLocale': 'Chinese',
 
   'about.title': 'About codewiki',
   'about.description':
@@ -219,11 +217,6 @@ export default {
   'depth.standard': 'Standard',
   'depth.deep': 'Deep',
   'depth.switchDeep': 'Switch to Deep',
-
-  'bilingual.label': 'bilingual',
-  'bilingual.off': 'off',
-  'bilingual.on': 'EN + 中文',
-  'bilingual.soon': 'Bilingual reading is coming soon',
 
   'toc.title': 'on this page',
   'toc.deep': 'deep',
@@ -306,7 +299,6 @@ export default {
   'track.range': '{from} → {to}',
   // Reads as a Chinese label on the English page and an English one on the Chinese page: it states
   // that the *other* language is complete for this track.
-  'track.otherComplete': '中文完整',
   'track.cheatsheet': 'Cheatsheet',
   'track.interview': 'Interview bank',
   'track.compare': 'Compare',
@@ -374,7 +366,6 @@ export default {
   'paths.rationale': 'Why this order',
   'paths.askAi': 'ask your AI',
   'paths.aiPrompt': 'Quiz me on {milestone} before I move on.',
-  'paths.synced': '中文版同步',
   'paths.noPaths': 'No learning paths are published yet.',
   'paths.shared': 'Link copied',
   'paths.planned.variablesTypes': 'Variables & types',
@@ -412,7 +403,6 @@ export default {
   'practice.trackOne': '{count}',
   'practice.tracks': '{count}',
   'practice.offline': 'runs offline',
-  'practice.synced': '中文同步',
   'practice.type.predict': 'Predict the output',
   'practice.type.spotbug': 'Spot the bug',
   'practice.type.review': 'Review AI code',
@@ -615,7 +605,6 @@ export default {
 
   'settings.theme': 'Theme',
   'settings.depth': 'Default depth',
-  'settings.bilingual': 'Bilingual mode',
   'settings.interviewReveal': 'Interview reveal mode',
   'settings.revealOne': 'One at a time',
   'settings.revealAll': 'Show all',
@@ -753,18 +742,6 @@ export default {
   'rules.installAt': 'Install at',
   'rules.repositoryRoot': 'in the repository root',
   'rules.download': 'Download {file}',
-  // Task 12
-  'bilingual.enZh': 'EN + 中文',
-  'bilingual.zhEn': '中文 + EN',
-  'bilingual.aligned': 'aligned · paragraph for paragraph',
-  'bilingual.codeShared': 'code blocks are shared',
-  'bilingual.reading': 'reading',
-  'bilingual.layout': 'Layout',
-  'bilingual.paired': 'paired',
-  'bilingual.side': 'side by side',
-  'bilingual.pairedExplain': 'Paired puts each translated paragraph under its matching paragraph.',
-  'bilingual.sideExplain': 'Side by side needs a screen at least 1440 px wide.',
-  'bilingual.notAligned': 'not aligned yet',
 
   // Task 15
   'ask.explainCode': 'Explain this code line by line',

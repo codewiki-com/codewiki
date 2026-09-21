@@ -52,7 +52,7 @@ export default function Terms() {
 
     const head = document.createElement('span');
     head.className = 'term-tip-head';
-    // Both names are tagged with their own language, whichever language the page is in.
+    // English pages keep English labels; Chinese readers also get the technical English name.
     const en = document.createElement('span');
     en.lang = 'en';
     const sep = document.createElement('span');
@@ -62,7 +62,8 @@ export default function Terms() {
     const zh = document.createElement('span');
     zh.className = 'term-tip-alt';
     zh.lang = 'zh-Hans';
-    head.append(en, sep, zh);
+    head.append(en);
+    if (document.documentElement.lang.startsWith('zh')) head.append(sep, zh);
 
     const short = document.createElement('p');
     short.className = 'term-tip-short';

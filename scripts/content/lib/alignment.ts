@@ -1,9 +1,8 @@
 /**
  * Structural alignment between the two languages of a topic.
  *
- * codewiki publishes one article per topic in English and Chinese, and the bilingual
- * reading mode interleaves the two files paragraph by paragraph. That only works when
- * both files have the same sequence of blocks, so this module reduces a document to a
+ * codewiki publishes one article per topic in English and Chinese. To check that both
+ * translations cover the same material, this module reduces each document to a
  * list of coarse blocks — heading, paragraph, code, list, callout, component, table —
  * and compares the two lists position by position.
  *

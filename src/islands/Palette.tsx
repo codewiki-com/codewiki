@@ -25,7 +25,7 @@ export interface PaletteLabels {
   searching: string;
   /** One heading per group of `GROUP_ORDER`. */
   groups: Record<GroupName, string>;
-  /** Accessible name of the EN / 中文 toggle. */
+  /** Accessible name of the search-language toggle. */
   langFilter: string;
   close: string;
   /** Footer hints. */
@@ -486,11 +486,10 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
           key={value}
           type="button"
           class={value === lang ? 'on' : undefined}
-          lang={value === 'zh' ? 'zh-Hans' : 'en'}
           aria-pressed={value === lang}
           onClick={() => setLang(value)}
         >
-          {value === 'zh' ? '中文' : 'EN'}
+          {locale === 'en' ? (value === 'en' ? 'English' : 'Chinese') : value === 'en' ? '英语' : '中文'}
         </button>
       ))}
     </div>

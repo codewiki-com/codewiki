@@ -22,21 +22,20 @@ The preference fields are:
 
 ```ts
 interface Prefs {
-  theme: 'system' | 'light' | 'dark';
+  theme: 'light' | 'dark';
   depth: 'quick' | 'standard' | 'deep';
-  bilingual: 'off' | 'en-zh' | 'zh-en';
   fontSize: 's' | 'm' | 'l';
   lang?: 'en' | 'zh';
   plan?: 15 | 30 | 60;
-  bilingualLayout?: 'paired' | 'side';
   interviewReveal?: 'one' | 'all';
   cardSources?: { terms: boolean; quiz: boolean; manual: boolean };
 }
 ```
 
-The learning defaults are a 30-minute plan, paired bilingual layout, one interview answer open at
-a time, and all three card sources enabled. An absent `cardSources` object means all sources are
-enabled.
+The learning defaults are a 30-minute plan, one interview answer open at a time, and all three
+card sources enabled. An absent `cardSources` object means all sources are enabled.
+On first visit, the theme bootstrap resolves the system palette to `light` or `dark` and saves
+that choice. Legacy `system` preferences are resolved the same way; the UI offers only two themes.
 
 Progress uses stable content ids:
 
@@ -77,13 +76,12 @@ it. Treat the selectors below as interfaces: tests and other components depend o
 | `PathState` | Finds `[data-path-root="{path-id}"]`. Map nodes use `[data-topic]`, diamonds `[data-checkpoint]`, and edges `[data-edge-kind][data-edge-from][data-edge-to]`; list rows use `[data-topic-row]` and `[data-checkpoint-row]`. The island writes `data-state`, updates the ring/summary/Continue link, handles `[data-plan]`, export and share, and refreshes on `cw:progress`. |
 | `InterviewControls` | Enhances `[data-interview-bank="{track}"]` and marks it `data-ready="true"`. Questions are `details.q[data-id][data-level]`; level/reveal groups, search, shuffle, progress, section rows and card actions use the `data-interview-*`, `data-progress-*`, `data-question-list`, `data-add-card` and `data-add-all` markers in `Interview.astro` and `InterviewQuestion.astro`. Opening a question records it and dispatches `cw:progress`. |
 | `Flashcards` | A `client:only="preact"` reviewer with a server fallback. It owns its rendered subtree, reads the deck/preferences/progress stores, and fetches public and answer-bearing quiz banks only when a quiz card needs them. Keep keyboard commands Space, 1–4, E and X attached to the documented flip/rate/source/suspend actions. |
-| `Bilingual` | Enhances `#article[data-bilingual][data-bilingual-layout]` when the topic declares `aligned: true`. Controls are `[data-bilingual-control]` and `[data-bilingual-layout-control]`; authored blocks carry `data-bi`. Alternate clones receive `lang` and `data-bi-clone`, paired sources receive `data-bi-source`, and the controller dispatches `cw:bilingual` on `document` after a mode change. |
 | `Playground` | A server-rendered `client:idle` component that owns its workspace. Its external contract is `?lang=&code=&tests=&example=` plus `/api/examples.json`. The editor remains synchronized with its textarea. Python and SQL runtimes load from `/vendor/` only on use; HTML runs in a sandboxed `srcdoc` frame without `allow-same-origin`. |
 | `PromptBuilder` | A `client:load` component that owns its builder. `?topic=`, `?goal=` and `?level=` can preselect state. Topic search reads `/api/topics.json`; selected concept cards read `/api/topics/{track}/{slug}.json`. Reader code remains local and is omitted first if a deep link exceeds the query limit. |
 | `AskAI` block actions | A row-level cheatsheet action dispatches `cw:ask` with `{ detail: { text } }`. Topic block buttons use matching `data-block` values on the button and source block plus `data-preset`; section buttons use `data-section`. The one existing `AskAI` island delegates all of these actions. |
 
 These integration events are not persistence transports. `cw:progress`, `cw:flashcards`,
-`cw:depth`, `cw:bilingual` and `cw:ask` dispatch on `document`; `cw:theme` dispatches on `window`.
+`cw:depth` and `cw:ask` dispatch on `document`; `cw:theme` dispatches on `window`.
 Keep that target when adding a listener.
 
 ## Adding content
@@ -153,21 +151,12 @@ two files structurally paired and author rows with the registered MDX components
 Only reviewed sheets are public. The build emits localized index/detail pages, Markdown twins,
 `/api/cheatsheets.json`, print styling and `llms.txt` entries.
 
-## Bilingual topic pairing
+## Topic translations
 
-Topics are paired files at `src/content/topics/{track}/{slug}.en.mdx` and `.zh.mdx`. Mark both
-frontmatter records `aligned: true` only after their structures match. The rehype pipeline assigns
-stable block keys in local order: `tldr:{n}`, `intro:{n}`, then `{heading-id}:{n}`. Paragraphs,
-lists, tables, blockquotes/callouts and code or diagram figures receive `data-bi`; a callout is one
-block. Because localized heading slugs differ, the browser aliases alternate heading prefixes by
-aligned heading order before pairing.
-
-On first activation, the island fetches the same-origin alternate HTML and caches it in memory.
-Prose is cloned beside its local partner. Headings and code/diagram figures are shared, translated
-headings become subtitles, and vocabulary strips merge/deduplicate term ids. Clones lose duplicate
-HTML ids. `en-zh` and `zh-en` set reading order; `paired` is the default layout, while `side` is
-used only at viewports at least 1440 px wide. Unaligned topics render an inert Not aligned yet
-control and must not attempt positional pairing.
+Topics have separate English and Chinese pages backed by
+`src/content/topics/{track}/{slug}.en.mdx` and `.zh.mdx`. Readers switch between them using the
+language switch. The content checks still verify that translations have matching structures.
+Mark both frontmatter records `aligned: true` only after those checks pass.
 
 `TryToBreak` is also bilingual authored content. Keep 2–4 corresponding challenges in the two
 topic files and place it after the relevant runnable example/output pair; the pipeline transfers

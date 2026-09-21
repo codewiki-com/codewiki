@@ -32,8 +32,9 @@ test('the practice hub indexes the tracks and the kata of the day', async ({ pag
 
 test('the hub stays small enough to stay interactive', async ({ page }) => {
   await page.goto('/practice/');
-  const elements = await page.evaluate(() => document.getElementsByTagName('*').length);
-  expect(elements).toBeLessThan(300);
+  // Budget the hub itself; shared navigation and footer controls are independent of its catalogue.
+  const elements = await page.locator('main').locator('*').count();
+  expect(elements).toBeLessThan(200);
 });
 
 test('a legacy ?track= link lands on the route that replaced it', async ({ page }) => {

@@ -34,7 +34,6 @@ test('reset practice data keeps reading progress and preferences', async ({ page
       JSON.stringify({
         theme: 'light',
         depth: 'deep',
-        bilingual: 'off',
         fontSize: 'm',
         interviewReveal: 'all',
       }),
@@ -65,7 +64,6 @@ test('reset practice data keeps reading progress and preferences', async ({ page
     prefs: {
       theme: 'light',
       depth: 'deep',
-      bilingual: 'off',
       fontSize: 'm',
       interviewReveal: 'all',
     },

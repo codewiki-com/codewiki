@@ -36,7 +36,7 @@ async function waitForThemeToggle(page: Page): Promise<void> {
 test('the English home page renders its headline', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await expect(page.locator('h1')).toHaveText(t('en', 'home.h1'));
+  await expect(page.locator('main h1')).toHaveText(t('en', 'home.h1'));
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://codewiki.com/');
 });
 
@@ -118,7 +118,7 @@ test('the tracks section follows the personal strip, before the feature grid', a
 test('the Chinese home page renders the same headline in Chinese', async ({ page }) => {
   await page.goto('/zh/');
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');
-  await expect(page.locator('h1')).toHaveText(t('zh', 'home.h1'));
+  await expect(page.locator('main h1')).toHaveText(t('zh', 'home.h1'));
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://codewiki.com/zh/');
 });
 
@@ -142,28 +142,25 @@ test('the search row replaces the palette mock and opens the real palette', asyn
   expect(pageHeight).toBeLessThan(3_000);
 });
 
-test('the theme toggle cycles system, light and dark', async ({ page }) => {
-  await page.goto('/');
-  const root = page.locator('html');
-  // Two toggles are rendered (bar and mobile menu); at the default viewport the bar's is the live one.
-  const toggle = page.locator('button.theme-toggle').first();
-
-  // The toggle is `client:idle`; the bootstrap has already resolved a preference for it to adopt.
-  await expect(root).toHaveAttribute('data-theme-pref', 'system');
-  await waitForThemeToggle(page);
-  await expect(toggle).toBeVisible();
-
-  await toggle.click();
-  await expect(root).toHaveAttribute('data-theme-pref', 'light');
-  await expect(root).toHaveAttribute('data-theme', 'light');
-
-  await toggle.click();
-  await expect(root).toHaveAttribute('data-theme-pref', 'dark');
-  await expect(root).toHaveAttribute('data-theme', 'dark');
-
-  await toggle.click();
-  await expect(root).toHaveAttribute('data-theme-pref', 'system');
-});
+for (const system of ['light', 'dark'] as const) {
+  test(`the theme starts ${system} from the system and only toggles light/dark`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: system });
+    await captureThemeAtParse(page);
+    await page.goto('/');
+    const root = page.locator('html');
+    const toggle = page.locator('button.theme-toggle').first();
+    expect(await themeAtParse(page)).toBe(system);
+    await expect(root).toHaveAttribute('data-theme-pref', system);
+    await waitForThemeToggle(page);
+    await expect(toggle).toHaveAttribute('aria-label', system === 'light' ? 'Light' : 'Dark');
+    await toggle.click();
+    const opposite = system === 'light' ? 'dark' : 'light';
+    await expect(root).toHaveAttribute('data-theme', opposite);
+    await expect(root).toHaveAttribute('data-theme-pref', opposite);
+    await toggle.click();
+    await expect(root).toHaveAttribute('data-theme-pref', system);
+  });
+}
 
 test('the desktop and mobile theme toggles stay synchronized', async ({ page }) => {
   await page.goto('/');
@@ -172,8 +169,8 @@ test('the desktop and mobile theme toggles stay synchronized', async ({ page }) 
   await toggles.first().click();
 
   await expect(toggles).toHaveCount(2);
-  await expect(toggles.nth(0)).toHaveAttribute('aria-label', 'Light');
-  await expect(toggles.nth(1)).toHaveAttribute('aria-label', 'Light');
+  await expect(toggles.nth(0)).toHaveAttribute('aria-label', 'Dark');
+  await expect(toggles.nth(1)).toHaveAttribute('aria-label', 'Dark');
 });
 
 test('the chosen theme survives a reload with no flash of the other palette', async ({ page }) => {
@@ -186,7 +183,6 @@ test('the chosen theme survives a reload with no flash of the other palette', as
   const toggle = page.locator('button.theme-toggle').first();
   await waitForThemeToggle(page);
   await expect(toggle).toBeVisible();
-  await toggle.click();
   await toggle.click();
   await expect(page.locator('html')).toHaveAttribute('data-theme-pref', 'dark');
 
@@ -213,20 +209,82 @@ test('the theme bootstrap runs ahead of the stylesheet', async ({ page }) => {
   expect(bootstrapFirst).toBe(true);
 });
 
-test('the language switch leads to the same page in the other language', async ({ page }) => {
+test('the language dropdown preserves the current page in both locales', async ({ page }) => {
   await page.goto('/python/closures/');
-  await expect(page.getByRole('link', { name: '中文' }).first()).toHaveAttribute(
+  await page.locator('.nav-tools .language-trigger').hover();
+  await expect(page.locator('#nav-language').getByRole('link', { name: 'Chinese' })).toHaveAttribute(
     'href',
     '/zh/python/closures/',
   );
-
   await page.goto('/zh/python/closures/');
-  await expect(page.getByRole('link', { name: 'EN' }).first()).toHaveAttribute('href', '/python/closures/');
+  await page.locator('.nav-tools .language-trigger').hover();
+  await expect(page.locator('#nav-language').getByRole('link', { name: '英语' })).toHaveAttribute(
+    'href',
+    '/python/closures/',
+  );
 });
 
-test('the language switch on the home page swaps the home page', async ({ page }) => {
+test('the language dropdown opens on keyboard focus, closes with Escape, and navigates', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('link', { name: '中文' }).first().click();
+  const trigger = page.locator('.nav-tools .language-trigger');
+  await expect(page.locator('.nav-tools [data-language-switch]')).toHaveAttribute('data-enhanced', '');
+  await page.locator('.nav-right button.search').focus();
+  await page.keyboard.press('Tab');
+  await expect(trigger).toBeFocused();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#nav-language')).not.toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator('#nav-language a').first()).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/zh\/$/);
-  await expect(page.locator('h1')).toHaveText(t('zh', 'home.h1'));
+  await expect(page.locator('main h1')).toHaveText(t('zh', 'home.h1'));
+});
+
+test('the language dropdown and GitHub link work on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  const github = page.locator('header .github-link');
+  await expect(github).toBeVisible();
+  await expect(github).toHaveAttribute('href', 'https://github.com/codewiki-com');
+  await page.locator('.nav-menu > summary').click();
+  await page.locator('.menu-tools .language-trigger').click();
+  await page.locator('#menu-language').getByRole('link', { name: 'Chinese' }).click();
+  await expect(page).toHaveURL(/\/zh\/$/);
+});
+
+test('legacy system preferences resolve to a concrete palette before paint', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.addInitScript(() =>
+    localStorage.setItem('cw:v1:prefs', JSON.stringify({ theme: 'system', depth: 'deep' })),
+  );
+  await captureThemeAtParse(page);
+  await page.goto('/settings/');
+  expect(await themeAtParse(page)).toBe('dark');
+  await expect(page.locator('[data-setting="theme"] [role="radio"]')).toHaveCount(2);
+  await expect(page.locator('[data-setting="theme"] [data-value="dark"]')).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('cw:v1:prefs')!))).toMatchObject({
+    theme: 'dark',
+    depth: 'deep',
+  });
+});
+
+test('the header and footer use CodeWiki and link GitHub with explicit licenses', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.brand')).toHaveText('CodeWiki');
+  await expect(page.locator('footer')).toContainText('CodeWiki');
+  await expect(page.locator('footer')).toContainText('Code: MIT');
+  await expect(page.locator('footer')).toContainText('Content: CC BY-SA 4.0');
+  await expect(page.locator('footer').getByRole('link', { name: 'GitHub', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/codewiki-com',
+  );
+  await expect(
+    page.locator('footer').getByRole('link', { name: 'GitHub repo', exact: true }),
+  ).toHaveAttribute('href', 'https://github.com/codewiki-com/codewiki');
+  await expect(page.locator('a[href*="rss.xml"], link[type="application/rss+xml"]')).toHaveCount(0);
 });

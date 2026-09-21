@@ -18,12 +18,6 @@ export interface ThemeToggleProps {
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
 const icons: Record<ThemePref, JSX.Element> = {
-  system: (
-    <>
-      <rect x="2" y="3" width="12" height="9" rx="1.5" />
-      <path d="M6 14h4" />
-    </>
-  ),
   light: (
     <>
       <circle cx="8" cy="8" r="3.2" />
@@ -34,7 +28,7 @@ const icons: Record<ThemePref, JSX.Element> = {
 };
 
 export default function ThemeToggle({ labels }: ThemeToggleProps) {
-  const [pref, setPref] = useState<ThemePref>('system');
+  const [pref, setPref] = useState<ThemePref>('light');
 
   // The inline bootstrap script already painted the right palette; adopt whatever
   // it resolved so the button starts in the same state as the document.
@@ -54,15 +48,6 @@ export default function ThemeToggle({ labels }: ThemeToggleProps) {
     window.addEventListener(THEME_EVENT, onTheme);
     return () => window.removeEventListener(THEME_EVENT, onTheme);
   }, []);
-
-  // While following the system, track live OS palette changes.
-  useEffect(() => {
-    if (pref !== 'system') return;
-    const mq = window.matchMedia(DARK_QUERY);
-    const onChange = () => applyTheme('system', mq.matches, document.documentElement);
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, [pref]);
 
   const onClick = useCallback(() => {
     const next = nextTheme(pref);

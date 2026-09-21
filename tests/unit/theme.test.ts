@@ -17,10 +17,9 @@ describe('resolveTheme', () => {
 });
 
 describe('nextTheme', () => {
-  it('cycles system -> light -> dark -> system', () => {
-    expect(nextTheme('system')).toBe('light');
+  it('switches between light and dark', () => {
     expect(nextTheme('light')).toBe('dark');
-    expect(nextTheme('dark')).toBe('system');
+    expect(nextTheme('dark')).toBe('light');
   });
 });
 

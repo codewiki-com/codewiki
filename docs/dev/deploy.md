@@ -5,6 +5,47 @@ holds session state, so any static host serves it: Cloudflare Pages, Netlify, Ve
 Pages, S3 behind CloudFront, or `python3 -m http.server` on a laptop. Cloudflare Pages is the
 host the repository is set up for, and the only one with files checked in (`public/_headers`).
 
+## Cloudflare Pages Free
+
+The Direct Upload project is `codewiki` in the `tomchen` account, with `main` as its production branch and
+`https://codewiki.pages.dev` as its Pages address. The canonical domain is
+`https://codewiki.com`.
+
+The source repository is [codewiki-com/codewiki](https://github.com/codewiki-com/codewiki).
+Pushing to `main` runs `.github/workflows/ci.yml`: lint, type checks, unit tests, the static build,
+link checks, browser tests and Lighthouse. Only a successful run on `main` publishes the exact
+tested `dist/` to Pages. Pull requests run the checks without deploying. The workflow can also
+be started manually from GitHub Actions.
+
+Set the repository's `CLOUDFLARE_API_TOKEN` Actions secret to a token with **Cloudflare Pages →
+Edit** permission for the `tomchen` account. The account and project IDs are in `wrangler.jsonc`;
+credentials are never committed. No Cloudflare Git integration or Cloudflare build is needed.
+The CI token does not need DNS permissions. Any token used for the initial custom-domain DNS
+migration stays local and can be revoked after the domain is active.
+
+For a manual deployment from the local working tree:
+
+```sh
+npx --yes wrangler@4.135.0 login
+pnpm run deploy
+```
+
+`pnpm run deploy` rebuilds the current working tree, checks internal links and uploads only `dist/`.
+It does not commit or push source code. `wrangler.jsonc` selects the Pages project and output
+directory. The `--force` option keeps Wrangler 4.135.0 on Pages instead of delegating to Workers.
+
+This is a static deployment with no Pages Functions, database or paid bindings. Pages Free
+allows 20,000 files and a maximum of 25 MiB per file. Use Wrangler to upload the full site; the
+dashboard's drag-and-drop uploader only accepts 1,000 files.
+
+The custom domain must also be added under the project's **Custom domains**. An apex domain
+such as `codewiki.com` must be an active Cloudflare zone in the same account as the Pages project.
+Creating the Pages project alone does not change the domain's existing DNS or website.
+
+References: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/),
+[limits](https://developers.cloudflare.com/pages/platform/limits/) and
+[custom domains](https://developers.cloudflare.com/pages/configuration/custom-domains/).
+
 ## Build
 
 | setting | value |
@@ -58,7 +99,7 @@ The site works without any of them; it is simply less locked down.
 
 ## Custom domain
 
-The site's absolute URLs (canonical links, hreflang, sitemap, OG images, RSS) all come from
+The site's absolute URLs (canonical links, hreflang, sitemap and OG images) all come from
 `site` in `astro.config.mjs`, currently `https://codewiki.com`. Changing the domain means
 changing that value and rebuilding — the URLs are baked into the HTML, not resolved at runtime.
 

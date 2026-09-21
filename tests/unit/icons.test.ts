@@ -20,6 +20,7 @@ const NAMES = [
   'menu',
   'close',
   'external',
+  'github',
 ] as const;
 
 const source = readFileSync(

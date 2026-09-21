@@ -21,12 +21,10 @@ export const KEYS = {
 
 export type StoreKey = (typeof KEYS)[keyof typeof KEYS];
 
-export type Theme = 'system' | 'light' | 'dark';
+export type Theme = 'light' | 'dark';
 export type Depth = 'quick' | 'standard' | 'deep';
-export type BilingualMode = 'off' | 'en-zh' | 'zh-en';
 export type FontSize = 's' | 'm' | 'l';
 export type Plan = 15 | 30 | 60;
-export type BilingualLayout = 'paired' | 'side';
 export type RevealMode = 'one' | 'all';
 
 /**
@@ -44,13 +42,11 @@ export interface OfflineState {
 export interface Prefs {
   theme: Theme;
   depth: Depth;
-  bilingual: BilingualMode;
   fontSize: FontSize;
   /** Last language the visitor chose, used to offer the other locale. */
   lang?: Locale;
   /** Minutes a day the reader plans to spend; drives the "about N weeks" line on paths. */
   plan?: Plan;
-  bilingualLayout?: BilingualLayout;
   interviewReveal?: RevealMode;
   /** Flashcard sources; every source defaults to on when the key is absent. */
   cardSources?: { terms: boolean; quiz: boolean; manual: boolean };
@@ -124,12 +120,10 @@ export interface Recents {
 }
 
 export const DEFAULT_PREFS: Prefs = {
-  theme: 'system',
+  theme: 'light',
   depth: 'standard',
-  bilingual: 'off',
   fontSize: 'm',
   plan: 30,
-  bilingualLayout: 'paired',
   interviewReveal: 'one',
 };
 
@@ -259,15 +253,19 @@ export function sanitizePrefs(value: Record<string, unknown>): Prefs {
       }
     : undefined;
   return {
-    theme: oneOf(value.theme, ['system', 'light', 'dark'] as const, DEFAULT_PREFS.theme),
+    theme: oneOf(
+      value.theme,
+      ['light', 'dark'] as const,
+      typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light',
+    ),
     depth: oneOf(value.depth, ['quick', 'standard', 'deep'] as const, DEFAULT_PREFS.depth),
-    bilingual: oneOf(value.bilingual, ['off', 'en-zh', 'zh-en'] as const, DEFAULT_PREFS.bilingual),
     fontSize: oneOf(value.fontSize, ['s', 'm', 'l'] as const, DEFAULT_PREFS.fontSize),
     plan:
       typeof value.plan === 'number' && ([15, 30, 60] as const).includes(value.plan as Plan)
         ? (value.plan as Plan)
         : 30,
-    bilingualLayout: oneOf(value.bilingualLayout, ['paired', 'side'] as const, 'paired'),
     interviewReveal: oneOf(value.interviewReveal, ['one', 'all'] as const, 'one'),
     ...(lang ? { lang } : {}),
     ...(sources ? { cardSources: sources } : {}),

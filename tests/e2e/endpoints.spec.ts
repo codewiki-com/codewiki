@@ -95,18 +95,6 @@ test('the glossary and paths APIs are readable JSON', async ({ request }) => {
   expect(paths[0].url).toBe(`https://codewiki.com/paths/${pathIds()[0]}/`);
 });
 
-test('each locale has its own feed', async ({ request }) => {
-  const english = await (await request.get('/rss.xml')).text();
-  expect(english).toContain('<?xml');
-  expect(english).toContain('<item>');
-  expect(english).toContain('<language>en</language>');
-  expect(english).toContain('https://codewiki.com/python/closures/');
-
-  const chinese = await (await request.get('/zh/rss.xml')).text();
-  expect(chinese).toContain('<language>zh-Hans</language>');
-  expect(chinese).toContain('https://codewiki.com/zh/python/closures/');
-});
-
 test('robots.txt allows everything and names the sitemap', async ({ request }) => {
   const body = await (await request.get('/robots.txt')).text();
   expect(body).toContain('User-agent: *');
@@ -170,11 +158,8 @@ test('the settings page exports and clears this browser', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => localStorage.getItem('cw:v1:recents'))).toBeNull();
 });
 
-test('the Chinese settings page is in Chinese and links its own feed', async ({ page }) => {
+test('the Chinese settings page is in Chinese without a feed', async ({ page }) => {
   await page.goto('/zh/settings/');
   await expect(page.locator('h1')).toHaveText('设置');
-  await expect(page.locator('link[rel="alternate"][type="application/rss+xml"]')).toHaveAttribute(
-    'href',
-    '/zh/rss.xml',
-  );
+  await expect(page.locator('link[type="application/rss+xml"]')).toHaveCount(0);
 });

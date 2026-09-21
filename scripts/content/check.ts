@@ -286,7 +286,7 @@ async function linkFindings(documents: Documents, options: CheckOptions): Promis
 // 5. Bilingual alignment
 // ---------------------------------------------------------------------------
 
-/** The two languages share one block sequence, which is what bilingual mode reads. */
+/** The translations share one block sequence so their editorial structure stays consistent. */
 function alignmentFindings(documents: Documents): string[] {
   const result = alignBlocks(blocks(documents.en.text), blocks(documents.zh.text));
   if (result.aligned) return [];

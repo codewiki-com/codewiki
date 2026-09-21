@@ -9,7 +9,7 @@ constraints and verify results. codewiki focuses on making those checks concrete
 
 ## Features
 
-- Depth-aware English and Simplified Chinese topic pages with aligned bilingual reading.
+- Depth-aware topic pages in English and Simplified Chinese, with a language switch.
 - Practice catalogue and standalone multiple-choice, predict-output, fill, spot-bug and code-review
   exercises, including topic checkpoints and interview banks.
 - Guided learning paths with milestone maps, prerequisites, time plans and browser-local progress.

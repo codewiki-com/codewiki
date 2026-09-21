@@ -180,7 +180,7 @@ test('an inline term is a keyboard-reachable glossary link with a descriptive to
   await term.hover();
   await expect(tip).toBeVisible();
   await expect(tip).toContainText('Free variable');
-  await expect(tip).toContainText('自由变量');
+  await expect(tip).not.toContainText('自由变量');
   await expect(tip.getByRole('link')).toHaveCount(0);
   await expect(term).toHaveAttribute('href', '/glossary/free-variable/');
   await expect(term).toHaveAttribute('aria-describedby', 'cw-term-tip');
