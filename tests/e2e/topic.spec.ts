@@ -201,7 +201,7 @@ test('an inline term is a keyboard-reachable glossary link with a descriptive to
 test('the breadcrumb and the JSON-LD trail agree', async ({ page }) => {
   await page.goto('/python/closures/');
   const pills = await page.locator('.crumbs .tag').allTextContents();
-  expect(pills.map((pill) => pill.trim())).toEqual(['Tracks', 'Python', 'Functions in depth', 'closures']);
+  expect(pills.map((pill) => pill.trim())).toEqual(['Tracks', 'Python', 'Functions in depth', 'Closures']);
 
   const blocks = await page.locator('script[type="application/ld+json"]').allTextContents();
   const crumbs = blocks.map((block) => JSON.parse(block)).find((ld) => ld['@type'] === 'BreadcrumbList');
