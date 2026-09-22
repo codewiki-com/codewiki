@@ -21,6 +21,25 @@ const options: RehypeMermaidOptions = {
   css: [pathToFileURL('node_modules/@fontsource/ibm-plex-sans/400.css')],
 };
 
+// MDX transforms run concurrently. Each diagram-bearing document opens a Chromium page;
+// hundreds of those exhaust a standard CI runner, even when Node's heap is bounded.
+// Share two slots across processor instances and hand released slots directly to queued work.
+let activeRenders = 0;
+const renderQueue: Array<() => void> = [];
+
+async function withRenderSlot(render: () => Promise<unknown>): Promise<void> {
+  if (activeRenders < 2) activeRenders += 1;
+  else await new Promise<void>((resolve) => renderQueue.push(resolve));
+
+  try {
+    await render();
+  } finally {
+    const next = renderQueue.shift();
+    if (next) next();
+    else activeRenders -= 1;
+  }
+}
+
 /** Whether an element carries the class emitted for an unhighlighted Mermaid fence. */
 function isMermaidCode(node: Element): boolean {
   const classes = node.properties.className;
@@ -62,6 +81,7 @@ export function rehypeMermaidDiagrams(this: Processor) {
   ) => Promise<Root | undefined | void> | Root | undefined | void;
 
   return async (tree: Root, file: VFile): Promise<void> => {
+    let hasDiagrams = false;
     // Put the semantic wrapper in place before rendering. `rehype-mermaid` then replaces only the
     // nested `<pre>`, which keeps the source and its accessible name paired without relying on IDs.
     visit(tree, 'element', (node, index, parent) => {
@@ -70,6 +90,7 @@ export function rehypeMermaidDiagrams(this: Processor) {
         (child): child is Element => child.type === 'element' && isMermaidCode(child),
       );
       if (!code) return;
+      hasDiagrams = true;
 
       parent.children[index] = {
         type: 'element',
@@ -85,7 +106,8 @@ export function rehypeMermaidDiagrams(this: Processor) {
       return [SKIP];
     });
 
-    await renderMermaid(tree, file);
+    if (!hasDiagrams) return;
+    await withRenderSlot(async () => renderMermaid(tree, file));
 
     // This hook distinguishes generated inline SVGs from any authored SVG a topic may contain.
     visit(tree, 'element', (node, _index, parent) => {

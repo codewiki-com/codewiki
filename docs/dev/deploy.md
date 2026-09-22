@@ -67,6 +67,10 @@ The build downloads about 17 MB of fonts into `.cache/fonts` for the OG image re
 host with no cache the first build is a few minutes slower; the CI workflow caches that
 directory, keyed on the script that names the fonts.
 
+Mermaid rendering shares two browser slots across Markdown processors. Unbounded MDX transforms
+can otherwise open hundreds of Chromium pages and exhaust a standard GitHub runner's memory.
+CI also caps Node's heap at 6 GiB and records build resource usage.
+
 ## Response headers
 
 `public/_headers` is copied verbatim into `dist` and read by Cloudflare Pages. It sets:
