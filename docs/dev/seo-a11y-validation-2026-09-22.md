@@ -1,6 +1,6 @@
 # CodeWiki local validation report — 2026-09-22
 
-This report records local validation before deployment. At the user's request, the remaining local Lighthouse measurements were stopped and the Chromium processes started for this audit were closed. The local Lighthouse gate covering 11 pages did not finish. The complete gate runs in [PR #1's GitHub CI checks](https://github.com/codewiki-com/codewiki/pull/1/checks), with reports retained in the `test-artifacts` artifact for seven days. The local measurements below are historical evidence, not the final CI result.
+This report records local validation before deployment. At the user's request, the remaining local Lighthouse measurements were stopped and the Chromium processes started for this audit were closed. The local Lighthouse gate covering 11 pages did not finish. The complete gate runs in [GitHub CI on main](https://github.com/codewiki-com/codewiki/actions/workflows/ci.yml?query=branch%3Amain), with reports retained in the `test-artifacts` artifact for seven days. The local measurements below are historical evidence, not the final CI result.
 
 - Lint, formatting and type checks passed; the build succeeded.
 - All 2,427 unit tests and 364 Chromium browser tests passed.
