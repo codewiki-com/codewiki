@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useId, useState } from 'preact/hooks';
 
 import type { DailyKataEntry, DailyKataLabels } from '@/lib/daily-kata';
 import { EMPTY_PROGRESS, KEYS, readStore, type QuizProgress } from '@/lib/prefs';
@@ -50,6 +50,7 @@ export default function DailyKata({
   labels,
 }: DailyKataProps) {
   const [offset, setOffset] = useState(0);
+  const peekDescriptionId = useId();
   const [done, setDone] = useState<QuizProgress | undefined>(undefined);
 
   useEffect(() => {
@@ -115,12 +116,10 @@ export default function DailyKata({
         {hero && <span class="lbl daily-every">{labels.everyDay}</span>}
       </div>
 
-      <a
-        class="peek"
-        href={entry.kataUrl}
-        aria-label={fill(labels.peek, { title: entry.title })}
-        data-daily-peek
-      >
+      <span id={peekDescriptionId} hidden>
+        {fill(labels.peek, { title: entry.title })}
+      </span>
+      <a class="peek" href={entry.kataUrl} aria-describedby={peekDescriptionId} data-daily-peek>
         <div class="peek-body">
           <div dangerouslySetInnerHTML={{ __html: entry.peekHtml }} />
           {entry.peekMoreSmall > 0 && (

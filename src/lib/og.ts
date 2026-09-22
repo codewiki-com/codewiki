@@ -576,5 +576,9 @@ function cardSvg(input: OgCard, faces: OgFont[]): Promise<string> | string {
 export async function renderOg(input: OgCard, options: RenderOptions = {}): Promise<Buffer> {
   const faces = options.fonts ?? (await ensureFonts());
   const svg = await cardSvg(input, faces);
-  return new Resvg(svg, { fitTo: { mode: 'width', value: WIDTH } }).render().asPng();
+  // Satori embeds glyphs as paths. Scanning the host's fonts for every PNG adds hundreds of
+  // milliseconds per card and cannot affect these already outlined glyphs.
+  return new Resvg(svg, { fitTo: { mode: 'width', value: WIDTH }, font: { loadSystemFonts: false } })
+    .render()
+    .asPng();
 }

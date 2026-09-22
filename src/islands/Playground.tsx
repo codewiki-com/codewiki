@@ -635,7 +635,7 @@ export default function Playground({ locale, labels }: Props) {
       </div>
 
       {examples.length > 0 && (
-        <div class="playground-example-cards" aria-label={labels.loadExample}>
+        <div class="playground-example-cards" role="group" aria-label={labels.loadExample}>
           {examples.slice(0, 4).map((example) => (
             <button
               type="button"

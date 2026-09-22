@@ -451,7 +451,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   // `/search/` has no roving cursor to describe — its rows are ordinary links, and marking one
   // of them selected would claim a keyboard state the page does not have.
   const list = (
-    <div class="palette-list" id={listId} role={inline ? undefined : 'listbox'} aria-label={labels.results}>
+    <div class="palette-list" id={listId} role={inline ? 'region' : 'listbox'} aria-label={labels.results}>
       {rows.map((row, index) => (
         <Fragment key={row.url}>
           {headings.has(index) ? <span class="lbl palette-group">{headings.get(index)}</span> : null}
@@ -548,7 +548,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
             onInput={(event) => setQuery(event.currentTarget.value)}
           />
           {langToggle}
-          <button type="button" class="kbd palette-esc" onClick={close} aria-label={labels.close}>
+          <button type="button" class="kbd palette-esc" onClick={close} aria-label={`${labels.close} (Esc)`}>
             esc
           </button>
         </div>

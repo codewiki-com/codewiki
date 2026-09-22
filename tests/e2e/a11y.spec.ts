@@ -2,10 +2,8 @@ import AxeBuilder from '@axe-core/playwright';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * Automated accessibility checks. axe catches roughly a third of real barriers, so passing here
- * is a floor rather than a certificate — but a `serious` or `critical` violation is a defect, and
- * this suite fails on one. Both palettes are checked, because the two theme token sets are
- * separate and a fix in one is not a fix in the other.
+ * Automated WCAG 2.2 AA and best-practice checks, including contrast. Every reported violation
+ * fails the check; keyboard workflows are covered separately. Exercise both languages and themes.
  */
 
 const PAGES = [
@@ -23,10 +21,19 @@ const PAGES = [
   '/playground/',
   '/ai/prompt-builder/',
   '/settings/',
+  '/tracks/',
+  '/practice/python/',
+  '/glossary/',
+  '/glossary/closure/',
+  '/about/',
+  '/contribute/',
+  '/rules/python/',
+  '/search/?q=closure',
+  '/offline/',
 ];
 const THEMES = ['light', 'dark'] as const;
 
-const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'];
+const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'];
 
 type Theme = (typeof THEMES)[number];
 type Violations = Awaited<ReturnType<typeof scan>>['violations'];
@@ -38,13 +45,12 @@ async function usingTheme(page: Page, theme: Theme): Promise<void> {
   }, theme);
 }
 
-function scan(page: Page, only?: string[]) {
-  const builder = new AxeBuilder({ page }).withTags(TAGS);
-  return (only ? builder.withRules(only) : builder.disableRules(['color-contrast'])).analyze();
+function scan(page: Page) {
+  return new AxeBuilder({ page })
+    .withTags(TAGS)
+    .options({ rules: { 'label-content-name-mismatch': { enabled: true } } })
+    .analyze();
 }
-
-const serious = (violations: Violations) =>
-  violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
 
 /** Readable failure output: the rule, what it is, and the first element that broke it. */
 function describe(found: Violations): string {
@@ -53,33 +59,75 @@ function describe(found: Violations): string {
     .join('\n  ');
 }
 
-for (const path of PAGES) {
+for (const path of PAGES.flatMap((path) => [path, `/zh${path}`])) {
   for (const theme of THEMES) {
-    test(`${path} has no serious axe violations in the ${theme} palette`, async ({ page }) => {
+    test(`${path} has no axe violations in the ${theme} palette`, async ({ page }) => {
       await usingTheme(page, theme);
       await page.goto(path);
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
 
       // The islands add roles and labels of their own, so let the page settle before scanning.
       await expect(page.locator('[data-palette-ready="true"]')).toBeAttached();
+      if (path.includes('/playground/')) {
+        await expect(page.locator('.playground-example-card').first()).toBeVisible();
+      }
 
       const { violations } = await scan(page);
-      const found = serious(violations);
-      expect(found, `\n  ${describe(found)}`).toEqual([]);
+      expect(violations, `\n  ${describe(violations)}`).toEqual([]);
     });
   }
 }
 
-/* Colour contrast is scanned separately so failures name the affected page and palette. */
-for (const theme of THEMES) {
-  test(`every surface meets the WCAG AA contrast floor in the ${theme} palette`, async ({ page }) => {
-    await usingTheme(page, theme);
-    for (const path of PAGES) {
-      await page.goto(path);
-      const { violations } = await scan(page, ['color-contrast']);
-      expect(violations, `${path} in ${theme}:\n  ${describe(violations)}`).toEqual([]);
+test.describe('search load failures', () => {
+  // A service worker can satisfy an import before Playwright's route interception sees it.
+  test.use({ serviceWorkers: 'block' });
+  for (const path of ['/search/?q=closure', '/zh/search/?q=closure']) {
+    for (const theme of THEMES) {
+      test(`${path} search failure remains accessible in ${theme}`, async ({ page }) => {
+        await usingTheme(page, theme);
+        await page.route('**/pagefind/**', (route) => route.abort());
+        await page.goto(path);
+        await expect(page.locator('.search-results .palette-note a')).toBeVisible();
+        const { violations } = await scan(page);
+        expect(violations, `\n  ${describe(violations)}`).toEqual([]);
+      });
     }
-  });
+  }
+});
+
+for (const path of ['/practice/flashcards/', '/zh/practice/flashcards/']) {
+  for (const theme of THEMES) {
+    test(`${path} active flashcards remain accessible in ${theme}`, async ({ page }) => {
+      await usingTheme(page, theme);
+      await page.addInitScript(() => {
+        localStorage.setItem(
+          'cw:v1:flashcards',
+          JSON.stringify({
+            cards: [
+              {
+                id: 'glossary:closure',
+                kind: 'term',
+                ref: 'glossary:closure',
+                source: 'terms',
+                due: '2000-01-01T00:00:00.000Z',
+                interval: 0,
+                ease: 2.2,
+                reps: 0,
+              },
+            ],
+          }),
+        );
+      });
+      await page.goto(path);
+      const front = page.locator('.flashcard-front');
+      await expect(front).toHaveAccessibleName(/Closure/);
+      for (const flipped of [false, true]) {
+        if (flipped) await front.click();
+        const { violations } = await scan(page);
+        expect(violations, `\n  ${describe(violations)}`).toEqual([]);
+      }
+    });
+  }
 }
 
 test('the article is reachable from the keyboard without walking the whole nav', async ({ page }) => {
@@ -90,6 +138,10 @@ test('the article is reachable from the keyboard without walking the whole nav',
   await expect(skip).toBeFocused();
   await expect(skip).toHaveAttribute('href', '#main');
   await expect(skip).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('main')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('main :focus')).toHaveCount(1);
 });
 
 test('the depth dial is a labelled radio group', async ({ page }) => {

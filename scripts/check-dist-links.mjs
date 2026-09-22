@@ -2,7 +2,8 @@
  * Dead-link check over the built site.
  *
  * Walks `dist/**\/*.html`, collects every same-origin `href` and `src` plus the URL-valued head
- * metadata (`og:image`, `twitter:image`, canonical and hreflang alternates), and resolves each one
+ * metadata (`og:image`, `twitter:image`, canonical and hreflang alternates), JSON-LD destinations,
+ * and resolves each one
  * against `dist/` the way the deployed site does. `trailingSlash: 'always'` in astro.config.mjs
  * means a directory URL `/x/` is the file `dist/x/index.html`; a path that carries an extension
  * is the file itself.
@@ -19,8 +20,6 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DIST = path.join(ROOT, 'dist');
-
-const KNOWN_LATER = ['/java/type-erasure/', '/java/wildcards-pecs/'];
 
 /** The canonical origin, read from src/data/site.ts so the two never drift. */
 async function siteOrigin() {
@@ -80,6 +79,21 @@ function metadataUrls(html) {
       const href = attribute(tag, 'href');
       if (href !== undefined) values.push(href);
     }
+  }
+  // Structured breadcrumbs and article images must resolve just like visible links. Schema
+  // identifiers and search URL templates are not page destinations and are left alone.
+  const urlKeys = new Set(['url', 'item', 'image', 'mainEntityOfPage']);
+  function visit(value, key = '') {
+    if (typeof value === 'string' && urlKeys.has(key)) values.push(value);
+    else if (Array.isArray(value)) value.forEach((item) => visit(item, key));
+    else if (value && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) visit(item, key);
+    }
+  }
+  for (const match of html.matchAll(
+    /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+  )) {
+    visit(JSON.parse(match[1]));
   }
   return values;
 }
@@ -189,7 +203,7 @@ for (const page of pages) {
     if (!pathname || seen.has(pathname)) continue;
     seen.add(pathname);
     checked += 1;
-    if (!resolveTarget(pathname) && !KNOWN_LATER.includes(pathname)) {
+    if (!resolveTarget(pathname)) {
       failures.push({ page: `/${page}`, target: pathname });
     }
   }

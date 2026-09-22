@@ -6,6 +6,7 @@ import preact from '@astrojs/preact';
 import tailwindcss from '@tailwindcss/vite';
 
 import pwa from './scripts/build-sw.mjs';
+import { contentModificationDates, sitemapMetadata } from './scripts/sitemap-metadata.ts';
 
 import { LEGACY_REDIRECTS } from './src/data/redirects.ts';
 import { rehypeCodebox } from './src/markdown/rehype-codebox.ts';
@@ -15,6 +16,8 @@ import { remarkCallouts } from './src/markdown/remark-callouts.ts';
 import { remarkDepth } from './src/markdown/remark-depth.ts';
 import { rehypeSectionActions } from './src/markdown/rehype-section-actions.ts';
 import { shikiMetaTransformer } from './src/markdown/shiki-meta.ts';
+
+let sitemapDates;
 
 export default defineConfig({
   site: 'https://codewiki.com',
@@ -61,6 +64,7 @@ export default defineConfig({
     preact(),
     sitemap({
       i18n: { defaultLocale: 'en', locales: { en: 'en', zh: 'zh-Hans' } },
+      serialize: (item) => sitemapMetadata(item, (sitemapDates ??= contentModificationDates())),
       // Settings is `noindex`, search is a query interface and the offline notice only ever
       // renders without a network: none belongs in the sitemap, and listing an unindexable URL is
       // a Search Console warning. A 301 is not a document either.

@@ -117,11 +117,20 @@ other static host, serves for a directory request.
 
 ## Performance budgets
 
+Page metadata is built in `src/lib/seo.ts`: canonical URLs, language alternates, Open Graph and
+Twitter cards, and page-specific JSON-LD. Topics expose their reviewed date, section and tags to
+Open Graph and their generated image to JSON-LD. Publication dates and author profiles are omitted
+when the content has no reliable source for them. Reused sharing images describe the source card.
+`scripts/sitemap-metadata.ts` uses content review/verification dates for topic and cheatsheet
+`lastmod` values; it never substitutes the build date. Undated index pages remain undated.
+The link checker also validates destinations in structured data.
+
 `lighthouserc.json` drives `pnpm exec lhci autorun`, which builds nothing itself: it serves the
-existing `dist` and audits ten URLs. The four P1 surfaces are the English home page, a track hub,
+existing `dist` and audits eleven URLs. The four P1 surfaces are the English home page, a track hub,
 and the topic page in both languages. The P2 surfaces are Practice, Python from zero, Flashcards,
-the Python cheatsheet, Prompt Builder and Playground. Lighthouse uses its default mobile
-emulation. All four category scores are gated at 0.95. The transferred-script ceilings are 60 KiB
+the Python cheatsheet, Prompt Builder and Playground, plus the JavaScript practice catalogue. Lighthouse uses its default mobile
+emulation, with three runs per URL and median assertions. Performance is gated at 0.95; accessibility,
+best practices and SEO must score 1.00. The transferred-script ceilings are 66 KiB
 for P1, 100 KiB for Practice, paths, Flashcards, cheatsheets and Prompt Builder, and 300 KiB for
 Playground.
 
@@ -136,7 +145,8 @@ Three notes on that file, since JSON cannot carry comments:
   and 0.99 respectively, so the 0.95 performance gate remains unchanged.
 - **Accessibility is release-gated.** `color-contrast` and `label-content-name-mismatch` are
   Lighthouse errors, and the Playwright accessibility coverage checks the contrast-sensitive UI
-  directly. The earlier set of ten open contrast pairs has been corrected.
+  directly. Playwright checks all reported WCAG 2.2 AA and best-practice violations across both
+  languages and themes, plus keyboard focus, mobile menus and the open search dialog.
 - **`network-dependency-tree-insight` is `off`.** It scores zero for any critical request chain
   deeper than one hop, which the HTML → stylesheet → webfont chain of a self-hosted static site
   always has.

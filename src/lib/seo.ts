@@ -19,6 +19,14 @@ export interface HeadInput {
   trackName?: string;
   /** Overrides the generated OG image. Site-absolute path or an absolute URL. */
   ogImagePath?: string;
+  /** Describe the actual card when reusing another page's image. */
+  ogImageAlt?: string;
+  article?: {
+    publishedTime?: string;
+    modifiedTime?: string;
+    section?: string;
+    tags?: string[];
+  };
   noindex?: boolean;
   /** Page-specific JSON-LD blocks, appended after the automatic ones. */
   jsonLd?: object[];
@@ -29,7 +37,7 @@ export interface HeadModel {
   description: string;
   canonical: string;
   alternates: { hreflang: string; href: string }[];
-  og: Record<string, string>;
+  og: Record<string, string | string[]>;
   twitter: Record<string, string>;
   jsonLd: object[];
   /** Only set when the page opts out of indexing. Such a page also has no `alternates`. */
@@ -68,29 +76,41 @@ export function ogImageUrl(locale: Locale, path: string): string {
 
 /** Everything `<head>` needs for one page, ready to render without further logic. */
 export function buildHead(input: HeadInput): HeadModel {
-  const { locale, path, description, kind, ogImagePath, noindex, jsonLd = [] } = input;
+  const { locale, path, description, kind, ogImagePath, article, noindex, jsonLd = [] } = input;
   const title = formatTitle(input);
   const canonical = absolute(path);
   const alt = alternates(path);
   const image = ogImagePath ? absolute(ogImagePath) : ogImageUrl(locale, path);
+  const imageTitle = /\/og\/(zh\/)?home\.png$/.test(image) ? `${SITE.name} · ${SITE.tagline[locale]}` : title;
+  const imageAlt = input.ogImageAlt ?? imageTitle;
 
-  const og: Record<string, string> = {
+  const og: HeadModel['og'] = {
     'og:type': kind === 'topic' ? 'article' : 'website',
     'og:site_name': SITE.name,
     'og:locale': OG_LOCALE[locale],
+    ...(!noindex ? { 'og:locale:alternate': OG_LOCALE[locale === 'en' ? 'zh' : 'en'] } : {}),
     'og:title': title,
     'og:description': description,
     'og:url': canonical,
     'og:image': image,
+    'og:image:type': 'image/png',
     'og:image:width': '1200',
     'og:image:height': '630',
+    'og:image:alt': imageAlt,
   };
+  if (kind === 'topic' && article) {
+    if (article.publishedTime) og['article:published_time'] = article.publishedTime;
+    if (article.modifiedTime) og['article:modified_time'] = article.modifiedTime;
+    if (article.section) og['article:section'] = article.section;
+    if (article.tags?.length) og['article:tag'] = article.tags;
+  }
 
   const twitter: Record<string, string> = {
     'twitter:card': 'summary_large_image',
     'twitter:title': title,
     'twitter:description': description,
     'twitter:image': image,
+    'twitter:image:alt': imageAlt,
   };
 
   const model: HeadModel = {
@@ -155,6 +175,7 @@ export interface TechArticleInput {
   inLanguage: string;
   keywords?: string[];
   section?: string;
+  image?: string;
 }
 
 /** Topic pages. Optional fields are dropped rather than emitted empty. */
@@ -167,6 +188,7 @@ export function techArticleLd(input: TechArticleInput): object {
     description,
     url,
     mainEntityOfPage: url,
+    ...(input.image ? { image: input.image } : {}),
     ...(datePublished ? { datePublished } : {}),
     dateModified,
     inLanguage,

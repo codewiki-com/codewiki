@@ -194,7 +194,7 @@ test('the track chips wrap on desktop, scroll on mobile and navigate between tra
   expect(containment.control).toBeLessThanOrEqual(containment.column);
 
   const rust = chips.locator('a[data-value="rust"]');
-  await expect(rust).toHaveAttribute('aria-label', 'Filter by Rust');
+  await expect(rust).toHaveAccessibleName(/^Rust \d+$/);
   await rust.click();
   await expect(page).toHaveURL('/practice/rust/');
 

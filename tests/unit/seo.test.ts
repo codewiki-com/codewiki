@@ -11,6 +11,47 @@ import {
 import { stripMarkdown } from '@/lib/md';
 
 describe('buildHead', () => {
+  it('describes the image and other locale on social cards', () => {
+    const head = buildHead({
+      locale: 'zh',
+      path: '/zh/python/',
+      title: 'Python',
+      description: 'd',
+      kind: 'track',
+    });
+    expect(head.og['og:locale:alternate']).toBe('en_US');
+    expect(head.og['og:image:type']).toBe('image/png');
+    expect(head.og['og:image:alt']).toBe('Python｜CodeWiki');
+    expect(head.twitter['twitter:image:alt']).toBe(head.og['og:image:alt']);
+  });
+
+  it('describes a reused home card without claiming it contains the practice title', () => {
+    const head = buildHead({
+      locale: 'en',
+      path: '/practice/',
+      title: 'Practice',
+      description: 'd',
+      kind: 'page',
+      ogImagePath: '/og/home.png',
+    });
+    expect(head.og['og:image:alt']).toBe('CodeWiki · Master code in the AI era');
+  });
+
+  it('publishes article metadata without inventing a publication date', () => {
+    const head = buildHead({
+      locale: 'en',
+      path: '/python/closures/',
+      title: 'Closures',
+      description: 'd',
+      kind: 'topic',
+      article: { modifiedTime: '2026-09-04', section: 'Functions', tags: ['closures', 'scope'] },
+    });
+    expect(head.og['article:modified_time']).toBe('2026-09-04');
+    expect(head.og['article:section']).toBe('Functions');
+    expect(head.og['article:tag']).toEqual(['closures', 'scope']);
+    expect(head.og).not.toHaveProperty('article:published_time');
+  });
+
   it('formats titles per locale', () => {
     expect(
       buildHead({

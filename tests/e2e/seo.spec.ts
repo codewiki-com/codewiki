@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { topicFacts } from './fixtures/content';
 
 /**
  * What a crawler sees: the sitemap pair and the head of every page archetype. These run against
@@ -19,7 +20,13 @@ const SAMPLES: { path: string; ld: string }[] = [
   { path: '/zh/python/closures/', ld: 'TechArticle' },
   { path: '/glossary/', ld: 'DefinedTermSet' },
   { path: '/glossary/closure/', ld: 'DefinedTerm' },
+  { path: '/practice/predict/python/closures/predict-loop-binding/', ld: 'BreadcrumbList' },
 ];
+
+test('UTF-8 is declared within the first 1024 bytes', async ({ request }) => {
+  const response = await request.get('/');
+  expect((await response.body()).subarray(0, 1024).toString()).toContain('<meta charset="utf-8">');
+});
 
 test('the sitemap index points at a child sitemap', async ({ request }) => {
   const res = await request.get('/sitemap-index.xml');
@@ -56,6 +63,13 @@ test('the child sitemap carries both locales and their alternates', async ({ req
   expect(body).toContain(
     '<xhtml:link rel="alternate" hreflang="en" href="https://codewiki.com/python/closures/"/>',
   );
+  expect(body).toContain(
+    '<xhtml:link rel="alternate" hreflang="x-default" href="https://codewiki.com/python/closures/"/>',
+  );
+  const article = body.match(
+    /<url><loc>https:\/\/codewiki\.com\/python\/closures\/<\/loc>[\s\S]*?<\/url>/,
+  )?.[0];
+  expect(article).toContain(`<lastmod>${topicFacts('python', 'closures').modified}`);
 });
 
 test('both About pages carry alternates and are linked from their footer', async ({ page }) => {
@@ -101,7 +115,7 @@ test('the sitemap leaves out the pages that must not be indexed', async ({ reque
 });
 
 for (const { path, ld } of SAMPLES) {
-  test(`${path} carries one canonical, three hreflang links and ${ld}`, async ({ page }) => {
+  test(`${path} carries one canonical, three hreflang links and ${ld}`, async ({ page, request }) => {
     await page.goto(path);
 
     const canonical = page.locator('link[rel="canonical"]');
@@ -118,10 +132,39 @@ for (const { path, ld } of SAMPLES) {
     const blocks = await page.locator('script[type="application/ld+json"]').allTextContents();
     const types = blocks.map((block) => JSON.parse(block)['@type']);
     expect(types).toContain(ld);
+    for (const block of blocks.map((block) => JSON.parse(block))) {
+      if (block['@type'] !== 'BreadcrumbList') continue;
+      for (const item of block.itemListElement) {
+        const response = await request.get(new URL(item.item).pathname);
+        expect(response.status(), `Breadcrumb destination: ${item.item}`).toBe(200);
+      }
+    }
 
     // Every page states a title and a description, and never opts out of indexing by accident.
     await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /.+/);
     await expect(page.locator('meta[name="robots"]')).toHaveCount(0);
+    await expect(page.locator('meta[property="og:locale:alternate"]')).toHaveAttribute(
+      'content',
+      path.startsWith('/zh/') ? 'en_US' : 'zh_CN',
+    );
+    await expect(page.locator('meta[property="og:image:type"]')).toHaveAttribute('content', 'image/png');
+    await expect(page.locator('meta[property="og:image:alt"]')).toHaveAttribute('content', /.+/);
+    await expect(page.locator('meta[name="twitter:image:alt"]')).toHaveAttribute('content', /.+/);
+    if (ld === 'TechArticle') {
+      const article = blocks
+        .map((block) => JSON.parse(block))
+        .find((block) => block['@type'] === 'TechArticle');
+      await expect(page.locator('meta[property="article:modified_time"]')).toHaveAttribute(
+        'content',
+        article.dateModified,
+      );
+      expect(article.image).toBe(await page.locator('meta[property="og:image"]').getAttribute('content'));
+      expect(
+        await page
+          .locator('meta[property="article:tag"]')
+          .evaluateAll((tags) => tags.map((tag) => tag.getAttribute('content'))),
+      ).toEqual(article.keywords);
+    }
   });
 }
 

@@ -220,7 +220,7 @@ function DeckRail(props: {
           </div>
         </div>
         <span class="lbl">{labels.nextSeven}</span>
-        <div class="histogram" aria-label={labels.nextSeven}>
+        <div class="histogram" role="img" aria-label={`${labels.nextSeven}: ${histogram.join(', ')}`}>
           {histogram.map((count, index) => (
             <span
               key={index}
@@ -522,6 +522,7 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
       <div
         class="flashcards-progress"
         role="progressbar"
+        aria-label={locale === 'zh' ? '复习进度' : 'Review progress'}
         aria-valuemin={0}
         aria-valuemax={Math.max(1, total)}
         aria-valuenow={done}
@@ -548,11 +549,14 @@ export default function Flashcards({ locale, labels, practiceUrl, pythonUrl, set
           <span class="lbl">{fill(labels.cardCount, { i: done + 1, n: total })}</span>
         </header>
 
+        <span id="flashcard-flip-hint" hidden>
+          {labels.flip}
+        </span>
         {face ? (
           <button
             type="button"
             class="flashcard-front"
-            aria-label={labels.flip}
+            aria-describedby="flashcard-flip-hint"
             aria-pressed={flipped}
             onClick={() => setFlipped((value) => !value)}
           >
