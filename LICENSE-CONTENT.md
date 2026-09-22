@@ -6,7 +6,7 @@ Unless a file states otherwise, the prose and other editorial content under
 
 When reusing this content, use the following attribution line:
 
-> Adapted from codewiki contributors, licensed under CC BY-SA 4.0.
+> Adapted from Tom Chen and CodeWiki.com contributors, licensed under CC BY-SA 4.0.
 
 The source code and software documentation outside those content paths are licensed under the MIT
 License in [`LICENSE`](LICENSE).
