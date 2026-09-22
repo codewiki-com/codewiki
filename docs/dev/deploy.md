@@ -18,8 +18,9 @@ tested `dist/` to Pages. Pull requests run the checks without deploying. The wor
 be started manually from GitHub Actions.
 
 Set the repository's `CLOUDFLARE_API_TOKEN` Actions secret to a token with **Cloudflare Pages →
-Edit** permission for the `tomchen` account. The account and project IDs are in `wrangler.jsonc`;
-credentials are never committed. No Cloudflare Git integration or Cloudflare build is needed.
+Edit** permission for the `tomchen` account. The account ID is the workflow's `CLOUDFLARE_ACCOUNT_ID`
+environment variable; `wrangler.jsonc` selects the project and build output.
+Credentials are never committed. No Cloudflare Git integration or Cloudflare build is needed.
 The CI token does not need DNS permissions. Any token used for the initial custom-domain DNS
 migration stays local and can be revoked after the domain is active.
 
