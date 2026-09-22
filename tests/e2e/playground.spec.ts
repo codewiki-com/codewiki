@@ -58,7 +58,7 @@ test('renders HTML in a sandboxed srcdoc iframe', async ({ page }) => {
 
   const frame = page.locator('.runner-html-preview');
   await expect(frame).toHaveAttribute('sandbox', 'allow-scripts');
-  await expect(frame.contentFrame().getByRole('heading', { name: 'Hello, codewiki' })).toBeVisible();
+  await expect(frame.contentFrame().getByRole('heading', { name: 'Hello, CodeWiki' })).toBeVisible();
 });
 
 test('shares compressed editor state and copies the resulting URL', async ({ page, context }) => {

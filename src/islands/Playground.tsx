@@ -23,7 +23,7 @@ const STARTERS: Record<RunLang, string> = {
   js: 'console.log(1 + 1);',
   ts: 'const answer: number = 1 + 1;\nconsole.log(answer);',
   sql: 'SELECT 1 AS x;',
-  html: '<!doctype html>\n<h1>Hello, codewiki</h1>\n<p>Edit this preview, then run it.</p>',
+  html: '<!doctype html>\n<h1>Hello, CodeWiki</h1>\n<p>Edit this preview, then run it.</p>',
 };
 
 const FILES: Record<RunLang, string> = {

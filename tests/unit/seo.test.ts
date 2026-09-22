@@ -21,7 +21,7 @@ describe('buildHead', () => {
         kind: 'topic',
         trackName: 'Python',
       }).title,
-    ).toBe('Closures · Python · codewiki');
+    ).toBe('Closures · Python · CodeWiki');
     expect(
       buildHead({
         locale: 'zh',
@@ -31,9 +31,9 @@ describe('buildHead', () => {
         kind: 'topic',
         trackName: 'Python',
       }).title,
-    ).toBe('闭包｜Python｜codewiki');
+    ).toBe('闭包｜Python｜CodeWiki');
     expect(buildHead({ locale: 'en', path: '/', title: '', description: 'd', kind: 'home' }).title).toBe(
-      'codewiki · Master code in the AI era',
+      'CodeWiki · Master code in the AI era',
     );
   });
   it('emits canonical and three alternates', () => {
@@ -66,7 +66,7 @@ describe('buildHead', () => {
 
   it('formats the Chinese home title from the tagline', () => {
     expect(buildHead({ locale: 'zh', path: '/zh/', title: '', description: 'd', kind: 'home' }).title).toBe(
-      'codewiki · 在 AI 时代精通编程',
+      'CodeWiki · 在 AI 时代精通编程',
     );
   });
 
@@ -79,7 +79,7 @@ describe('buildHead', () => {
         description: 'd',
         kind: 'practice',
       }).title,
-    ).toBe('What does this print? · Practice · codewiki');
+    ).toBe('What does this print? · Practice · CodeWiki');
     expect(
       buildHead({
         locale: 'zh',
@@ -88,16 +88,16 @@ describe('buildHead', () => {
         description: 'd',
         kind: 'practice',
       }).title,
-    ).toBe('会输出什么？ · 练习 · codewiki');
+    ).toBe('会输出什么？ · 练习 · CodeWiki');
   });
 
   it('omits the middle segment when no track name is given', () => {
     expect(
       buildHead({ locale: 'en', path: '/about/', title: 'About', description: 'd', kind: 'page' }).title,
-    ).toBe('About · codewiki');
+    ).toBe('About · CodeWiki');
     expect(
       buildHead({ locale: 'zh', path: '/zh/about/', title: '关于', description: 'd', kind: 'page' }).title,
-    ).toBe('关于｜codewiki');
+    ).toBe('关于｜CodeWiki');
   });
 
   it('prefixes the Chinese og image path with /og/zh', () => {
@@ -141,7 +141,7 @@ describe('buildHead', () => {
     });
     expect(topic.og['og:type']).toBe('article');
     expect(topic.og['og:locale']).toBe('en_US');
-    expect(topic.og['og:site_name']).toBe('codewiki');
+    expect(topic.og['og:site_name']).toBe('CodeWiki');
     expect(topic.og['og:url']).toBe('https://codewiki.com/python/closures/');
     expect(topic.og['og:image:width']).toBe('1200');
     expect(topic.og['og:image:height']).toBe('630');

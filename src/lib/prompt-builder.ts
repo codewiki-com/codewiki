@@ -82,7 +82,7 @@ function build(input: AssembleInput, code: string): string {
 
   const sections = [
     `## Role\n${ROLE[goal](lang)}`,
-    `## Context\nThe learner is ${level}. The selected codewiki ${topics.length === 1 ? 'topic is' : 'topics are'}:\n${context.join('\n')}${
+    `## Context\nThe learner is ${level}. The selected CodeWiki ${topics.length === 1 ? 'topic is' : 'topics are'}:\n${context.join('\n')}${
       options.vocabulary && terms.length > 0 ? `\nUse this precise vocabulary: ${terms.join(', ')}.` : ''
     }`,
     `## Task\n${TASK[goal]}`,

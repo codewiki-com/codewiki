@@ -1,6 +1,6 @@
-# Contributing to codewiki
+# Contributing to CodeWiki
 
-Thank you for helping make codewiki more accurate. Small corrections are useful, especially when
+Thank you for helping make CodeWiki more accurate. Small corrections are useful, especially when
 they include a reproducible example or a primary source.
 
 ## Report a content error

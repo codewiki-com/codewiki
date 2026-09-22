@@ -209,7 +209,7 @@ function renderPack(track: string, rules: Rule[], intro: string): string {
 }
 
 export function renderClaudeMd(track: string, rules: Rule[]): string {
-  return renderPack(track, rules, 'Follow these codewiki-derived rules when you work in this project.');
+  return renderPack(track, rules, 'Follow these CodeWiki-derived rules when you work in this project.');
 }
 
 export function renderAgentsMd(track: string, rules: Rule[]): string {
@@ -225,7 +225,7 @@ export function renderCursorMdc(track: string, rules: Rule[]): string {
       : 'This track covers more than one language, so no file globs are inferred. Apply these rules manually when they are relevant.';
   return [
     '---',
-    `description: ${JSON.stringify(`codewiki ${trackName(track)} pitfalls and review checks`)}`,
+    `description: ${JSON.stringify(`CodeWiki ${trackName(track)} pitfalls and review checks`)}`,
     `globs: ${JSON.stringify(globs)}`,
     'alwaysApply: false',
     '---',

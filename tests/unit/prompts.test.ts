@@ -36,7 +36,7 @@ describe('prompts', () => {
   it('follows the template of the spec, in the order the spec gives', () => {
     const p = buildPrompt({ preset: 'quiz', locale: 'en', ...page });
     expect(p.split('\n')).toEqual([
-      'I am reading "Closures" on codewiki (https://codewiki.com/python/closures/), section "Late binding".',
+      'I am reading "Closures" on CodeWiki (https://codewiki.com/python/closures/), section "Late binding".',
       'Context (verbatim from the page):',
       '"""',
       'Python looks up…',
@@ -49,7 +49,7 @@ describe('prompts', () => {
   it('names the whole page when no section is scoped', () => {
     const p = buildPrompt({ preset: 'explain', locale: 'en', ...page, section: '' });
     expect(
-      p.startsWith('I am reading "Closures" on codewiki (https://codewiki.com/python/closures/).\n'),
+      p.startsWith('I am reading "Closures" on CodeWiki (https://codewiki.com/python/closures/).\n'),
     ).toBe(true);
     expect(p).not.toContain('section ""');
   });

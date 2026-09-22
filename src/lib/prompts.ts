@@ -111,7 +111,7 @@ export function buildPrompt(context: PromptContext): string {
   const codeLanguage = preset === 'port' ? targetLanguage?.trim() || language : language;
 
   return [
-    `I am reading "${title}" on codewiki (${url})${scope}.`,
+    `I am reading "${title}" on CodeWiki (${url})${scope}.`,
     'Context (verbatim from the page):',
     '"""',
     sectionText.trim(),

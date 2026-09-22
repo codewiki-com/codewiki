@@ -27,7 +27,7 @@ export type ImportMode = 'merge' | 'replace';
 
 /** Thrown for a file that is not a backup, so the settings page can say so rather than crash. */
 export class InvalidBackup extends Error {
-  constructor(message = 'Not a codewiki backup file') {
+  constructor(message = 'Not a CodeWiki backup file') {
     super(message);
     this.name = 'InvalidBackup';
   }

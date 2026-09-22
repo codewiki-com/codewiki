@@ -105,14 +105,14 @@ export function buildLlmsIndex(
   const chinese = byTrack(topics, 'zh', (track) => track.name.zh);
 
   const optional = [
-    `- [About codewiki](${SITE.url}/about/): How the reference is built, verified, localized, and kept private.`,
+    `- [About CodeWiki](${SITE.url}/about/): How the reference is built, verified, localized, and kept private.`,
     `- [Glossary](${SITE.url}/api/glossary.json): ${plural(glossaryCount, 'term')}, defined in English and Chinese, as JSON.`,
     `- [Learning paths](${SITE.url}/api/paths.json): ${plural(pathsCount, 'ordered path')}, milestones included, as JSON.`,
     `- [Full text](${SITE.url}/llms-full.txt): every article above concatenated into one file.`,
   ].join('\n');
 
   return document([
-    '# codewiki',
+    '# CodeWiki',
     `> ${SUMMARY}`,
     english.length > 0 ? ['## Tracks', ...english].join('\n\n') : '',
     chinese.length > 0 ? ['## Chinese', ...chinese].join('\n\n') : '',
@@ -142,7 +142,7 @@ export function buildLlmsTrack(track: Track, topics: LlmsTopic[]): string {
   const chinese = own.filter((topic) => topic.lang === 'zh');
 
   return document([
-    `# codewiki: ${track.name.en}`,
+    `# CodeWiki: ${track.name.en}`,
     `> ${track.description.en}. ${SUMMARY}`,
     english.length > 0 ? ['## Topics', english.map(bullet).join('\n')].join('\n\n') : '',
     chinese.length > 0 ? ['## Chinese', chinese.map(bullet).join('\n')].join('\n\n') : '',

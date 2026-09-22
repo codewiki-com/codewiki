@@ -20,7 +20,7 @@ test('llms-full.txt carries the articles themselves', async ({ request }) => {
 
 test('a track has its own index', async ({ request }) => {
   const body = await (await request.get('/llms/python.txt')).text();
-  expect(body).toContain('# codewiki: Python');
+  expect(body).toContain('# CodeWiki: Python');
   expect(body).not.toContain('event-loop');
 });
 
@@ -62,7 +62,7 @@ test('Cursor rules use install-ready frontmatter and keep the old URL as an alia
   const body = await canonical.text();
   expect(await alias.text()).toBe(body);
 
-  expect(body).toContain('description: "codewiki Python pitfalls and review checks"');
+  expect(body).toContain('description: "CodeWiki Python pitfalls and review checks"');
   expect(body).toContain('globs: ["**/*.py"]');
   expect(body).toContain('alwaysApply: false');
 });

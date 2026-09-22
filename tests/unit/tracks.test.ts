@@ -65,7 +65,7 @@ describe('tracks', () => {
 
 describe('site', () => {
   it('carries the site constants', () => {
-    expect(SITE.name).toBe('codewiki');
+    expect(SITE.name).toBe('CodeWiki');
     expect(SITE.url).toBe('https://codewiki.com');
     expect(SITE.url.endsWith('/')).toBe(false);
     expect(SITE.tagline.zh).not.toEqual(SITE.tagline.en);

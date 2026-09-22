@@ -82,7 +82,7 @@ function header(topics: PackTopic[], filenames: string[]): string {
           .map((filename, index) => `- [Part ${index + 1}](${SITE.url}/packs/${first.track}/${filename})`)
           .join('\n')}`
       : '';
-  return `# ${titleFor(first.track, first.section)}\n\nReviewed codewiki topics, concatenated as plain Markdown.\n\n## Topics\n\n${topicLines}${partLines}`;
+  return `# ${titleFor(first.track, first.section)}\n\nReviewed CodeWiki topics, concatenated as plain Markdown.\n\n## Topics\n\n${topicLines}${partLines}`;
 }
 
 /** Build the one file, or numbered files, served for a reviewed track section. */

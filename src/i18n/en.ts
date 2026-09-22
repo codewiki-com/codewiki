@@ -140,15 +140,15 @@ export default {
   // Names the other language in the current page's locale.
   'footer.otherLocale': 'Chinese',
 
-  'about.title': 'About codewiki',
+  'about.title': 'About CodeWiki',
   'about.description':
-    'How codewiki combines a bilingual programming reference, runnable lessons, code review practice and local-first browser tools.',
-  'about.what.title': 'What codewiki is',
+    'How CodeWiki combines a bilingual programming reference, runnable lessons, code review practice and local-first browser tools.',
+  'about.what.title': 'What CodeWiki is',
   'about.what.body':
-    'codewiki is a programming reference and a course in one place, for programmers from beginner to advanced. Every published topic gives its answer in the first screen and has a clean Markdown twin. Examples run in the browser where the language is supported. The English and Chinese editions share an aligned structure and cover the same material.',
+    'CodeWiki is a programming reference and a course in one place, for programmers from beginner to advanced. Every published topic gives its answer in the first screen and has a clean Markdown twin. Examples run in the browser where the language is supported. The English and Chinese editions share an aligned structure and cover the same material.',
   'about.why.title': 'Why “Master code in the AI era”',
   'about.why.body':
-    'AI increasingly writes code; developers still have to understand implementations, state constraints and verify results. Every codewiki topic therefore ends with an “In the AI era” section that names the failure modes to check in generated code for that subject. Review katas exercise the same judgment on concrete examples. Rules packs and the prompt builder carry those checks into the instructions you give an agent.',
+    'AI increasingly writes code; developers still have to understand implementations, state constraints and verify results. Every CodeWiki topic therefore ends with an “In the AI era” section that names the failure modes to check in generated code for that subject. Review katas exercise the same judgment on concrete examples. Rules packs and the prompt builder carry those checks into the instructions you give an agent.',
   'about.verified.title': 'How content is verified',
   'about.verified.body':
     'Versions are pinned rather than implied: Python 3.14, Node 24, TypeScript 6, Go 1.27, Rust 1.98, Java 25, C++23, and the corresponding versions for other tracks. Every runnable example was executed, and its observed output was pasted into the page. Builds check external links and reject English and Chinese topics that fall out of alignment. The repository publishes the editorial standard and verification tooling.',
@@ -172,9 +172,9 @@ export default {
   'about.contact.link': 'Contribute',
   'about.contact.after': ' page.',
 
-  'contribute.title': 'Contribute to codewiki',
+  'contribute.title': 'Contribute to CodeWiki',
   'contribute.description':
-    'Report a content error, correct a bilingual topic, or contribute to the codewiki project.',
+    'Report a content error, correct a bilingual topic, or contribute to the CodeWiki project.',
   'contribute.lead':
     'Corrections are welcome. The contribution guide explains the editorial checks and review process for content and code changes.',
   'contribute.guide': 'Read CONTRIBUTING.md',
@@ -273,7 +273,7 @@ export default {
   'code.timeout': 'timeout',
 
   'tracks.title': 'Tracks',
-  'tracks.sub': 'Every track on codewiki: eleven languages, nine domains and two pillars.',
+  'tracks.sub': 'Every track on CodeWiki: eleven languages, nine domains and two pillars.',
   'tracks.languages': 'Languages',
   'tracks.domains': 'Domains',
   'tracks.pillars': 'Pillars',
@@ -660,7 +660,7 @@ export default {
   'settings.merge': 'Merge',
   'settings.replace': 'Replace',
   'settings.chooseFile': 'Choose a backup file',
-  'settings.importFailed': 'That file is not a codewiki backup.',
+  'settings.importFailed': 'That file is not a CodeWiki backup.',
   // Task 16
   'ai.title': 'Ask your AI',
   'ai.section': 'Ask AI about this section',
@@ -708,7 +708,7 @@ export default {
   'promptBuilder.level.beginner': 'Beginner',
   'promptBuilder.level.intermediate': 'Intermediate',
   'promptBuilder.level.advanced': 'Advanced',
-  'promptBuilder.option.link': 'Link the codewiki Markdown so the assistant can read the page',
+  'promptBuilder.option.link': 'Link the CodeWiki Markdown so the assistant can read the page',
   'promptBuilder.option.checklist': 'Ask for a review checklist before the verdict',
   'promptBuilder.option.vocabulary': "Use the topic's precise vocabulary",
   'promptBuilder.option.zh': 'Answer in Simplified Chinese, keep identifiers in English',
@@ -738,7 +738,7 @@ export default {
   'rules.pageDescription':
     'Download {track} pitfalls and review checks for Claude Code, Codex, other agents, or Cursor.',
   'rules.pageLead':
-    'These {n} rules are generated from reviewed codewiki topics. Choose the file your tool reads, then install it at the path shown.',
+    'These {n} rules are generated from reviewed CodeWiki topics. Choose the file your tool reads, then install it at the path shown.',
   'rules.installAt': 'Install at',
   'rules.repositoryRoot': 'in the repository root',
   'rules.download': 'Download {file}',

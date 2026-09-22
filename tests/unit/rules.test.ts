@@ -101,7 +101,7 @@ describe('rules', () => {
     [
       'python',
       {
-        description: 'codewiki Python pitfalls and review checks',
+        description: 'CodeWiki Python pitfalls and review checks',
         globs: ['**/*.py'],
         alwaysApply: false,
       },
@@ -109,7 +109,7 @@ describe('rules', () => {
     [
       'typescript',
       {
-        description: 'codewiki TypeScript pitfalls and review checks',
+        description: 'CodeWiki TypeScript pitfalls and review checks',
         globs: ['**/*.ts', '**/*.tsx'],
         alwaysApply: false,
       },
@@ -131,7 +131,7 @@ describe('rules', () => {
     const rendered = renderCursorMdc('backend', rules);
     const match = /^---\n([\s\S]*?)\n---\n\n([\s\S]+)$/.exec(rendered);
     expect(parse(match?.[1] ?? '')).toEqual({
-      description: 'codewiki Backend pitfalls and review checks',
+      description: 'CodeWiki Backend pitfalls and review checks',
       globs: [],
       alwaysApply: false,
     });

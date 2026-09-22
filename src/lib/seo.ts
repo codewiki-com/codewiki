@@ -49,7 +49,7 @@ function absolute(pathOrUrl: string): string {
   return /^https?:\/\//.test(pathOrUrl) ? pathOrUrl : `${SITE.url}${pathOrUrl}`;
 }
 
-/** `"{Title} · {Track} · codewiki"`, or the tagline line on the home page. */
+/** `"{Title} · {Track} · CodeWiki"`, or the tagline line on the home page. */
 export function formatTitle(input: Pick<HeadInput, 'locale' | 'kind' | 'title' | 'trackName'>): string {
   const { locale, kind, title, trackName } = input;
   if (kind === 'home') return `${SITE.name} · ${SITE.tagline[locale]}`;

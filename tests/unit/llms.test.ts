@@ -59,7 +59,7 @@ describe('buildLlmsIndex', () => {
 
   it('opens with the site name and a blockquote summary', () => {
     const lines = index.split('\n');
-    expect(lines[0]).toBe('# codewiki');
+    expect(lines[0]).toBe('# CodeWiki');
     expect(index).toMatch(/\n> \S/);
   });
 
@@ -122,7 +122,7 @@ describe('buildLlmsTrack', () => {
   const page = buildLlmsTrack(python, [closuresEn, closuresZh, eventLoopEn]);
 
   it('names the track and keeps only its own topics', () => {
-    expect(page.split('\n')[0]).toBe('# codewiki: Python');
+    expect(page.split('\n')[0]).toBe('# CodeWiki: Python');
     expect(page).toContain('https://codewiki.com/python/closures.md');
     expect(page).not.toContain('event-loop');
   });
