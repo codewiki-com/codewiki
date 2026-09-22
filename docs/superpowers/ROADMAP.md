@@ -10,7 +10,7 @@ Legend: **[user]** = needs a decision or action from the owner · **[design]** =
 
 Small changes with the largest effect on first impressions and credibility.
 
-- [x] **A1. Home page leads with a review kata.** [design → Opus] Move the daily kata (每日一练) card to the first screen as the hero ("Review this generated code before you would ship it"), with the search palette mock and the article entry points below it. Navigation order: Practice before Tracks. Keep the palette mock capped at four rows.
+- [x] **A1. Home page leads with a review kata.** [design → Opus] Move the daily kata card to the first screen as the hero ("Review this generated code before you would ship it"), with the search palette mock and the article entry points below it. Navigation order: Practice before Tracks. Keep the palette mock capped at four rows.
 - [x] **A2. Honest framing.** [Codex] Home tagline copy, About page and `home.sub`: replace "most first drafts are written by AI / the skill has become…" with "AI increasingly writes code; developers still have to understand implementations, state constraints and verify results." About page gains a section "How this content is made": AI-assisted drafts, every example executed, editorial standard, human spot checks, open corrections.
 - [x] **A3. Visible verification on every topic.** [design → Opus] A small verification panel near the title: target environment with the exact patch version used (e.g. Python 3.14.2), the date the examples last ran, "N of N outputs matched", and a link to the checker log. Data comes from `content:check` writing a per-topic sidecar (`reports/verify/{track}/{slug}.json`) that the build reads. Distinguish **target environment** (what the article pins) from **the in-browser runner** (Pyodide's Python version, esbuild for TS, sql.js): label runnable blocks with the runner and its version; mark blocks whose output was recorded only on the target environment.
 - [x] **A4. Report an error.** [Codex] A "Report an error" link on every topic, kata and interview page that opens a prefilled GitHub issue (title, URL, section). Requires the repository URL to be real (see A7).
@@ -36,7 +36,7 @@ Deepens the training side. Each item is a small design + implementation task; B1
 
 ## Phase C — later
 
-- [ ] **C1. Distribution.** [user] Chinese channels (掘金, 知乎, V2EX) for the Chinese edition; measure mainland access speed and decide on a mirror if needed.
+- [ ] **C1. Distribution.** [user] Chinese channels (Juejin, Zhihu, V2EX) for the Chinese edition; measure mainland access speed and decide on a mirror if needed.
 - [ ] **C2. Tier 2 polish (423 topics), flagship tracks first.** Deferred by the user on 2026-09-04. Estimate at 10-way parallelism: ~6 h wall, ~79 M Codex tokens. Command: `pnpm content:polish --tier 2 --n 10 --max 100` per batch from `.worktrees/p0-content-pipeline`. Before running it, solve the Cloudflare Pages 20,000-file ceiling (Pagefind fragment size, OG images) or change hosts.
 - [ ] **C3. Tier 3 polish (238 topics).** After C2.
 - [ ] **C4. Visualizer tools and compare pages.** Deferred until after launch (2026-09-05); decide from which topics readers actually use. The cheatsheet footer still shows "compared with other languages · soon".
@@ -51,4 +51,4 @@ Deepens the training side. Each item is a small design + implementation task; B1
 
 ## Done (for orientation)
 
-P0 content pipeline · P1 site foundation · P2 learning layer · tier-1 content wave (287 topics, 6 paths, 12 cheatsheets, 1,146 interview items, 1,733 practice items) · real-content UI fixes · content taxonomy pass · whole-site review and its fix round · daily kata (每日一练) · PWA offline · About page · full gate green on `main` (2026-09-05). Codex usage to date ≈ 60 M tokens.
+P0 content pipeline · P1 site foundation · P2 learning layer · tier-1 content wave (287 topics, 6 paths, 12 cheatsheets, 1,146 interview items, 1,733 practice items) · real-content UI fixes · content taxonomy pass · whole-site review and its fix round · daily kata · PWA offline · About page · full gate green on `main` (2026-09-05). Codex usage to date ≈ 60 M tokens.

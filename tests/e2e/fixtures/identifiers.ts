@@ -2,8 +2,8 @@
  * Technical identifiers that stay in English on a Chinese page.
  *
  * `prompts/editorial-standard.md` §3 requires a library, framework, protocol or keyword to keep
- * its own name: a reader looking for `asyncio` in the docs will not find 「异步IO」. Most such
- * names are recognisable by shape — a digit, a dot, a `+`, a `#`, or a capital inside the word —
+ * its own name: a reader looking for `asyncio` will not find a translated label for asynchronous I/O.
+ * Most such names are recognisable by shape — a digit, a dot, a `+`, a `#`, or a capital inside the word —
  * and `localization.spec.ts` accepts those without a list. This file is for the rest: names that
  * are ordinary lower-case or capitalised words and would otherwise read as untranslated UI text.
  *

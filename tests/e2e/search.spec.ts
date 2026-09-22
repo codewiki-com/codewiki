@@ -35,7 +35,7 @@ test('the palette searches the Chinese index on the Chinese home page', async ({
   const dialog = await openPalette(page);
   await dialog.getByRole('combobox').fill('闭包');
 
-  // Ranking between the five "闭包" topics is a Pagefind judgement, not a contract; that the
+  // Ranking between the five Chinese closure topics is a Pagefind judgement, not a contract; that the
   // Chinese index answers a Chinese query with Chinese routes is the behaviour under test.
   await expect(dialog.locator('[role="option"][href="/zh/python/closures/"]')).toHaveCount(1);
   const hrefs = await dialog
@@ -84,7 +84,7 @@ test('Enter belongs to whichever control has focus', async ({ page }) => {
   await dialog.getByRole('combobox').fill('closure');
   await expect(dialog.locator('[role="option"][href="/python/closures/"]')).toHaveCount(1);
 
-  // Past the field, past the EN half, onto 中文.
+  // Past the field, past the English language button, onto the Chinese language button.
   await page.keyboard.press('Tab');
   await page.keyboard.press('Tab');
   const zh = dialog.getByRole('button', { name: 'Chinese' });
@@ -104,7 +104,7 @@ test('Tab focus makes a palette result the active option', async ({ page }) => {
   // Retrying locator assertion: the query is debounced, so a bare count can read zero.
   await expect(dialog.getByRole('option').nth(1)).toBeVisible();
 
-  // input → EN → 中文 → esc → first result → second result
+  // input → English → Chinese → close → first result → second result
   for (let index = 0; index < 5; index += 1) await page.keyboard.press('Tab');
   const second = dialog.getByRole('option').nth(1);
   const secondId = await second.getAttribute('id');

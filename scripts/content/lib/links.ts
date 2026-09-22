@@ -229,7 +229,7 @@ function count(text: string, char: string): number {
 
 /**
  * Headings that open a further-reading section, in both languages. Anchored on purpose:
- * a substring match turns every `Rvalue References` or `快速参考表` section — 241 of the
+ * a substring match turns every `Rvalue References` or Chinese quick-reference section — 241 of the
  * 1436 candidates in the staging corpus — into a wall of false book titles.
  */
 const READING_HEADING = /^(further reading|延伸阅读|references|参考(资源|资料|文献|链接)?)$/i;
@@ -246,7 +246,7 @@ const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 /**
  * Book titles named in a further-reading section without being linked.
  *
- * The corpus cites books as `《书名》`, `_Title_` or `*Title*`, and sometimes as plain
+ * The corpus cites books as `《Title》`, `_Title_` or `*Title*`, and sometimes as plain
  * text followed by an author (`Clean Code by Robert C. Martin`). None of those can be
  * verified automatically, so every match is reported for a human to confirm. Entries that
  * carry a link or a URL are left alone — {@link checkLinks} already vouches for those.
