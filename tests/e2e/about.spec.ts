@@ -29,12 +29,13 @@ test('About explains how content is made in both languages', async ({ page }) =>
   }
 });
 
-test('the English production note stays within its editorial word budget', async ({ page }) => {
-  await page.goto('/about/');
-  const text = await page
-    .locator('section', { has: page.getByRole('heading', { name: 'How this content is made' }) })
-    .locator('p')
-    .first()
-    .innerText();
-  expect(text.trim().split(/\s+/)).toHaveLength(97);
+test('About explains the site without build instructions or review dates', async ({ page }) => {
+  for (const path of ['/about/', '/zh/about/']) {
+    await page.goto(path);
+    await expect(page.locator('main')).not.toContainText(
+      /pnpm|build gate|verified date|verification dates|localStorage|Preact islands|构建门禁|验证日期/,
+    );
+    await expect(page.locator('main')).toContainText('AI');
+    await expect(page.locator('main')).toContainText('CC BY-SA 4.0');
+  }
 });

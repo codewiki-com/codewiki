@@ -389,73 +389,30 @@ test('the Markdown twin serves the page as plain Markdown', async ({ page }) => 
   expect(body).not.toContain('<TLDR>');
 });
 
-/* The verification panel — docs/design/verification-panel.md. Every number on it comes from
-   `reports/verify/{track}/{slug}.json`, which `pnpm content:check` writes by executing the page. */
+test('topic metadata shows reading information without internal review records', async ({ page }) => {
+  for (const sample of [
+    { path: '/python/closures/', version: 'Python 3.14' },
+    { path: '/python/tuples/', version: 'Python 3.14' },
+    { path: '/cpp/references/', version: 'C++23' },
+    { path: '/zh/python/closures/', version: 'Python 3.14' },
+  ]) {
+    await page.goto(sample.path);
+    const panel = page.locator('.panel.meta');
+    await expect(panel).toContainText(sample.version);
+    await expect(panel.locator('.tag')).toHaveCount(1);
+    await expect(panel.locator('time')).toHaveCount(0);
+    await expect(panel).not.toContainText(/verified|reviewed|outputs matched|已验证|已审核|审校/i);
+    await expect(page.locator('.verify, .verify-details, .coderuntime')).toHaveCount(0);
+  }
+});
 
-test('the panel states the runtime, the match count and what the browser will run', async ({ page }) => {
-  const sidecar = JSON.parse(readFileSync('reports/verify/python/closures.json', 'utf8'));
+test('runnable examples keep their anchors and controls without checker labels', async ({ page }) => {
   await page.goto('/python/closures/');
-
-  const panel = page.locator('.verify');
-  await expect(panel).toHaveAttribute('data-verify', 'verified');
-  await expect(panel.locator('.state')).toContainText('Verified');
-
-  // The patch version is the one the interpreter reported, not the `Python 3.14` frontmatter pin.
-  expect(sidecar.runtime.version).toMatch(/^\d+\.\d+\.\d+$/);
-  await expect(panel.locator('.facts')).toContainText(`Python ${sidecar.runtime.version}`);
-  await expect(panel.locator('.facts')).toContainText(
-    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} outputs matched`,
-  );
-
-  // Line 3 names the runtime the reader's own tab loads, which is not the one that recorded it.
-  await expect(panel.locator('.runner')).toContainText('Pyodide');
-  await expect(panel.locator('.runner')).toContainText('Python 3.1');
-
-  await expect(panel.locator('.transparency')).toContainText('drafted with AI');
-});
-
-test('the disclosure lists every runnable block and links to it', async ({ page }) => {
-  await page.goto('/python/closures/');
-  const details = page.locator('.verify-details');
-  await expect(details.locator('li')).toHaveCount(4);
-  await expect(details.locator('li').first().locator('.block-status')).toHaveText('matched');
-
-  const href = await details.locator('.block-title').first().getAttribute('href');
-  expect(href).toBe('#b1');
-  await expect(page.locator('figure#b1')).toBeVisible();
-  // The block says which interpreter recorded its output, next to the Run button.
-  await expect(page.locator('figure#b1 .coderuntime')).toHaveText(/^recorded on Python \d+\.\d+\.\d+$/);
-});
-
-test('the repaired tuple output renders the verified state', async ({ page }) => {
-  const sidecar = JSON.parse(readFileSync('reports/verify/python/tuples.json', 'utf8'));
-  expect(sidecar.blocks.matched).toBe(sidecar.blocks.executed);
-
-  await page.goto('/python/tuples/');
-  const panel = page.locator('.verify');
-  await expect(panel).toHaveAttribute('data-verify', 'verified');
-  await expect(panel.locator('.state')).toContainText('Verified');
-  await expect(panel.locator('.facts')).toContainText(
-    `${sidecar.blocks.matched} of ${sidecar.blocks.executed} outputs matched`,
-  );
-  await expect(panel.locator('.block-status.matched')).toHaveCount(sidecar.blocks.executed);
-  await expect(panel.locator('.block-status.mismatched')).toHaveCount(0);
-});
-
-test('a topic with nothing this machine can run says so rather than claiming a run', async ({ page }) => {
-  await page.goto('/cpp/references/');
-  const panel = page.locator('.verify');
-  await expect(panel).toHaveAttribute('data-verify', 'notRun');
-  await expect(panel.locator('.state')).toContainText('Not run');
-  await expect(panel.locator('.facts')).toContainText('C++23');
-  await expect(panel.locator('.verify-details')).toHaveCount(0);
-});
-
-test('the Chinese page shows the same numbers in Chinese', async ({ page }) => {
-  await page.goto('/zh/python/closures/');
-  await expect(page.locator('.verify .state')).toContainText('已验证');
-  await expect(page.locator('.verify .facts')).toContainText('处输出一致');
-  await expect(page.locator('figure#b1 .coderuntime')).toContainText('记录于 Python');
+  const example = page.locator('figure#b1');
+  await expect(example).toBeVisible();
+  await expect(example.locator('button[data-run]')).toBeVisible();
+  await expect(example.locator('button[data-copy]')).toBeVisible();
+  await expect(example.locator('.coderuntime')).toHaveCount(0);
 });
 
 /* "Report an error" — ROADMAP A4: one prefilled issue, on every page that claims something

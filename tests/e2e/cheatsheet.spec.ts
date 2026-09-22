@@ -26,8 +26,8 @@ test('the sheet page renders every authored panel and row', async ({ page }) => 
   await expect(related).toContainText('Python track');
   await expect(related).toContainText(`Interview bank · ${interviewFacts('python').items.length} questions`);
   await expect(related).toContainText('Glossary · Python terms');
-  await expect(related).toContainText('Python compared with other languages');
-  await expect(related.locator('.related-row .lbl')).toHaveText('soon');
+  await expect(related).not.toContainText('Python compared with other languages');
+  await expect(related.locator('.related-row')).toHaveCount(0);
 });
 
 test('no snippet is a scroll region a keyboard cannot reach', async ({ page }) => {
@@ -80,3 +80,16 @@ test('the cheatsheet API exposes both localized sheets and their rows', async ({
     expect(sheet.rows.length, sheet.id).toBe(cheatsheetFacts(slug, lang).twinRows);
   }
 });
+
+for (const locale of ['en', 'zh'] as const) {
+  test(`the ${locale} Claude Code sheet uses only the navigation language switch`, async ({ page }) => {
+    await page.goto(`${locale === 'zh' ? '/zh' : ''}/cheatsheets/claude-code/`);
+    await expect(page.locator('.cheatsheet-chips')).not.toContainText(
+      /verified|已验证|English|Chinese|英语|中文/i,
+    );
+    await expect(page.locator('.locale-chip')).toHaveCount(0);
+    await page.locator('.nav-tools .language-trigger').hover();
+    await expect(page.locator('#nav-language')).toBeVisible();
+    await expect(page.locator('#nav-language a')).toHaveCount(2);
+  });
+}

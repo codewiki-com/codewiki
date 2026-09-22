@@ -56,7 +56,7 @@ export default {
   'home.sub':
     '越来越多的代码由 AI 写出，你仍然要读懂它、审查它，并准确说出自己需要什么。这里的每个主题都能在浏览器中运行，并以「生成代码该检查什么」收尾。',
   'home.browseTracks': '浏览方向',
-  'home.verified': '当前验证版本',
+  'home.versions': '语言版本',
   'home.tracks': '学习方向',
   'home.allTracks': '全部 {count} 个方向',
   'home.startReviewing': '开始审查',
@@ -79,8 +79,8 @@ export default {
   'home.feature.5.title': '你的 AI 也能读',
   'home.feature.5.desc':
     '每个页面都有对应的 Markdown 和 llms.txt 索引。一键在 Claude 或 ChatGPT 中打开相关章节，并附上引导学习的提示词。',
-  'home.feature.6.title': '注明日期与版本',
-  'home.feature.6.desc': '每个主题都会注明验证所用的语言版本和时间。过时页面会明确标记，不会隐藏。',
+  'home.feature.6.title': '版本与参考资料',
+  'home.feature.6.desc': '每个主题注明适用的语言版本并提供参考资料，方便你结合自己使用的工具查阅。',
   'home.mode.learn.label': '学习',
   'home.mode.learn.title': '一图看清学习路径',
   'home.mode.learn.desc':
@@ -114,14 +114,13 @@ export default {
   'daily.more': '还有 {count} 行',
   'daily.peek': '练习代码预览：{title}',
   'daily.everyDay': '每天一道',
-  'footer.tagline': 'CodeWiki · 静态网站 · 进度保存在浏览器中',
+  'footer.tagline': 'CodeWiki · 进度保存在浏览器中',
   'footer.codeLicense': '代码：',
   'footer.contentLicense': '内容：',
   'footer.githubRepo': 'GitHub代码',
   'footer.about': '关于',
   'footer.contribute': '参与贡献',
   'footer.llms': 'llms.txt',
-  'footer.otherLocale': '英语',
   'about.title': '关于 CodeWiki',
   'about.description':
     'CodeWiki 如何把双语编程参考、可运行课程、代码审查练习与本地优先的浏览器工具放在一起。',
@@ -131,22 +130,21 @@ export default {
   'about.why.title': '为什么是「在 AI 时代精通编程」',
   'about.why.body':
     'AI 正在越来越多地编写代码；开发者仍要理解实现、说明约束并验证结果。每个 CodeWiki 主题都以「在 AI 时代」一节收尾，列出该主题下需要检查的生成代码失效模式。代码审查 kata 用具体示例练习同一种判断力；规则包和提示词构建器则把这些检查项带进你交给智能体的指令。',
-  'about.verified.title': '内容如何验证',
+  'about.verified.title': '示例与参考资料',
   'about.verified.body':
-    '版本不会含糊带过，而是明确固定为 Python 3.14、Node 24、TypeScript 6、Go 1.27、Rust 1.98、Java 25、C++23，以及其他方向各自对应的版本。所有可运行示例都实际执行过，观察到的输出也已粘贴到页面中。构建流程会检查外部链接，并在中英文主题失去对齐时拒绝发布。仓库公开编辑规范与验证工具。',
-  'about.verified.date': '每个主题还会显示 verified 日期，方便读者判断结论的新旧。',
+    '主题会注明相关语言与库的版本，展示示例输出，并提供参考资料链接。支持在线运行的示例可以直接在浏览器中编辑和执行。',
   'about.made.title': '这些内容如何制作',
   'about.made.body':
-    '内容初稿会在公开编辑规范下借助 AI 完成。每个可运行示例都会实际执行，并记录观察到的输出；构建门禁还会检查中英文版本是否保持对齐。编辑会抽查解释、来源和结果。每个页面都提供「报告错误」链接，公开仓库也接受修正。CodeWiki 主张生成文本不能直接采信，必须经过验证，因此也用同一标准要求自身：限定断言范围，提供可复现的示例和可见的验证日期，并让读者能够检查来源或质疑结果。',
+    'CodeWiki 借助 AI 辅助起草内容。文章提供参考资料和可供检查的示例，支持在线运行的示例可以直接在浏览器中执行。你可以通过「报告错误」提出修正，也可以在 GitHub 上参与贡献。',
   'about.made.standard': '阅读编辑规范',
   'about.made.report': '报告错误',
   'about.local.title': '哪些内容只留在你的设备上',
   'about.local.body':
-    '网站不设账号。阅读进度、闪卡和设置保存在浏览器的 localStorage 中，可在「设置」页面重置。页面访问过一次后，网站即可离线使用。可运行的 Python、JavaScript 或 TypeScript 与 SQL 示例分别通过 Pyodide、esbuild 和 sql.js 在浏览器中执行。你的代码、进度和设置不会发送到任何地方。',
-  'about.built.title': '技术栈',
+    '无需注册账号。阅读进度、闪卡和设置保存在你的浏览器中，可在「设置」页面导出或重置。你可以保存页面以供离线阅读，也可以在自己的设备上运行支持的代码示例。',
+  'about.built.title': '开源项目',
   'about.built.body':
-    '网站使用 Astro 构建，并通过小型 Preact islands 提供交互。Pagefind 负责本地搜索，Shiki 负责代码高亮，IBM Plex 是所用字体。静态文件由 CDN 提供，浏览器运行时仅在需要它们的页面加载。',
-  'about.built.source': '源代码在 GitHub 上公开，其中包括内容、构建检查和编辑规则。',
+    '网站代码和内容公开在 GitHub 上。你可以提出新主题、改进解释或翻译，也可以贡献代码。代码采用 MIT 许可，内容采用 CC BY-SA 4.0 许可。',
+  'about.built.source': '查看 CodeWiki 仓库',
   'about.contact.title': '联系与贡献',
   'about.contact.before': '如需报告错误、建议新主题、改进翻译或贡献代码，请通过',
   'about.contact.link': '「参与贡献」',
@@ -164,12 +162,9 @@ export default {
   'contribute.licences.code': '代码：MIT License',
   'contribute.licences.content': '内容：知识共享署名—相同方式共享 4.0',
   'topic.level': '难度',
+  'topic.version': '版本',
   'topic.time': '时长',
-  'topic.checked': '验证时间',
-  'topic.status': '状态',
-  'topic.reviewed': '已审核',
   'topic.readTime': '标准深度约 {count}',
-  'topic.transparency': 'AI 起草 · 代码实测 · {date} 审校',
 
   'verify.verified': '已验证',
   'verify.partial': '{matched}/{executed} 一致',
@@ -253,7 +248,6 @@ export default {
   'track.topics': '{count}',
   'track.topicsOne': '{count}',
   'track.sections': '{count}',
-  'track.verified': '已验证 {version}',
   'track.path': '推荐路径',
   'track.continue': '继续',
   'track.map': '查看完整路线图',
@@ -275,7 +269,6 @@ export default {
   'track.readPct': '已读 {pct}%',
   'track.minutes': '{count}',
   'track.topicsRead': '已读主题',
-  'track.recent': '最近复核',
   'track.askAi': '问问你的 AI',
   'track.aiPrompt': '把我还没读的 {track} 主题排成两周计划，每天 30 分钟。',
   'track.also': '本方向的其他内容',
@@ -553,7 +546,6 @@ export default {
   'cheatsheets.practice': '练习',
   'cheatsheets.lookUp': '查阅',
   'cheatsheets.onePage': '打印为 1 页',
-  'cheatsheets.verified': '已验证 {date}',
   'cheatsheets.empty': '速查表正在编写中。',
 
   'glossary.title': '术语表',
@@ -640,7 +632,7 @@ export default {
   'search.langFilter': '结果语言',
   'search.closeLabel': '关闭搜索',
   'search.hintClose': '关闭',
-  'search.unavailable': '此处无法搜索：索引由 pnpm build 生成。',
+  'search.unavailable': '搜索暂时不可用，请稍后重试。',
   'search.openPage': '打开搜索页',
 
   // Task 14
@@ -698,7 +690,7 @@ export default {
   'rules.pageDescription':
     '下载 {track} 的常见陷阱与审查项，供 Claude Code、Codex、其他智能体或 Cursor 使用。',
   'rules.pageLead':
-    '这 {n} 条规则从已审校的 CodeWiki 主题生成。请选择工具能够读取的文件，再按页面所示路径安装。',
+    '这 {n} 条规则涵盖 CodeWiki 主题中的常见陷阱。请选择工具能够读取的文件，再按页面所示路径安装。',
   'rules.installAt': '安装路径',
   'rules.repositoryRoot': '位于仓库根目录',
   'rules.download': '下载 {file}',

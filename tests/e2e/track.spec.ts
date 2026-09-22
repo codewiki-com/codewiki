@@ -26,7 +26,7 @@ test('the Python hub links only the related pages that now exist', async ({ page
     'href',
     '/practice/interview/python/',
   );
-  await expect(page.locator('.shortcuts .quick[aria-disabled="true"]', { hasText: 'Compare' })).toBeVisible();
+  await expect(page.locator('.shortcuts .quick', { hasText: 'Compare' })).toHaveCount(0);
   await expect(page.locator('.shortcuts a.quick', { hasText: 'Playground' })).toHaveAttribute(
     'href',
     '/playground/?lang=python',
@@ -45,7 +45,7 @@ test('the Python hub links only the related pages that now exist', async ({ page
     'href',
     '/glossary/',
   );
-  await expect(also.locator('.also-soon', { hasText: 'Python compared with other languages' })).toBeVisible();
+  await expect(also).not.toContainText('Python compared with other languages');
   await expect(page.locator('.path-map')).toHaveAttribute('href', '/paths/python-from-zero/');
 });
 
@@ -62,13 +62,13 @@ test('both hubs carry hreflang links to each other', async ({ page }) => {
   await expect(page.locator('link[rel="alternate"][hreflang="x-default"]')).toHaveCount(1);
 });
 
-test('sections with nothing written yet say so', async ({ page }) => {
+test('the track hub shows available sections without editorial or roadmap placeholders', async ({ page }) => {
   await page.goto('/python/');
-  // Which sections are still empty is a content fact; that an empty one says so is the behaviour.
-  const empty = page.locator('.collapsed .quick');
-  expect(await empty.count()).toBeGreaterThan(0);
-  await expect(empty.first()).toContainText('coming soon');
-  await expect(empty.first().locator('.collapsed-name')).not.toBeEmpty();
+  await expect(page.locator('.collapsed, .also-soon, .recent')).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText(/recently reviewed|coming soon/);
+  for (const section of await page.locator('section.group').all()) {
+    expect(await section.locator('.topic').count()).toBeGreaterThan(0);
+  }
 });
 
 test('the difficulty filter is a keyboard radio group', async ({ page }) => {

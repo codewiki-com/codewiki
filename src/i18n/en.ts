@@ -59,7 +59,7 @@ export default {
   'home.sub':
     'AI writes more of the code; you still have to read it, review it and say precisely what you need. Every topic here runs in the browser and ends with what to check in generated code.',
   'home.browseTracks': 'Browse tracks',
-  'home.verified': 'Currently verified against',
+  'home.versions': 'Language versions',
   'home.tracks': 'Tracks',
   'home.allTracks': 'All {count} tracks',
   // The hero and the search row under it — docs/design/home-hero-kata.md.
@@ -88,9 +88,9 @@ export default {
   'home.feature.5.title': 'Made for your AI too',
   'home.feature.5.desc':
     'Every page has a Markdown twin and an llms.txt index. One click opens Claude or ChatGPT with the right section and a prompt that teaches.',
-  'home.feature.6.title': 'Dated and versioned',
+  'home.feature.6.title': 'Versions and sources',
   'home.feature.6.desc':
-    'Each topic states the language version it was checked against and when. Stale pages are flagged, not hidden.',
+    'Find language versions and references alongside each topic, so you can check details against the tools you use.',
 
   'home.mode.learn.label': 'Learn',
   'home.mode.learn.title': 'Paths with a map',
@@ -130,7 +130,7 @@ export default {
   'daily.peek': 'Preview of the kata code: {title}',
   'daily.everyDay': 'new one every day',
 
-  'footer.tagline': 'CodeWiki · static site · progress stays in your browser',
+  'footer.tagline': 'CodeWiki · progress stays in your browser',
   'footer.codeLicense': 'Code:',
   'footer.contentLicense': 'Content:',
   'footer.githubRepo': 'GitHub repo',
@@ -138,7 +138,6 @@ export default {
   'footer.contribute': 'Contribute',
   'footer.llms': 'llms.txt',
   // Names the other language in the current page's locale.
-  'footer.otherLocale': 'Chinese',
 
   'about.title': 'About CodeWiki',
   'about.description':
@@ -149,23 +148,21 @@ export default {
   'about.why.title': 'Why “Master code in the AI era”',
   'about.why.body':
     'AI increasingly writes code; developers still have to understand implementations, state constraints and verify results. Every CodeWiki topic therefore ends with an “In the AI era” section that names the failure modes to check in generated code for that subject. Review katas exercise the same judgment on concrete examples. Rules packs and the prompt builder carry those checks into the instructions you give an agent.',
-  'about.verified.title': 'How content is verified',
+  'about.verified.title': 'Examples and sources',
   'about.verified.body':
-    'Versions are pinned rather than implied: Python 3.14, Node 24, TypeScript 6, Go 1.27, Rust 1.98, Java 25, C++23, and the corresponding versions for other tracks. Every runnable example was executed, and its observed output was pasted into the page. Builds check external links and reject English and Chinese topics that fall out of alignment. The repository publishes the editorial standard and verification tooling.',
-  'about.verified.date': 'Each topic also shows its verified date, so readers can judge the age of a claim.',
+    'Topics name the relevant language and library versions, show example outputs, and link to references. Supported examples can be edited and run directly in your browser.',
   'about.made.title': 'How this content is made',
   'about.made.body':
-    'Drafts are written with AI assistance under a public editorial standard. Every runnable example is executed, and its observed output is recorded. A build gate checks that the English and Chinese editions remain aligned. Editors spot-check explanations, sources, and results. Every page has a “Report an error” link, and the public repository accepts corrections. The site’s own argument is that generated text must be verified instead of trusted on sight, so it applies that standard to itself: claims are scoped, examples are reproducible, verification dates are visible, and readers can inspect the sources or challenge a result.',
+    'CodeWiki uses AI assistance to draft content. Articles link to sources and include examples you can inspect and, where supported, run in your browser. Use “Report an error” to suggest a correction, or contribute through GitHub.',
   'about.made.standard': 'Read the editorial standard',
   'about.made.report': 'Report an error',
   'about.local.title': 'What stays on your machine',
   'about.local.body':
-    'There are no accounts. Reading progress, flashcards, and settings live in your browser’s localStorage and can be reset from the Settings page. After a page has been visited, the site can work offline. Runnable Python, JavaScript or TypeScript, and SQL examples execute in your browser through Pyodide, esbuild, and sql.js. Your code, progress, and settings are not sent anywhere.',
-  'about.built.title': 'Built with',
+    'No account is needed. Reading progress, flashcards, and settings stay in your browser. You can export or reset them from Settings. Save pages for offline reading, and run supported code examples on your device.',
+  'about.built.title': 'Open source',
   'about.built.body':
-    'The site is built with Astro and small Preact islands. Pagefind provides local search; Shiki highlights source code; IBM Plex is the type family. Static files are served from a CDN, while browser runtimes are loaded only by pages that need them.',
-  'about.built.source':
-    'The source is open on GitHub, including the content, build checks, and editorial rules.',
+    'The website’s code and content are available on GitHub. You can suggest a topic, improve an explanation or translation, and contribute code. The code is licensed under MIT; the content is licensed under CC BY-SA 4.0.',
+  'about.built.source': 'View the CodeWiki repository',
   'about.contact.title': 'Contact / contribute',
   'about.contact.before':
     'To report an error, propose a topic, improve a translation, or contribute code, use the',
@@ -189,12 +186,9 @@ export default {
   'contribute.licences.content': 'Content: Creative Commons Attribution-ShareAlike 4.0',
 
   'topic.level': 'level',
+  'topic.version': 'version',
   'topic.time': 'time',
-  'topic.checked': 'checked',
-  'topic.status': 'status',
-  'topic.reviewed': 'Reviewed',
   'topic.readTime': '{count} at Standard depth',
-  'topic.transparency': 'Drafted with AI · verified by running the code · reviewed {date}',
 
   // The verification panel — docs/design/verification-panel.md.
   'verify.verified': 'Verified',
@@ -289,7 +283,6 @@ export default {
   // English needs the singular; Chinese does not, so its value is the same either way.
   'track.topicsOne': '{count}',
   'track.sections': '{count}',
-  'track.verified': 'verified {version}',
   'track.path': 'recommended path',
   'track.continue': 'Continue',
   'track.map': 'See the whole map',
@@ -313,7 +306,6 @@ export default {
   'track.readPct': '{pct}% read',
   'track.minutes': '{count}',
   'track.topicsRead': 'topics read',
-  'track.recent': 'recently reviewed',
   'track.askAi': 'ask your ai',
   'track.aiPrompt': 'Build me a two-week plan for the unread {track} topics, 30 minutes a day.',
   'track.also': 'also in this track',
@@ -589,7 +581,6 @@ export default {
   'cheatsheets.practice': 'practice',
   'cheatsheets.lookUp': 'look up',
   'cheatsheets.onePage': '1 page when printed',
-  'cheatsheets.verified': 'verified {date}',
   'cheatsheets.empty': 'Cheatsheets are being written.',
 
   'glossary.title': 'Glossary',
@@ -680,7 +671,7 @@ export default {
   'search.langFilter': 'Result language',
   'search.closeLabel': 'Close search',
   'search.hintClose': 'close',
-  'search.unavailable': 'Search is unavailable here: the index is built by pnpm build.',
+  'search.unavailable': 'Search is temporarily unavailable. Please try again later.',
   'search.openPage': 'Open the search page',
 
   // Task 14
@@ -738,7 +729,7 @@ export default {
   'rules.pageDescription':
     'Download {track} pitfalls and review checks for Claude Code, Codex, other agents, or Cursor.',
   'rules.pageLead':
-    'These {n} rules are generated from reviewed CodeWiki topics. Choose the file your tool reads, then install it at the path shown.',
+    'These {n} rules cover common pitfalls from CodeWiki topics. Choose the file your tool reads, then install it at the path shown.',
   'rules.installAt': 'Install at',
   'rules.repositoryRoot': 'in the repository root',
   'rules.download': 'Download {file}',

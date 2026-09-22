@@ -7,16 +7,12 @@
  * ` ```text ` fences are the printed output of the fence above them, so they render as a
  * headerless output box instead.
  *
- * Runnable fences are numbered `b1`, `b2`, … in document order — the same numbering the checker
- * writes into `reports/verify/{track}/{slug}.json` — so each one can carry the id the
- * verification panel's disclosure links to, and a `.lbl` saying which interpreter recorded its
- * output and which one the reader's own browser will use (docs/design/verification-panel.md).
+ * Runnable fences keep stable `b1`, `b2`, … anchors for links to individual examples.
  */
 import type { Element, ElementContent, Root } from 'hast';
 import { SKIP, visit } from 'unist-util-visit';
 
 import { t } from '@/i18n';
-import { blockLabels, readVerification, topicIdFromPath, type BlockLabel } from '@/lib/verify';
 import type { Locale } from '@/lib/urls';
 
 interface Options {
@@ -95,10 +91,6 @@ export function rehypeCodebox(options: Options = {}) {
   return (tree: Root, file: MarkdownFile = {}): void => {
     const locale = localeFor(options, file);
     const seeds = new Map<string, string>();
-    const topicId = topicIdFromPath(file.path);
-    const labels: Map<string, BlockLabel> = topicId
-      ? blockLabels(readVerification(topicId), locale)
-      : new Map();
     let runnable = 0;
 
     // Resolve declarations before wrapping any fences. This permits a runnable query to refer to a
@@ -139,14 +131,6 @@ export function rehypeCodebox(options: Options = {}) {
 
       const actions: Element[] = [];
       const blockId = run ? `b${(runnable += 1)}` : undefined;
-      const label = blockId ? labels.get(blockId) : undefined;
-      if (label) {
-        actions.push(
-          element('span', { className: ['lbl', 'coderuntime'] }, [
-            { type: 'text', value: [label.recorded, label.here].filter(Boolean).join(' · ') },
-          ]),
-        );
-      }
       actions.push(button(['act', 'act-sm'], 'data-copy', 'code.copy', t(locale, 'code.copy')));
       if (run) actions.push(button(['run'], 'data-run', 'code.run', t(locale, 'code.run')));
 
