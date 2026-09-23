@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { PAGE_PRESETS, PRESETS, buildPrompt, deepLinks, type Preset } from '@/lib/prompts';
+import type { LongPromptLabels } from '@/lib/ai-labels';
+import { PAGE_PRESETS, PRESETS, linksFor, type Preset } from '@/lib/prompts';
 import type { Locale } from '@/lib/urls';
 
 export interface AskAILabels {
@@ -19,6 +20,8 @@ export interface AskAILabels {
   scopePage: string;
   /** Scope line when it carries one section; `{section}` is the heading. */
   scopeSection: string;
+  /** What the panel says when a link cannot carry the whole prompt. */
+  long: LongPromptLabels;
 }
 
 export interface AskAIContext {
@@ -27,6 +30,8 @@ export interface AskAIContext {
   title: string;
   /** Canonical URL of this page. */
   url: string;
+  /** Where the full text can be read, e.g. the page's Markdown twin; defaults to `url`. */
+  sourceUrl?: string;
   /** The language the examples are written in, e.g. `Python`. */
   language: string;
   /** What this topic assumes the reader knows; the "explain simpler" preset builds on it. */
@@ -76,8 +81,11 @@ const BLOCKS = new Set([
   'TR',
 ]);
 
-/** Long enough for any section of any topic; a whole deep page is cut rather than sent whole. */
-const TEXT_LIMIT = 12_000;
+/**
+ * Long enough for a whole page at Deep depth, so the clipboard gets the page whole. Deep links never
+ * see this much: `linksFor` sends them an excerpt and the address of the full text.
+ */
+const TEXT_LIMIT = 60_000;
 
 /** True when the depth dial (or anything else) is currently hiding this element. */
 function hidden(node: Element): boolean {
@@ -185,6 +193,8 @@ function blockScope(button: HTMLElement): Scope | null {
 export default function AskAI({ labels, context, preset }: AskAIProps) {
   const [scope, setScope] = useState<Scope | null>(null);
   const [copied, setCopied] = useState<{ preset: Preset; ok: boolean } | null>(null);
+  /** After a too-long link is followed: whether its full prompt reached the clipboard. */
+  const [longCopy, setLongCopy] = useState<boolean | null>(null);
   const [targetLanguage, setTargetLanguage] = useState(
     () => context.languages?.find((track) => track.value !== context.language)?.value ?? context.language,
   );
@@ -201,6 +211,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
     const inside = panel.current?.contains(document.activeElement);
     setScope(null);
     setCopied(null);
+    setLongCopy(null);
     setUserCode('');
     if (inside) opener.current?.focus();
   }, []);
@@ -208,6 +219,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
   const openWith = useCallback((next: Scope, from: HTMLElement | null) => {
     opener.current = from;
     setCopied(null);
+    setLongCopy(null);
     setScope(next);
   }, []);
 
@@ -274,11 +286,12 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
   const rows = useMemo(() => {
     const available = scope?.presets ?? (preset ? [preset] : PAGE_PRESETS);
     return available.map((rowPreset) => {
-      const prompt = buildPrompt({
+      const { prompt, ...links } = linksFor({
         preset: rowPreset,
         locale: context.locale,
         title: context.title,
         url: context.url,
+        sourceUrl: context.sourceUrl,
         section: scope?.section ?? '',
         sectionText: scope?.text ?? '',
         language: context.language,
@@ -286,7 +299,7 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
         userCode,
         prerequisite: context.prerequisite,
       });
-      return { preset: rowPreset, prompt, links: deepLinks(prompt) };
+      return { preset: rowPreset, prompt, links };
     });
   }, [scope, context, preset, targetLanguage, userCode]);
 
@@ -312,6 +325,24 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
       .then(() => setCopied({ preset, ok: true }))
       .catch(() => setCopied({ preset, ok: false }));
   };
+
+  /**
+   * A link that carries only part of its prompt still opens; the full prompt goes to the clipboard
+   * on the way, so the reader can paste it if the assistant cannot read the page it names.
+   */
+  const followLong = (prompt: string) => {
+    const clipboard = navigator.clipboard as Clipboard | undefined;
+    if (!clipboard) {
+      setLongCopy(false);
+      return;
+    }
+    clipboard
+      .writeText(prompt)
+      .then(() => setLongCopy(true))
+      .catch(() => setLongCopy(false));
+  };
+
+  const anyLong = rows.some((row) => !row.links.complete);
 
   const copyLabel = (preset: Preset): string => {
     if (copied?.preset !== preset) return labels.copy;
@@ -346,6 +377,12 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
             </button>
           </div>
 
+          {anyLong && (
+            <p class="ask-long" aria-live="polite">
+              {longCopy === null ? labels.long.hint : longCopy ? labels.long.copied : labels.long.failed}
+            </p>
+          )}
+
           <ul class="ask-list">
             {rows.map(({ preset, prompt, links }) => (
               <li key={preset} class="ask-row">
@@ -376,10 +413,24 @@ export default function AskAI({ labels, context, preset }: AskAIProps) {
                   />
                 )}
                 <span class="ask-actions">
-                  <a class="act act-sm" href={links.claude} target="_blank" rel="noopener">
+                  <a
+                    class="act act-sm"
+                    href={links.claude}
+                    target="_blank"
+                    rel="noopener"
+                    data-long={links.complete ? undefined : ''}
+                    onClick={links.complete ? undefined : () => followLong(prompt)}
+                  >
                     {labels.claude}
                   </a>
-                  <a class="act act-sm" href={links.chatgpt} target="_blank" rel="noopener">
+                  <a
+                    class="act act-sm"
+                    href={links.chatgpt}
+                    target="_blank"
+                    rel="noopener"
+                    data-long={links.complete ? undefined : ''}
+                    onClick={links.complete ? undefined : () => followLong(prompt)}
+                  >
                     {labels.chatgpt}
                   </a>
                   <button type="button" class="act act-sm" onClick={() => copy(prompt, preset)}>

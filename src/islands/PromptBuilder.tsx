@@ -10,6 +10,7 @@ import {
   type PromptOptions,
   type TopicCard,
 } from '@/lib/prompt-builder';
+import type { LongPromptLabels } from '@/lib/ai-labels';
 import { deepLinks } from '@/lib/prompts';
 import type { Locale } from '@/lib/urls';
 
@@ -49,6 +50,8 @@ export interface PromptBuilderLabels {
   copied: string;
   copyFailed: string;
   openHint: string;
+  /** What the links say when they cannot carry the whole prompt. */
+  long: LongPromptLabels;
   whyTitle: string;
   whyBody: string;
   rulesPack: string;
@@ -83,6 +86,8 @@ export default function PromptBuilder({ locale, labels, trackNames }: Props) {
   const [selected, setSelected] = useState<TopicCard[]>([]);
   const [searchState, setSearchState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  /** After a too-long link is followed: whether the full prompt reached the clipboard. */
+  const [longCopy, setLongCopy] = useState<boolean | null>(null);
   const [ruleCount, setRuleCount] = useState(0);
   const indexRequest = useRef<Promise<TopicIndexRow[]> | null>(null);
   const cardCache = useRef(new Map<string, TopicCard>());
@@ -206,6 +211,18 @@ export default function PromptBuilder({ locale, labels, trackNames }: Props) {
     [code, goal, language, level, options, selected],
   );
   const links = useMemo(() => deepLinks(prompt), [prompt]);
+  useEffect(() => setLongCopy(null), [prompt]);
+
+  /** A too-long link still opens with the start of the prompt; the whole of it goes to the clipboard. */
+  const followLong = () => {
+    const clipboard = navigator.clipboard as Clipboard | undefined;
+    if (!clipboard) return setLongCopy(false);
+    clipboard
+      .writeText(prompt)
+      .then(() => setLongCopy(true))
+      .catch(() => setLongCopy(false));
+  };
+  const onFollow = links.complete ? undefined : followLong;
 
   const toggleOption = (name: keyof PromptOptions) => {
     setOptions((current) => ({ ...current, [name]: !current[name] }));
@@ -364,10 +381,16 @@ export default function PromptBuilder({ locale, labels, trackNames }: Props) {
           {prompt}
         </pre>
         <div class="prompt-actions">
-          <a class="btn prompt-action-ai" href={links.claude} target="_blank" rel="noreferrer">
+          <a
+            class="btn prompt-action-ai"
+            href={links.claude}
+            target="_blank"
+            rel="noreferrer"
+            onClick={onFollow}
+          >
             {labels.openClaude}
           </a>
-          <a class="btn btn-g" href={links.chatgpt} target="_blank" rel="noreferrer">
+          <a class="btn btn-g" href={links.chatgpt} target="_blank" rel="noreferrer" onClick={onFollow}>
             {labels.openChatGPT}
           </a>
           <button type="button" class="btn btn-g" data-copy-prompt onClick={() => void copyPrompt()}>
@@ -375,6 +398,11 @@ export default function PromptBuilder({ locale, labels, trackNames }: Props) {
           </button>
           <span class="prompt-open-hint">{labels.openHint}</span>
         </div>
+        {!links.complete && (
+          <p class="prompt-long" aria-live="polite">
+            {longCopy === null ? labels.long.hint : longCopy ? labels.long.copied : labels.long.failed}
+          </p>
+        )}
 
         <section class="panel prompt-why">
           <h2>{labels.whyTitle}</h2>

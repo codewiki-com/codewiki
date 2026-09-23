@@ -622,6 +622,9 @@ export default {
   'ai.copied': '已复制提示词',
   'ai.copyFailed': '复制失败',
   'ai.close': '关闭',
+  'ai.longHint': '内容较长：链接只带开头部分和原文地址，打开时会同时复制完整提示词。',
+  'ai.longCopied': '已复制完整提示词。如果AI读不到原文，请直接粘贴。',
+  'ai.longCopyFailed': '未能复制完整提示词，请用“复制提示词”。',
 
   // Task 15 — the command palette and the /search/ page.
   'search.sub': '所有主题、术语和路径。索引随站点发布，完全在你的浏览器中运行。',

@@ -44,6 +44,14 @@ export interface PromptContext {
   prerequisite?: string;
   /** A surface-specific instruction that keeps the preset identity but narrows its action. */
   presetInstruction?: string;
+  /**
+   * Where the assistant can read the full text, e.g. the page's Markdown twin. A deep link that
+   * cannot carry the whole context points here; defaults to `url`. `null` when the text exists
+   * nowhere the assistant could read it, such as the reader's own code in the playground.
+   */
+  sourceUrl?: string | null;
+  /** True when `sectionText` is an excerpt of the scope; `linksFor` sets it. */
+  excerpt?: boolean;
 }
 
 /** The language the answer must come back in, named in that language. */
@@ -100,6 +108,8 @@ export function buildPrompt(context: PromptContext): string {
     userCode,
     prerequisite,
     presetInstruction,
+    sourceUrl,
+    excerpt,
   } = context;
 
   const scope = section.trim() ? `, section "${section.trim()}"` : '';
@@ -112,7 +122,11 @@ export function buildPrompt(context: PromptContext): string {
 
   return [
     `I am reading "${title}" on CodeWiki (${url})${scope}.`,
-    'Context (verbatim from the page):',
+    !excerpt
+      ? 'Context (verbatim from the page):'
+      : sourceUrl === null
+        ? 'Context (the start of it, verbatim; the rest did not fit in this link, so ask me to paste it if you need more):'
+        : `Context (the start of it, verbatim; the full text is at ${sourceUrl || url} — read it there before answering, and tell me if you cannot open it):`,
     '"""',
     sectionText.trim(),
     '"""',
@@ -150,9 +164,14 @@ function boundary(text: string): number {
   return sentence >= floor ? sentence : text.length;
 }
 
+/** True when a deep link can carry `prompt` whole. */
+export function fitsLink(prompt: string): boolean {
+  return prompt.length <= LINK_LIMIT && encodedLength(prompt) <= QUERY_LIMIT;
+}
+
 /** The prompt cut to what a URL can carry, under both bounds. */
 export function forLink(prompt: string): string {
-  if (prompt.length <= LINK_LIMIT && encodedLength(prompt) <= QUERY_LIMIT) return prompt;
+  if (fitsLink(prompt)) return prompt;
 
   let cut = sliceSafely(prompt, Math.min(prompt.length, LINK_LIMIT));
   if (encodedLength(cut + CUT_MARKER) > QUERY_LIMIT) {
@@ -169,8 +188,52 @@ export function forLink(prompt: string): string {
   return cut.slice(0, boundary(cut)).trimEnd() + CUT_MARKER;
 }
 
-/** Links that open the assistant with the prompt already typed in. */
-export function deepLinks(prompt: string): { claude: string; chatgpt: string } {
-  const q = encodeURIComponent(forLink(prompt));
-  return { claude: `https://claude.ai/new?q=${q}`, chatgpt: `https://chatgpt.com/?q=${q}` };
+export interface AssistantLinks {
+  claude: string;
+  chatgpt: string;
+  /** False when the links carry less than the whole prompt; the UI then copies it on click. */
+  complete: boolean;
+}
+
+function links(text: string, complete: boolean): AssistantLinks {
+  const q = encodeURIComponent(text);
+  return { claude: `https://claude.ai/new?q=${q}`, chatgpt: `https://chatgpt.com/?q=${q}`, complete };
+}
+
+/** Links that open the assistant with the prompt already typed in, cut at the end if too long. */
+export function deepLinks(prompt: string): AssistantLinks {
+  return links(forLink(prompt), fitsLink(prompt));
+}
+
+/** The first `length` characters of `text`, ended at a paragraph or sentence where one is near. */
+function excerptOf(text: string, length: number): string {
+  if (length >= text.length) return text;
+  const cut = sliceSafely(text, length);
+  return cut.slice(0, boundary(cut)).trimEnd() + CUT_MARKER;
+}
+
+/**
+ * The prompt for `context` and links that carry as much of it as a URL can. When the whole prompt
+ * fits, the links carry it. When it does not, the instruction and the answer line stay whole and
+ * only the quoted context shrinks, to the longest excerpt that fits, with the address of the full
+ * text (`sourceUrl`) named so the assistant can read the rest. `prompt` is always the full prompt,
+ * for the clipboard.
+ */
+export function linksFor(context: PromptContext): AssistantLinks & { prompt: string } {
+  const prompt = buildPrompt(context);
+  if (fitsLink(prompt)) return { prompt, ...links(prompt, true) };
+
+  const text = context.sectionText.trim();
+  const build = (length: number) =>
+    buildPrompt({ ...context, sectionText: excerptOf(text, length), excerpt: true });
+  // Longer excerpts only ever encode longer, so the longest that fits is a binary search.
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fitsLink(build(middle))) low = middle;
+    else high = middle - 1;
+  }
+  // Only reader-supplied code can overflow with no context at all; that last resort cuts the end.
+  return { prompt, ...links(forLink(build(low)), false) };
 }

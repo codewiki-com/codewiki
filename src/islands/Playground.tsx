@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { mountEditor, type MountedEditor } from '@/islands/editor';
 import { parseTestResult, wrapWithTests } from '@/lib/kata-tests';
 import { decodeCode, decodeState, encodeState, MAX_TESTS_LENGTH, type PlaygroundState } from '@/lib/lz';
-import { buildPrompt, deepLinks } from '@/lib/prompts';
+import type { LongPromptLabels } from '@/lib/ai-labels';
+import { linksFor } from '@/lib/prompts';
 import {
   isTimeout,
   normalizeLang,
@@ -74,6 +75,8 @@ export interface PlaygroundLabels {
   testsPassed: string;
   testsFailed: string;
   askFix: string;
+  /** What the fix link says when it cannot carry the whole prompt. */
+  long: LongPromptLabels;
   runsOnMachine: string;
   runtimePyodide: string;
   runtimeSql: string;
@@ -380,23 +383,27 @@ export default function Playground({ locale, labels }: Props) {
     }
   };
 
-  const aiHref = useMemo(() => {
+  /** After a too-long fix link is followed: whether the full prompt reached the clipboard. */
+  const [longCopy, setLongCopy] = useState<boolean | null>(null);
+
+  const aiLink = useMemo(() => {
     if (!kataResult || kataResult.passed) return undefined;
     const stdout = outputText(events, 'stdout') || '(none)';
     const stderr = outputText(events, 'stderr') || '(none)';
     const failure = kataResult.failures.at(-1) ?? stderr;
-    const prompt = buildPrompt({
+    return linksFor({
       preset: 'bugs',
       locale,
       title: labels.title,
       url: `https://codewiki.com${locale === 'zh' ? '/zh' : ''}/playground/`,
+      // The reader's code lives only in this tab: there is no page the assistant could read it on.
+      sourceUrl: null,
       section: labels.tests,
       sectionText: `Code (${lang}):\n${code}\n\nstdout:\n${stdout}\n\nstderr:\n${stderr}\n\nFailing assertion:\n${failure}`,
       language: lang,
       presetInstruction:
         'Find the bug that causes the failing assertion. Explain the smallest correction, then show the corrected code.',
     });
-    return deepLinks(prompt).chatgpt;
   }, [code, events, kataResult, labels.tests, labels.title, lang, locale]);
 
   const statusLabel =
@@ -601,10 +608,36 @@ export default function Playground({ locale, labels }: Props) {
                     {kataResult.failures.map((failure) => (
                       <pre>{failure}</pre>
                     ))}
-                    {aiHref && (
-                      <a class="act playground-ask-fix" href={aiHref} target="_blank" rel="noreferrer">
+                    {aiLink && (
+                      <a
+                        class="act playground-ask-fix"
+                        href={aiLink.chatgpt}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={
+                          aiLink.complete
+                            ? undefined
+                            : () => {
+                                const clipboard = navigator.clipboard as Clipboard | undefined;
+                                if (!clipboard) return setLongCopy(false);
+                                clipboard
+                                  .writeText(aiLink.prompt)
+                                  .then(() => setLongCopy(true))
+                                  .catch(() => setLongCopy(false));
+                              }
+                        }
+                      >
                         {labels.askFix}
                       </a>
+                    )}
+                    {aiLink && !aiLink.complete && (
+                      <p class="prompt-long" aria-live="polite">
+                        {longCopy === null
+                          ? labels.long.hint
+                          : longCopy
+                            ? labels.long.copied
+                            : labels.long.failed}
+                      </p>
                     )}
                   </div>
                 )}

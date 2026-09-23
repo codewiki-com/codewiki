@@ -662,6 +662,10 @@ export default {
   'ai.copied': 'Prompt copied',
   'ai.copyFailed': 'Copy failed',
   'ai.close': 'Close',
+  'ai.longHint':
+    'Long context: the link carries its start and the page address, and opening it also copies the full prompt.',
+  'ai.longCopied': "Full prompt copied. If the assistant can't open the page, paste it in.",
+  'ai.longCopyFailed': "Couldn't copy the full prompt; use Copy prompt.",
 
   // Task 15 — the command palette and the /search/ page.
   'search.sub': 'Every topic, term and path. The index ships with the site and runs in your browser.',

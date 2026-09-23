@@ -1,4 +1,4 @@
-import { PRESETS, buildPrompt, deepLinks, type Preset } from '@/lib/prompts';
+import { PRESETS, buildPrompt, deepLinks, fitsLink, linksFor, type Preset } from '@/lib/prompts';
 
 /** The fixed half of every prompt in these tests; only the preset and the locale vary. */
 const page = {
@@ -156,5 +156,59 @@ describe('prompts', () => {
     );
     // The 6,000-character bound would land inside the second paragraph; the first one ends cleanly.
     expect(cut).toBe(`${'a'.repeat(5_900)} […]`);
+  });
+
+  describe('linksFor', () => {
+    const query = (href: string) => decodeURIComponent(href.split('?q=')[1]!);
+
+    it('carries the whole prompt when it fits', () => {
+      const result = linksFor({ ...page, preset: 'explain', locale: 'en' });
+      expect(result.complete).toBe(true);
+      expect(query(result.claude)).toBe(result.prompt);
+    });
+
+    it('keeps the instruction whole and shrinks only the context when a Chinese page is too long', () => {
+      const paragraph = '闭包会记住它被创建时所在的作用域。'.repeat(20);
+      const sectionText = Array.from({ length: 30 }, () => paragraph).join('\n\n');
+      const result = linksFor({
+        ...page,
+        preset: 'quiz',
+        locale: 'zh',
+        sectionText,
+        sourceUrl: 'https://codewiki.com/zh/python/closures.md',
+      });
+      expect(result.complete).toBe(false);
+      // The clipboard copy is the full prompt.
+      expect(result.prompt).toContain(sectionText);
+
+      const sent = query(result.chatgpt);
+      expect(fitsLink(sent)).toBe(true);
+      expect(sent).toContain('the full text is at https://codewiki.com/zh/python/closures.md');
+      expect(sent).toContain('Ask me one question at a time');
+      expect(sent.trimEnd().endsWith('Where you are unsure, say so.')).toBe(true);
+      expect(sent).toContain('[…]');
+      // As much context as fits, less the paragraph end it backs up to: not a token excerpt.
+      expect(encodeURIComponent(sent).length).toBeGreaterThan(6_000);
+    });
+
+    it('asks for a paste instead of naming a page when the text exists nowhere readable', () => {
+      const result = linksFor({
+        ...page,
+        preset: 'bugs',
+        locale: 'en',
+        sourceUrl: null,
+        sectionText: 'print(1)\n'.repeat(2_000),
+      });
+      expect(result.complete).toBe(false);
+      const sent = query(result.chatgpt);
+      expect(sent).toContain('ask me to paste it');
+      expect(sent).not.toContain('the full text is at');
+    });
+
+    it('names the page itself when there is no separate source', () => {
+      const result = linksFor({ ...page, preset: 'explain', locale: 'en', sectionText: 'x '.repeat(5_000) });
+      expect(result.complete).toBe(false);
+      expect(query(result.claude)).toContain(`the full text is at ${page.url}`);
+    });
   });
 });

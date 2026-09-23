@@ -3,7 +3,8 @@
  * `figure.codebox`, and pitfall callout. The `AskAI` island listens for clicks on them and opens
  * its panel with the matching section or block scope.
  *
- * The button is a *sibling* of the heading and never a child: `rehypeHeadingIds` reads the text of
+ * The section button shares a `div.sec-head` row with its heading, so it sits on the heading's
+ * line. It is a *sibling* of the heading and never a child: `rehypeHeadingIds` reads the text of
  * every heading afterwards to build the table of contents, and `Depth.astro` reads the first
  * heading of a deep section for its teaser. Both would otherwise pick up the button's label.
  *
@@ -150,8 +151,12 @@ function walk(node: AnyNode, state: WalkState, sectionLabel: string, blockLabel:
 
     const id = child.properties?.id;
     if (child.type === 'element' && child.tagName === 'h2' && typeof id === 'string' && id) {
-      children.splice(index + 1, 0, askButton(id, sectionLabel) as unknown as AnyNode);
-      index += 1;
+      children[index] = {
+        type: 'element',
+        tagName: 'div',
+        properties: { className: ['sec-head'] },
+        children: [child, askButton(id, sectionLabel) as unknown as AnyNode],
+      };
       continue;
     }
 

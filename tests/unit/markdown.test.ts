@@ -432,7 +432,7 @@ describe('rehypeSectionActions', () => {
     children: [{ type: 'text', value: 'Late binding' }],
   });
 
-  it('puts an ask button after every h2, as its sibling', () => {
+  it('puts an ask button beside every h2, as its sibling in one row', () => {
     const tree: HastRoot = {
       type: 'root',
       children: [
@@ -446,7 +446,10 @@ describe('rehypeSectionActions', () => {
     };
     rehypeSectionActions()(tree);
 
-    const [heading, button, paragraph] = (tree.children[0] as Element).children as Element[];
+    const [row, paragraph] = (tree.children[0] as Element).children as Element[];
+    expect(row!.tagName).toBe('div');
+    expect(row!.properties).toEqual({ className: ['sec-head'] });
+    const [heading, button] = row!.children as Element[];
     expect(heading!.tagName).toBe('h2');
     // The heading keeps its own children: the table of contents reads them.
     expect(heading!.children).toHaveLength(1);
@@ -484,7 +487,7 @@ describe('rehypeSectionActions', () => {
     const tree: HastRoot = { type: 'root', children: [h2('scope')] };
     rehypeSectionActions({ locale: 'zh' })(tree);
 
-    const button = tree.children[1] as Element;
+    const button = (tree.children[0] as Element).children[1] as Element;
     expect(button.properties['aria-label']).toBe('让AI讲讲这一节');
     expect(button.children[0]).toEqual({ type: 'text', value: '让AI讲讲这一节' });
   });
