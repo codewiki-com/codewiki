@@ -44,16 +44,12 @@ test('the palette searches the Chinese index on the Chinese home page', async ({
   expect(hrefs.every((href) => href?.startsWith('/zh/'))).toBe(true);
 });
 
-test('the language toggle searches the other locale', async ({ page }) => {
+test('the palette searches only the current language and offers no language toggle', async ({ page }) => {
   await page.goto('/');
   const dialog = await openPalette(page);
+  await expect(dialog.getByRole('button', { name: /^(English|Chinese|中文|英语)$/ })).toHaveCount(0);
   await dialog.getByRole('combobox').fill('闭包');
-
-  // Filtered to English, a Chinese query matches nothing.
   await expect(dialog.getByRole('option')).toHaveCount(0);
-
-  await dialog.getByRole('button', { name: 'Chinese' }).click();
-  await expect(dialog.locator('[role="option"][href="/zh/python/closures/"]')).toHaveCount(1);
 });
 
 test('the keyboard moves through the results and opens one', async ({ page }) => {
@@ -84,16 +80,13 @@ test('Enter belongs to whichever control has focus', async ({ page }) => {
   await dialog.getByRole('combobox').fill('closure');
   await expect(dialog.locator('[role="option"][href="/python/closures/"]')).toHaveCount(1);
 
-  // Past the field, past the English language button, onto the Chinese language button.
+  // Past the field, onto the close button.
   await page.keyboard.press('Tab');
-  await page.keyboard.press('Tab');
-  const zh = dialog.getByRole('button', { name: 'Chinese' });
-  await expect(zh).toBeFocused();
+  await expect(dialog.locator('.palette-esc')).toBeFocused();
 
-  // Enter here switches the filter; it must not open the row the cursor is on.
+  // Enter here closes the palette; it must not open the row the cursor is on.
   await page.keyboard.press('Enter');
-  await expect(zh).toHaveAttribute('aria-pressed', 'true');
-  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveCount(0);
   expect(page.url()).toBe(here);
 });
 
@@ -104,8 +97,8 @@ test('Tab focus makes a palette result the active option', async ({ page }) => {
   // Retrying locator assertion: the query is debounced, so a bare count can read zero.
   await expect(dialog.getByRole('option').nth(1)).toBeVisible();
 
-  // input → English → Chinese → close → first result → second result
-  for (let index = 0; index < 5; index += 1) await page.keyboard.press('Tab');
+  // input → close → first result → second result
+  for (let index = 0; index < 3; index += 1) await page.keyboard.press('Tab');
   const second = dialog.getByRole('option').nth(1);
   const secondId = await second.getAttribute('id');
   expect(secondId).not.toBeNull();

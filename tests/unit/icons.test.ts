@@ -21,6 +21,7 @@ const NAMES = [
   'close',
   'external',
   'github',
+  'languages',
 ] as const;
 
 const source = readFileSync(

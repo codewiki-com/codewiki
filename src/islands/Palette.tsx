@@ -25,8 +25,6 @@ export interface PaletteLabels {
   searching: string;
   /** One heading per group of `GROUP_ORDER`. */
   groups: Record<GroupName, string>;
-  /** Accessible name of the search-language toggle. */
-  langFilter: string;
   close: string;
   /** Footer hints. */
   hintMove: string;
@@ -64,9 +62,6 @@ interface PagefindModule {
   ): Promise<{ results: { data(): Promise<PagefindResultData> }[] }>;
 }
 
-/** Pagefind names an index after the page's `<html lang>`, lowercased. */
-const PAGEFIND_LANG: Record<Locale, string> = { en: 'en', zh: 'zh-hans' };
-
 const INDEX_PATH = '/pagefind/';
 
 /**
@@ -88,21 +83,14 @@ const DEBOUNCE_MS = 120;
  */
 let loading: Promise<PagefindModule> | null = null;
 
-function loadPagefind(other: string): Promise<PagefindModule> {
+function loadPagefind(): Promise<PagefindModule> {
   loading ??= (async () => {
     const pagefind = (await import(/* @vite-ignore */ PAGEFIND_URL)) as PagefindModule;
     await pagefind.options({ baseUrl: '/' });
-    // Waits for the index of this page's own language, and throws when there is none. It is also
-    // what makes the merge below safe: `mergeIndex` polls for a ready primary index forever.
+    // Pagefind keeps one index per language and loads only the page's own, which is exactly the
+    // scope of a search: the current language. This waits for that index and throws when there
+    // is none.
     await pagefind.filters();
-    // Pagefind keeps one index per language and loads only the page's own, so without this the
-    // language toggle would search an index the other locale's pages are not in. The path is
-    // absolute because `mergeIndex` refuses a path the primary index's own path starts with —
-    // a guard against merging the same index twice, which a second language is not.
-    const path = new URL(INDEX_PATH, location.origin).href;
-    // The merged index takes none of the primary's options, and would otherwise derive its own
-    // `baseUrl` from that absolute path and return absolute result URLs.
-    await pagefind.mergeIndex(path, { language: other, baseUrl: '/' }).catch(() => undefined);
     return pagefind;
   })();
   return loading;
@@ -189,7 +177,6 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   const inline = mode === 'page';
   const [open, setOpen] = useState(inline);
   const [query, setQuery] = useState('');
-  const [lang, setLang] = useState<Locale>(locale);
   const [status, setStatus] = useState<'idle' | 'searching' | 'ready' | 'unavailable'>('idle');
   const [results, setResults] = useState<PagefindResultData[]>([]);
   const [recents, setRecents] = useState<Row[]>([]);
@@ -205,7 +192,6 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
   // `useId` is seeded per Preact root, so the two islands `/search/` mounts would otherwise hand
   // out the same ids — and `aria-activedescendant` and `scrollIntoView` would find the other's.
   const listId = `${mode}-${useId()}`;
-  const other: Locale = locale === 'en' ? 'zh' : 'en';
   const term = query.trim();
 
   const grouped = useMemo(() => groupResults(results), [results]);
@@ -253,8 +239,8 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
     setOpen(true);
     // Warms the index while the visitor is still reaching for the keyboard, and in dev surfaces
     // the "no index" message on opening rather than on the first keystroke.
-    loadPagefind(PAGEFIND_LANG[other]).catch(() => setStatus('unavailable'));
-  }, [open, other, readRecents]);
+    loadPagefind().catch(() => setStatus('unavailable'));
+  }, [open, readRecents]);
 
   const close = useCallback(() => {
     // Hide immediately on the closing event; Preact removes the dialog on the following render.
@@ -365,8 +351,8 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
     setStatus('searching');
     const timer = setTimeout(async () => {
       try {
-        const pagefind = await loadPagefind(PAGEFIND_LANG[other]);
-        const found = await pagefind.search(term, { filters: { lang } });
+        const pagefind = await loadPagefind();
+        const found = await pagefind.search(term, { filters: { lang: locale } });
         const data = await Promise.all(found.results.slice(0, MAX_RESULTS).map((hit) => hit.data()));
         if (stale) return;
         setResults(data);
@@ -380,7 +366,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
       stale = true;
       clearTimeout(timer);
     };
-  }, [open, term, lang, other]);
+  }, [open, term, locale]);
 
   /* ---- keeping the cursor in view ---- */
 
@@ -408,7 +394,7 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
     }
 
     if (event.key === 'Enter') {
-      // The language toggle, the esc button and a focused row are real controls with their own
+      // The esc button and a focused row are real controls with their own
       // Enter. Only the field, which has none, opens the row under the cursor.
       if (event.target !== field.current) return;
       const row = rows[active];
@@ -479,26 +465,9 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
     </div>
   );
 
-  const langToggle = (
-    <div class="seg palette-lang" role="group" aria-label={labels.langFilter}>
-      {(['en', 'zh'] as Locale[]).map((value) => (
-        <button
-          key={value}
-          type="button"
-          class={value === lang ? 'on' : undefined}
-          aria-pressed={value === lang}
-          onClick={() => setLang(value)}
-        >
-          {locale === 'en' ? (value === 'en' ? 'English' : 'Chinese') : value === 'en' ? '英语' : '中文'}
-        </button>
-      ))}
-    </div>
-  );
-
   if (inline) {
     return (
       <div class="search-results">
-        {langToggle}
         {notice}
         {list}
       </div>
@@ -547,7 +516,6 @@ export default function Palette({ locale, mode = 'overlay', searchUrl, labels }:
             spellcheck={false}
             onInput={(event) => setQuery(event.currentTarget.value)}
           />
-          {langToggle}
           <button type="button" class="kbd palette-esc" onClick={close} aria-label={`${labels.close} (Esc)`}>
             esc
           </button>

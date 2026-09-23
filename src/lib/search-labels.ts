@@ -23,7 +23,6 @@ export function paletteLabels(locale: Locale): PaletteLabels {
       paths: t(locale, 'search.paths'),
       other: t(locale, 'search.other'),
     },
-    langFilter: t(locale, 'search.langFilter'),
     close: t(locale, 'search.closeLabel'),
     hintMove: t(locale, 'home.palette.move'),
     hintOpen: t(locale, 'home.palette.open'),

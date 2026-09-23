@@ -279,10 +279,10 @@ test('the header and footer use CodeWiki and link GitHub with explicit licenses'
   await expect(page.locator('footer')).toContainText('CodeWiki');
   await expect(page.locator('footer')).toContainText('Code: MIT');
   await expect(page.locator('footer')).toContainText('Content: CC BY-SA 4.0');
-  await expect(page.locator('footer').getByRole('link', { name: 'GitHub', exact: true })).toHaveCount(0);
   await expect(page.locator('footer a[href="/llms.txt"]')).toHaveCount(0);
-  await expect(
-    page.locator('footer').getByRole('link', { name: 'GitHub repo', exact: true }),
-  ).toHaveAttribute('href', 'https://github.com/codewiki-com/codewiki');
+  await expect(page.locator('footer').getByRole('link', { name: 'GitHub', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/codewiki-com/codewiki',
+  );
   await expect(page.locator('a[href*="rss.xml"], link[type="application/rss+xml"]')).toHaveCount(0);
 });

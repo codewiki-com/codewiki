@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
   applyTheme,
   applyThemePreference,
@@ -9,6 +9,7 @@ import {
   THEME_EVENT,
   type ThemePref,
 } from '@/lib/theme';
+import { revealTheme } from '@/lib/theme-transition';
 
 export interface ThemeToggleProps {
   /** Localised labels, one per preference state. */
@@ -29,6 +30,8 @@ const icons: Record<ThemePref, JSX.Element> = {
 
 export default function ThemeToggle({ labels }: ThemeToggleProps) {
   const [pref, setPref] = useState<ThemePref>('light');
+  /** A 1px marker at the button's centre: where the reveal circle starts. */
+  const origin = useRef<HTMLSpanElement | null>(null);
 
   // The inline bootstrap script already painted the right palette; adopt whatever
   // it resolved so the button starts in the same state as the document.
@@ -51,7 +54,9 @@ export default function ThemeToggle({ labels }: ThemeToggleProps) {
 
   const onClick = useCallback(() => {
     const next = nextTheme(pref);
-    applyThemePreference(next, window.matchMedia(DARK_QUERY).matches, document.documentElement);
+    revealTheme(origin.current, () =>
+      applyThemePreference(next, window.matchMedia(DARK_QUERY).matches, document.documentElement),
+    );
     setPref(next);
     window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: next }));
   }, [pref]);
@@ -77,6 +82,7 @@ export default function ThemeToggle({ labels }: ThemeToggleProps) {
       >
         {icons[pref]}
       </svg>
+      <span class="theme-origin" ref={origin} aria-hidden="true" />
     </button>
   );
 }
