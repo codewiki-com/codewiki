@@ -14,7 +14,7 @@ Use this brief when a topic already has one language at `status: reviewed` and t
 
 1. Read the source fully. Note every heading, paragraph, list, code block, callout, component and their order. The target must have the same sequence of blocks.
 2. Write the target file. Translate prose faithfully and natively. Keep identifiers, commands, file names, URLs, error messages and code verbatim; translate code comments only. Keep `<TLDR>`, `<Depth>`, `<Term id>`, `<Checkpoint>` and fence meta exactly as in the source. Translate only `title` and `description` in the frontmatter; copy every other frontmatter field unchanged.
-3. Chinese targets: put a space between Chinese characters and adjacent Latin text, use Chinese punctuation, include the English term on first mention, and avoid translationese. English targets: native, direct, present tense.
+3. Chinese targets: put no space between Chinese characters and adjacent Latin text or digits, use Chinese punctuation with “” quotes (never 「」), include the English term on first mention, and avoid translationese. English targets: native, direct, present tense.
 4. Run `pnpm content:align {{TOPIC_ID}}` and `pnpm content:check {{TOPIC_ID}}`; fix until both print `OK`.
 5. Print `TRANSLATE DONE {{TOPIC_ID}}` as the last line, or `TRANSLATE FAILED {{TOPIC_ID}}: {reason}`.
 

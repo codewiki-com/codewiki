@@ -107,7 +107,7 @@ describe('buildHead', () => {
 
   it('formats the Chinese home title from the tagline', () => {
     expect(buildHead({ locale: 'zh', path: '/zh/', title: '', description: 'd', kind: 'home' }).title).toBe(
-      'CodeWiki · 在 AI 时代精通编程',
+      'CodeWiki · 在AI时代精通编程',
     );
   });
 

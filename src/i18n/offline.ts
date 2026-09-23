@@ -19,10 +19,10 @@ const STRINGS = {
   saveTrack: { en: 'Save this track offline', zh: '离线保存本方向' },
   saveRuntimes: {
     en: 'Download runtimes for offline (≈{mb} MB)',
-    zh: '下载离线运行环境（约 {mb} MB）',
+    zh: '下载离线运行环境（约{mb} MB）',
   },
   saving: { en: 'Saving… {done}/{total}', zh: '正在保存… {done}/{total}' },
-  savedPages: { en: 'Saved · {n} pages', zh: '已保存 · {n} 个页面' },
+  savedPages: { en: 'Saved · {n} pages', zh: '已保存 · {n}个页面' },
   savedRuntimes: { en: 'Runtimes saved · {mb} MB', zh: '运行环境已保存 · {mb} MB' },
   remove: { en: 'Remove', zh: '移除' },
   failed: { en: 'Some files could not be saved. Try again.', zh: '部分文件未能保存，请重试。' },

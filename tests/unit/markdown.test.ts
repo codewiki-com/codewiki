@@ -485,8 +485,8 @@ describe('rehypeSectionActions', () => {
     rehypeSectionActions({ locale: 'zh' })(tree);
 
     const button = tree.children[1] as Element;
-    expect(button.properties['aria-label']).toBe('让 AI 讲讲这一节');
-    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这一节' });
+    expect(button.properties['aria-label']).toBe('让AI讲讲这一节');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让AI讲讲这一节' });
   });
 
   it('localizes both the visible and accessible block-action labels', () => {
@@ -500,8 +500,8 @@ describe('rehypeSectionActions', () => {
     rehypeSectionActions({ locale: 'zh' })(tree);
 
     const button = tree.children[1] as Element;
-    expect(button.properties['aria-label']).toBe('让 AI 讲讲这段代码');
-    expect(button.children[0]).toEqual({ type: 'text', value: '让 AI 讲讲这段代码' });
+    expect(button.properties['aria-label']).toBe('让AI讲讲这段代码');
+    expect(button.children[0]).toEqual({ type: 'text', value: '让AI讲讲这段代码' });
   });
 
   it('adds focused actions after code and pitfall blocks', () => {

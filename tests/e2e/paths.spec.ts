@@ -130,5 +130,5 @@ test('the Chinese path page renders the localized content title', async ({ page 
   await page.goto('/zh/paths/python-from-zero/');
 
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hans');
-  await expect(page.locator('h1')).toHaveText('Python 从零起步');
+  await expect(page.locator('h1')).toHaveText('Python从零起步');
 });

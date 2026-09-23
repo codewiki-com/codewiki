@@ -212,13 +212,13 @@ test('the theme bootstrap runs ahead of the stylesheet', async ({ page }) => {
 test('the language dropdown preserves the current page in both locales', async ({ page }) => {
   await page.goto('/python/closures/');
   await page.locator('.nav-tools .language-trigger').hover();
-  await expect(page.locator('#nav-language').getByRole('link', { name: 'Chinese' })).toHaveAttribute(
+  await expect(page.locator('#nav-language').getByRole('link', { name: '中文' })).toHaveAttribute(
     'href',
     '/zh/python/closures/',
   );
   await page.goto('/zh/python/closures/');
   await page.locator('.nav-tools .language-trigger').hover();
-  await expect(page.locator('#nav-language').getByRole('link', { name: '英语' })).toHaveAttribute(
+  await expect(page.locator('#nav-language').getByRole('link', { name: 'English' })).toHaveAttribute(
     'href',
     '/python/closures/',
   );
@@ -250,7 +250,7 @@ test('the language dropdown and GitHub link work on mobile', async ({ page }) =>
   await expect(github).toHaveAttribute('href', 'https://github.com/codewiki-com');
   await page.locator('.nav-menu > summary').click();
   await page.locator('.menu-tools .language-trigger').click();
-  await page.locator('#menu-language').getByRole('link', { name: 'Chinese' }).click();
+  await page.locator('#menu-language').getByRole('link', { name: '中文' }).click();
   await expect(page).toHaveURL(/\/zh\/$/);
 });
 
@@ -279,10 +279,8 @@ test('the header and footer use CodeWiki and link GitHub with explicit licenses'
   await expect(page.locator('footer')).toContainText('CodeWiki');
   await expect(page.locator('footer')).toContainText('Code: MIT');
   await expect(page.locator('footer')).toContainText('Content: CC BY-SA 4.0');
-  await expect(page.locator('footer').getByRole('link', { name: 'GitHub', exact: true })).toHaveAttribute(
-    'href',
-    'https://github.com/codewiki-com',
-  );
+  await expect(page.locator('footer').getByRole('link', { name: 'GitHub', exact: true })).toHaveCount(0);
+  await expect(page.locator('footer a[href="/llms.txt"]')).toHaveCount(0);
   await expect(
     page.locator('footer').getByRole('link', { name: 'GitHub repo', exact: true }),
   ).toHaveAttribute('href', 'https://github.com/codewiki-com/codewiki');

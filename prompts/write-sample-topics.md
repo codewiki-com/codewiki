@@ -47,7 +47,7 @@ Required beats, in this order (on top of the editorial standard's structure):
 
 The zh file mirrors the en file heading for heading, paragraph for paragraph, code block for code
 block: identical code, translated comments, same number of list items. Native Chinese technical
-prose, not translationese; glossary terms get the English original on first use, e.g.「闭包（closure）」.
+prose, not translationese; glossary terms get the English original on first use, e.g. “闭包（closure）”.
 
 ## 3. `javascript/event-loop.{en,zh}.mdx`
 

@@ -32,7 +32,7 @@ Sections 3–6 are `standard` depth by default. Mark the first example and the T
 ## 4. Voice
 
 - English: native, direct, present tense, second person where natural. Contractions are fine. Prefer short sentences. Technical terms are used precisely and consistently with the glossary.
-- Chinese: write natural technical Chinese, without translationese. Use two to five sentences per paragraph to develop one idea; do not put every sentence in its own paragraph. Prefer short sentences with a clear subject, verb and object. Follow the glossary and include the English term on first mention, for example 「闭包（closure）」. Put one space between Chinese characters and adjacent Latin text, as in 「Python 3.14 的 `asyncio`」. Use Chinese punctuation (，。；：？！「」) in Chinese prose, but not between code tokens, numbers or English words. Avoid 「本文将」「让我们」「值得注意的是」.
+- Chinese: write natural technical Chinese, without translationese. Use two to five sentences per paragraph to develop one idea; do not put every sentence in its own paragraph. Prefer short sentences with a clear subject, verb and object. Follow the glossary and include the English term on first mention, for example “闭包（closure）”. Put no space between Chinese characters and adjacent Latin text, digits or inline code, as in “Python 3.14的`asyncio`”; the site sets `text-autospace`, so the browser draws that gap. Use Chinese punctuation (，。；：？！“”) in Chinese prose, but not between code tokens, numbers or English words. Quote with “” and ‘’, never 「」 or 『』. Avoid “本文将”“让我们”“值得注意的是”.
 - Both: no emoji, no exclamation marks, no marketing adjectives.
 - MDX: raw `<` or `>` in prose must be escaped as an HTML entity or placed in inline code.
 

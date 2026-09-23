@@ -6,7 +6,7 @@ export const SITE = {
   name: 'CodeWiki',
   /** Canonical origin, no trailing slash — canonical URLs, sitemap and OG images build on it. */
   url: 'https://codewiki.com',
-  tagline: { en: 'Master code in the AI era', zh: '在 AI 时代精通编程' } satisfies L,
+  tagline: { en: 'Master code in the AI era', zh: '在AI时代精通编程' } satisfies L,
   /** Source repository; powers contribution and "Edit on GitHub" links. */
   repo: 'https://github.com/codewiki-com/codewiki',
 } as const;

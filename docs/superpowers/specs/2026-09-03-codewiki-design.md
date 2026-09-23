@@ -106,7 +106,7 @@ Slugs are ASCII kebab-case, shared across languages (`/python/closures/` ↔ `/z
 - Content: one collection, file-per-locale (`slug.en.mdx`, `slug.zh.mdx`). Entry id = `{track}/{slug}/{lang}`. Helper `getTopic(track, slug, lang)` and `getPair(track, slug)`.
 - UI strings: `src/i18n/{en,zh}.ts` typed dictionaries; `t(key)` per page locale. No runtime i18n library.
 - Fallback: a topic that exists only in one language is built only for that language; the other language's hub lists it with a "English only / 仅英文" badge and links across. Never auto-machine-translate at build.
-- Chinese typography: `lang="zh-Hans"` on `<html>`; `text-autospace`/`word-break: normal`; `line-height` 1.85 for zh prose; full-width punctuation enforced by the content linter; CJK/Latin spacing enforced by the linter (pangu rules).
+- Chinese typography: `lang="zh-Hans"` on `<html>`; `text-autospace`/`word-break: normal`; `line-height` 1.85 for zh prose; full-width punctuation enforced by the content linter; no literal CJK/Latin spaces, enforced by the linter (`text-autospace: normal` on `body` draws the gap); quotes are “” and ‘’, never 「」.
 
 ---
 
@@ -334,7 +334,7 @@ Shell: `Nav`, `Footer`, `Search` (island: palette), `ThemeToggle` (island), `Lan
 - Structure: **TL;DR** (3 cells) → **What it is / why it exists** → **How it works** (mechanics, one diagram if it helps) → **Examples** (runnable, realistic, with outputs produced by running them) → **Pitfalls** (merged with "best practices"; each pitfall states the fix) → **In the AI era** (what generated code gets wrong here, what to ask your AI to check, a 3-item review checklist, prompt vocabulary) → **Deep dive** (marked `deep`; internals, edge cases, performance with numbers or nothing) → **Checkpoint** (3–8 items, YAML sidecar, at least one `predict` and, where the topic allows, one `review` item) → **Further reading** (only links verified by fetching; official docs first). Interview questions go to the interview sidecar, not the article.
 - Length 400–900 lines including code. No "In this article", "comprehensive guide", "By mastering…". No rule-of-three padding. Prose written for a smart colleague.
 - Currency: verified against a named version as of 2026 (e.g. Python 3.14, Node 24, TypeScript 6, Go 1.27, Rust 1.98, React 19, Java 25 LTS, LangChain 1.x, current Claude/OpenAI SDKs); flag deprecated APIs explicitly.
-- English: native, direct, present tense. Chinese: natural technical writing, consistent terminology from the glossary, a space between Chinese characters and adjacent Latin text, Chinese punctuation, and no translationese.
+- English: native, direct, present tense. Chinese: natural technical writing, consistent terminology from the glossary, no space between Chinese characters and adjacent Latin text, Chinese punctuation with “” quotes, and no translationese.
 - Bilingual: the canonical language is chosen per topic (the better draft); the other language is a faithful paragraph-aligned translation; code identical; headings 1:1.
 - Diagrams: Mermaid where a structure/flow helps (rendered to SVG at build); no decorative images.
 - Every claim about behaviour must be backed by a runnable example or a cited primary source.

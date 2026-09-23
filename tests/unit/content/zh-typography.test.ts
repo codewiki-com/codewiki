@@ -1,22 +1,55 @@
 import { findZhIssues, fixZhTypography, zhIssueSummary } from '../../../scripts/content/lib/zh-typography';
 
 describe('zh typography', () => {
-  it('adds spacing between CJK and latin', () => {
-    expect(fixZhTypography('Laravel是目前最流行的PHP框架')).toBe('Laravel 是目前最流行的 PHP 框架');
+  it('removes spacing between CJK and latin', () => {
+    expect(fixZhTypography('Laravel 是目前最流行的 PHP  框架')).toBe('Laravel是目前最流行的PHP框架');
+    expect(fixZhTypography('Laravel是目前最流行的PHP框架')).toBe('Laravel是目前最流行的PHP框架');
+  });
+  it('removes spacing around inline code, links, bold and inline tags', () => {
+    expect(fixZhTypography('调用 `map` 方法')).toBe('调用`map`方法');
+    expect(fixZhTypography('见 [MDN](https://a.b/c) 文档')).toBe('见[MDN](https://a.b/c)文档');
+    expect(fixZhTypography('这是 **Python** 代码')).toBe('这是**Python**代码');
+    expect(fixZhTypography('按 <Kbd>Ctrl</Kbd> 键')).toBe('按<Kbd>Ctrl</Kbd>键');
+  });
+  it('fixes Chinese strings inside tag attributes but not the rest of the tag', () => {
+    expect(fixZhTypography('<Sheet title="Option 与 Result" kind="a b">')).toBe(
+      '<Sheet title="Option与Result" kind="a b">',
+    );
+    expect(fixZhTypography("<TryToBreak items={['订单编号为 0', '「负数」']} />")).toBe(
+      "<TryToBreak items={['订单编号为0', '“负数”']} />",
+    );
+  });
+  it('ends a bare URL before a quote or Chinese text', () => {
+    expect(fixZhTypography('<Row code="curl https://a.b/c">添加 HTTP 配置</Row>')).toBe(
+      '<Row code="curl https://a.b/c">添加HTTP配置</Row>',
+    );
+  });
+  it('treats #, + and % as the end of a Latin token', () => {
+    expect(fixZhTypography('用 C# 与 C++ 写，达到 70% 即可')).toBe('用C#与C++写，达到70%即可');
+    expect(fixZhTypography('a + 中')).toBe('a + 中');
+  });
+  it('keeps spacing that markdown needs', () => {
+    expect(fixZhTypography('见 https://a.b/c 说明')).toBe('见 https://a.b/c 说明');
+    expect(fixZhTypography('这是 _foo_ 函数')).toBe('这是 _foo_ 函数');
+    expect(fixZhTypography('- API 说明\n\n## 3 种方法\n')).toBe('- API说明\n\n## 3种方法\n');
+  });
+  it('replaces corner brackets with curly quotes', () => {
+    expect(fixZhTypography('点击「运行」，见『注释』')).toBe('点击“运行”，见‘注释’');
+    expect(fixZhTypography('```\n「保留」\n```\n')).toBe('```\n「保留」\n```\n');
   });
   it('converts ascii punctuation after CJK', () => {
     expect(fixZhTypography('安全,无需垃圾回收器.')).toBe('安全，无需垃圾回收器。');
   });
   it('leaves code alone', () => {
-    const s = '调用 `foo(a,b)` 即可，如下：\n```py\nprint("a,b")\n```\n';
+    const s = '调用`foo(a,b)`即可，如下：\n```py\nprint("a 中文,b")\n```\n';
     expect(fixZhTypography(s)).toBe(s);
   });
   it('reports issues with positions', () => {
-    expect(findZhIssues('第2行,有问题')[0]).toMatchObject({ line: 1, rule: 'spacing' });
+    expect(findZhIssues('第 2 行,有问题')[0]).toMatchObject({ line: 1, col: 2, rule: 'spacing' });
   });
   it('keeps urls and english sentences', () => {
     expect(fixZhTypography('见 https://a.b/c?d=1,2 和 Hello, world.')).toBe(
-      '见 https://a.b/c?d=1,2 和 Hello, world.',
+      '见 https://a.b/c?d=1,2 和Hello, world.',
     );
   });
 
@@ -36,22 +69,26 @@ describe('zh typography', () => {
     expect(fixZhTypography('"""中文注释"""')).toBe('"""中文注释"""');
   });
   it('keeps english apostrophes', () => {
-    expect(fixZhTypography("中文 don't 用 it's 吗")).toBe("中文 don't 用 it's 吗");
+    expect(fixZhTypography("中文 don't 用 it's 吗")).toBe("中文don't用it's吗");
   });
   it('converts trailing ellipsis after CJK', () => {
     expect(fixZhTypography('等等...')).toBe('等等……');
     expect(fixZhTypography('run ...')).toBe('run ...');
   });
   it('keeps dots inside versions and file names', () => {
-    expect(fixZhTypography('见 main.py 和 3.14 的说明。')).toBe('见 main.py 和 3.14 的说明。');
-    expect(fixZhTypography('支持 Python 3.x.')).toBe('支持 Python 3.x.');
+    expect(fixZhTypography('见 main.py 和 3.14 的说明。')).toBe('见main.py和3.14的说明。');
+    expect(fixZhTypography('支持 Python 3.x.')).toBe('支持Python 3.x.');
   });
-  it('leaves frontmatter untouched', () => {
+  it('leaves frontmatter punctuation untouched', () => {
     const s = '---\ntitle: 中文,标题\n---\n\n正文,如下\n';
     expect(fixZhTypography(s)).toBe('---\ntitle: 中文,标题\n---\n\n正文，如下\n');
   });
+  it('fixes spacing and corner quotes in frontmatter values', () => {
+    const s = '---\ntitle: Python 的「闭包」\n---\n';
+    expect(fixZhTypography(s)).toBe('---\ntitle: Python的“闭包”\n---\n');
+  });
   it('leaves markdown link targets untouched', () => {
-    expect(fixZhTypography('见 [文档](https://a.b/c,d) 说明.')).toBe('见 [文档](https://a.b/c,d) 说明。');
+    expect(fixZhTypography('见[文档](https://a.b/c,d)说明.')).toBe('见[文档](https://a.b/c,d)说明。');
   });
   it('leaves html and mdx tag attributes untouched', () => {
     expect(fixZhTypography('<Callout title="重要,提示" kind=cn />\n\n中文段落.')).toBe(
@@ -59,7 +96,7 @@ describe('zh typography', () => {
     );
   });
   it('leaves inline code containing commas untouched', () => {
-    expect(fixZhTypography('用 `a,b` 分隔,可以')).toBe('用 `a,b` 分隔，可以');
+    expect(fixZhTypography('用 `a,b` 分隔,可以')).toBe('用`a,b`分隔，可以');
   });
   it('leaves indented code blocks alone', () => {
     const s = '说明如下:\n\n    def f():\n        """中文,注释"""\n\n正文,结束\n';
@@ -69,16 +106,16 @@ describe('zh typography', () => {
     expect(fixZhTypography('- 第一项\n\n    继续说明,如下\n')).toBe('- 第一项\n\n    继续说明，如下\n');
   });
   it('never spaces around full-width punctuation', () => {
-    expect(fixZhTypography('这是（PHP）框架，见 Laravel。')).toBe('这是（PHP）框架，见 Laravel。');
+    expect(fixZhTypography('这是（PHP）框架，见Laravel。')).toBe('这是（PHP）框架，见Laravel。');
   });
   it('is idempotent', () => {
-    const s = 'Laravel是PHP框架,他说"你好"...见 https://a.b/c,d 和 `x,y`.\n\n中文(IDP)结尾.';
+    const s = 'Laravel 是 PHP 框架,他说"你好"...见 https://a.b/c,d 和 `x,y`.\n\n中文(IDP)「结尾」.';
     const once = fixZhTypography(s);
     expect(fixZhTypography(once)).toBe(once);
     expect(findZhIssues(once).filter((issue) => issue.fix !== undefined)).toEqual([]);
   });
   it('summarises issues by rule', () => {
-    const summary = zhIssueSummary(findZhIssues('Laravel是框架,他说"你好"，等等...'));
+    const summary = zhIssueSummary(findZhIssues('Laravel 是框架,他说"你好"，等等...'));
     expect(summary).toEqual({ spacing: 1, punct: 1, quotes: 2, ellipsis: 1 });
   });
 });

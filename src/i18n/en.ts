@@ -5,6 +5,7 @@ export default {
   'site.tagline': 'Programming, explained precisely.',
 
   'count.value': '{n} {unit}',
+  'count.labeled': '{label} {n}',
   'unit.answer': 'answer',
   'unit.answers': 'answers',
   'unit.card': 'card',
@@ -130,7 +131,7 @@ export default {
   'daily.peek': 'Preview of the kata code: {title}',
   'daily.everyDay': 'new one every day',
 
-  'footer.tagline': 'CodeWiki · progress stays in your browser',
+  'footer.tagline': 'CodeWiki · Open-source static knowledge base for mastering code in the AI era',
   'footer.codeLicense': 'Code:',
   'footer.contentLicense': 'Content:',
   'footer.githubRepo': 'GitHub repo',

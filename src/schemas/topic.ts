@@ -8,11 +8,21 @@ export const difficulty = z.enum(['beginner', 'intermediate', 'advanced']);
 
 export type Difficulty = z.infer<typeof difficulty>;
 
+/** Display width in Latin columns: a CJK character takes two, as it does in a search snippet. */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const char of text.trim()) width += /\p{Script=Han}|[\u3000-\u303f\uff00-\uffef]/u.test(char) ? 2 : 1;
+  return width;
+}
+
 /** Frontmatter of a topic article (one file per language). Spec §4. */
 export const topicSchema = z
   .object({
     title: z.string().min(1),
-    description: z.string().min(40).max(170),
+    description: z
+      .string()
+      .max(170)
+      .refine((text) => displayWidth(text) >= 40, 'description must be at least 40 columns wide'),
     track: z.enum(trackSlugs),
     section: z.string().regex(/^[a-z0-9-]+$/),
     difficulty,

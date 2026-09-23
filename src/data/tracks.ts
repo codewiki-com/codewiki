@@ -58,14 +58,14 @@ export const TRACKS: Track[] = [
     name: { en: 'JavaScript', zh: 'JavaScript' },
     description: {
       en: 'The core language, async, the browser and Node',
-      zh: '语言核心、异步、浏览器与 Node',
+      zh: '语言核心、异步、浏览器与Node',
     },
     sections: [
       s('core', 'Core language', '语言核心'),
       s('functions-scope', 'Functions and scope', '函数与作用域'),
       s('async', 'Async', '异步'),
       s('browser', 'Browser', '浏览器'),
-      s('node', 'Node', 'Node 运行时'),
+      s('node', 'Node', 'Node运行时'),
       s('patterns-tooling', 'Patterns and tooling', '模式与工具链'),
     ],
   },
@@ -95,7 +95,7 @@ export const TRACKS: Track[] = [
     name: { en: 'Go', zh: 'Go' },
     description: {
       en: 'Types and interfaces, goroutines and production services',
-      zh: '类型与接口、goroutine 与生产级服务',
+      zh: '类型与接口、goroutine与生产级服务',
     },
     sections: [
       s('basics', 'Basics', '基础'),
@@ -118,11 +118,11 @@ export const TRACKS: Track[] = [
     sections: [
       s('basics', 'Basics', '基础'),
       s('ownership-borrowing', 'Ownership and borrowing', '所有权与借用'),
-      s('traits-generics', 'Traits and generics', 'trait 与泛型'),
+      s('traits-generics', 'Traits and generics', 'trait与泛型'),
       s('error-handling', 'Error handling', '错误处理'),
       s('concurrency-async', 'Concurrency and async', '并发与异步'),
-      s('unsafe-ffi', 'Unsafe and FFI', 'unsafe 与 FFI'),
-      s('cargo-tooling', 'Cargo and tooling', 'Cargo 与工具链'),
+      s('unsafe-ffi', 'Unsafe and FFI', 'unsafe与FFI'),
+      s('cargo-tooling', 'Cargo and tooling', 'Cargo与工具链'),
     ],
   },
   {
@@ -132,15 +132,15 @@ export const TRACKS: Track[] = [
     name: { en: 'Java', zh: 'Java' },
     description: {
       en: 'OOP, collections and streams, concurrency and the JVM',
-      zh: '面向对象、集合与流、并发与 JVM',
+      zh: '面向对象、集合与流、并发与JVM',
     },
     sections: [
       s('basics', 'Basics', '基础'),
       s('oop-generics', 'OOP and generics', '面向对象与泛型'),
       s('collections-streams', 'Collections and streams', '集合与流'),
       s('concurrency', 'Concurrency', '并发'),
-      s('jvm-gc', 'JVM and GC', 'JVM 与垃圾回收'),
-      s('spring-tooling', 'Spring and tooling', 'Spring 与工具链'),
+      s('jvm-gc', 'JVM and GC', 'JVM与垃圾回收'),
+      s('spring-tooling', 'Spring and tooling', 'Spring与工具链'),
     ],
   },
   {
@@ -150,13 +150,13 @@ export const TRACKS: Track[] = [
     name: { en: 'Kotlin', zh: 'Kotlin' },
     description: {
       en: 'Modern JVM syntax, coroutines, Android and multiplatform',
-      zh: '现代 JVM 语法、协程、Android 与多平台',
+      zh: '现代JVM语法、协程、Android与多平台',
     },
     sections: [
       s('basics', 'Basics', '基础'),
       s('functions-classes', 'Functions and classes', '函数与类'),
       s('coroutines', 'Coroutines', '协程'),
-      s('android-multiplatform', 'Android and multiplatform', 'Android 与多平台'),
+      s('android-multiplatform', 'Android and multiplatform', 'Android与多平台'),
       s('tooling', 'Tooling', '工具链'),
     ],
   },
@@ -167,13 +167,13 @@ export const TRACKS: Track[] = [
     name: { en: 'C++', zh: 'C++' },
     description: {
       en: 'Memory and ownership, templates and modern C++',
-      zh: '内存与所有权、模板与现代 C++',
+      zh: '内存与所有权、模板与现代C++',
     },
     sections: [
       s('basics', 'Basics', '基础'),
       s('memory-ownership', 'Memory and ownership', '内存与所有权'),
       s('templates-generic', 'Templates and generic programming', '模板与泛型编程'),
-      s('modern-cpp', 'Modern C++', '现代 C++'),
+      s('modern-cpp', 'Modern C++', '现代C++'),
       s('concurrency', 'Concurrency', '并发'),
       s('tooling', 'Tooling', '工具链'),
     ],
@@ -185,13 +185,13 @@ export const TRACKS: Track[] = [
     name: { en: 'C#', zh: 'C#' },
     description: {
       en: 'The type system, LINQ, async and the .NET platform',
-      zh: '类型系统、LINQ、异步与 .NET 平台',
+      zh: '类型系统、LINQ、异步与 .NET平台',
     },
     sections: [
       s('basics', 'Basics', '基础'),
-      s('types-linq', 'Types and LINQ', '类型与 LINQ'),
+      s('types-linq', 'Types and LINQ', '类型与LINQ'),
       s('async', 'Async', '异步'),
-      s('dotnet', '.NET', '.NET 平台'),
+      s('dotnet', '.NET', '.NET平台'),
       s('tooling', 'Tooling', '工具链'),
     ],
   },
@@ -202,7 +202,7 @@ export const TRACKS: Track[] = [
     name: { en: 'Swift', zh: 'Swift' },
     description: {
       en: 'Optionals, protocols, structured concurrency and SwiftUI',
-      zh: '可选类型、协议、结构化并发与 SwiftUI',
+      zh: '可选类型、协议、结构化并发与SwiftUI',
     },
     sections: [
       s('basics', 'Basics', '基础'),
@@ -219,12 +219,12 @@ export const TRACKS: Track[] = [
     name: { en: 'PHP', zh: 'PHP' },
     description: {
       en: 'Modern PHP, its object model, Laravel and Symfony',
-      zh: '现代 PHP、对象模型、Laravel 与 Symfony',
+      zh: '现代PHP、对象模型、Laravel与Symfony',
     },
     sections: [
       s('basics', 'Basics', '基础'),
       s('oop', 'OOP', '面向对象'),
-      s('laravel-symfony', 'Laravel and Symfony', 'Laravel 与 Symfony'),
+      s('laravel-symfony', 'Laravel and Symfony', 'Laravel与Symfony'),
       s('performance-security', 'Performance and security', '性能与安全'),
       s('tooling', 'Tooling', '工具链'),
     ],
@@ -236,10 +236,10 @@ export const TRACKS: Track[] = [
     name: { en: 'Frontend', zh: '前端' },
     description: {
       en: 'CSS and layout, React and Vue, performance and accessibility',
-      zh: 'CSS 与布局、React 与 Vue、性能与无障碍',
+      zh: 'CSS与布局、React与Vue、性能与无障碍',
     },
     sections: [
-      s('html-css', 'HTML and CSS', 'HTML 与 CSS'),
+      s('html-css', 'HTML and CSS', 'HTML与CSS'),
       s('layout', 'Layout', '布局'),
       s('react', 'React', 'React'),
       s('vue', 'Vue', 'Vue'),
@@ -258,7 +258,7 @@ export const TRACKS: Track[] = [
       zh: 'HTTP API、认证、数据库、缓存与部署',
     },
     sections: [
-      s('http-apis', 'HTTP and APIs', 'HTTP 与 API'),
+      s('http-apis', 'HTTP and APIs', 'HTTP与API'),
       s('auth', 'Auth', '认证与授权'),
       s('databases', 'Databases', '数据库'),
       s('caching-queues', 'Caching and queues', '缓存与队列'),
@@ -288,7 +288,7 @@ export const TRACKS: Track[] = [
     slug: 'devops',
     kind: 'domain',
     glyph: 'ops',
-    name: { en: 'DevOps and cloud', zh: 'DevOps 与云' },
+    name: { en: 'DevOps and cloud', zh: 'DevOps与云' },
     description: {
       en: 'Containers, Kubernetes, CI/CD, cloud and observability',
       zh: '容器、Kubernetes、CI/CD、云与可观测性',
@@ -309,7 +309,7 @@ export const TRACKS: Track[] = [
     name: { en: 'Data and databases', zh: '数据与数据库' },
     description: {
       en: 'SQL and Postgres, NoSQL, data engineering and analytics engines',
-      zh: 'SQL 与 Postgres、NoSQL、数据工程与分析引擎',
+      zh: 'SQL与Postgres、NoSQL、数据工程与分析引擎',
     },
     sections: [
       s('sql', 'SQL', 'SQL'),
@@ -326,10 +326,10 @@ export const TRACKS: Track[] = [
     name: { en: 'Data science', zh: '数据科学' },
     description: {
       en: 'The Python stack, statistics, classical ML and evaluation',
-      zh: 'Python 工具栈、统计、经典机器学习与评估',
+      zh: 'Python工具栈、统计、经典机器学习与评估',
     },
     sections: [
-      s('python-stack', 'Python stack', 'Python 工具栈'),
+      s('python-stack', 'Python stack', 'Python工具栈'),
       s('statistics', 'Statistics', '统计'),
       s('classical-ml', 'Classical ML', '经典机器学习'),
       s('evaluation', 'Evaluation', '模型评估'),
@@ -340,7 +340,7 @@ export const TRACKS: Track[] = [
     slug: 'ai',
     kind: 'domain',
     glyph: 'llm',
-    name: { en: 'AI and LLM engineering', zh: 'AI 与大模型工程' },
+    name: { en: 'AI and LLM engineering', zh: 'AI与大模型工程' },
     description: {
       en: 'LLM basics, prompting, RAG, agents and evals',
       zh: '大模型基础、提示词、RAG、智能体与评估',
@@ -363,10 +363,10 @@ export const TRACKS: Track[] = [
     name: { en: 'Security', zh: '安全' },
     description: {
       en: 'Web security, auth and crypto, appsec and secure coding',
-      zh: 'Web 安全、认证与密码学、应用安全与安全编码',
+      zh: 'Web安全、认证与密码学、应用安全与安全编码',
     },
     sections: [
-      s('web-security', 'Web security', 'Web 安全'),
+      s('web-security', 'Web security', 'Web安全'),
       s('auth-crypto', 'Auth and crypto', '认证与密码学'),
       s('appsec', 'Application security', '应用安全'),
       s('infra-security', 'Infrastructure security', '基础设施安全'),
@@ -380,7 +380,7 @@ export const TRACKS: Track[] = [
     name: { en: 'Game development', zh: '游戏开发' },
     description: {
       en: 'Unity, Unreal and Godot, graphics, gameplay systems and performance',
-      zh: 'Unity、Unreal 与 Godot，图形、玩法系统与性能',
+      zh: 'Unity、Unreal与Godot，图形、玩法系统与性能',
     },
     sections: [
       s('unity', 'Unity', 'Unity'),
@@ -395,14 +395,14 @@ export const TRACKS: Track[] = [
     slug: 'ai-era',
     kind: 'pillar',
     glyph: 'ai',
-    name: { en: 'Coding in the AI era', zh: 'AI 时代编程' },
+    name: { en: 'Coding in the AI era', zh: 'AI时代编程' },
     description: {
       en: 'Working with coding agents, reviewing generated code, specs and judgement',
       zh: '与编码智能体协作、审查生成代码、规格与判断力',
     },
     sections: [
       s('working-with-agents', 'Working with agents', '与智能体协作'),
-      s('reviewing-ai-code', 'Reviewing AI code', '审查 AI 代码'),
+      s('reviewing-ai-code', 'Reviewing AI code', '审查AI代码'),
       s('specs-and-tests', 'Specs and tests', '规格与测试'),
       s('prompting-for-code', 'Prompting for code', '面向代码的提示词'),
       s('tooling', 'Tooling', '工具链'),
@@ -417,14 +417,14 @@ export const TRACKS: Track[] = [
     name: { en: 'CS foundations', zh: '计算机基础' },
     description: {
       en: 'Algorithms and data structures, networking, operating systems, git and shell',
-      zh: '算法与数据结构、网络、操作系统、Git 与 Shell',
+      zh: '算法与数据结构、网络、操作系统、Git与Shell',
     },
     sections: [
       s('algorithms', 'Algorithms', '算法'),
       s('data-structures', 'Data structures', '数据结构'),
       s('networking', 'Networking', '网络'),
       s('operating-systems', 'Operating systems', '操作系统'),
-      s('git-shell', 'Git and shell', 'Git 与 Shell'),
+      s('git-shell', 'Git and shell', 'Git与Shell'),
       s('text-numbers', 'Text and numbers', '文本与数字'),
     ],
   },

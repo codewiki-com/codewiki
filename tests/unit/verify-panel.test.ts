@@ -141,7 +141,7 @@ describe('blockLabels', () => {
   });
 
   it('translates', () => {
-    expect(blockLabels(sidecar(), 'zh', RUNNERS).get('b1')?.recorded).toBe('记录于 Python 3.14.3');
+    expect(blockLabels(sidecar(), 'zh', RUNNERS).get('b1')?.recorded).toBe('记录于Python 3.14.3');
   });
 });
 
