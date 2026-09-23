@@ -53,7 +53,7 @@ export default {
   'theme.light': '浅色',
   'theme.dark': '深色',
   'home.eyebrow': '编程，精准讲解',
-  'home.h1': '在AI时代精通编程。',
+  'home.h1': '在AI时代精通编程',
   'home.sub':
     '越来越多的代码由AI写出，你仍然要读懂它、审查它，并准确说出自己需要什么。这里的每个主题都能在浏览器中运行，并以“生成代码该检查什么”收尾。',
   'home.browseTracks': '浏览方向',
