@@ -54,11 +54,14 @@ export default function ThemeToggle({ labels }: ThemeToggleProps) {
 
   const onClick = useCallback(() => {
     const next = nextTheme(pref);
-    revealTheme(origin.current, () =>
-      applyThemePreference(next, window.matchMedia(DARK_QUERY).matches, document.documentElement),
-    );
+    // The event is part of the change: the other toggle island applies the theme when it hears
+    // it, and doing that before the transition has captured the old page would leave the reveal
+    // nothing to reveal.
+    revealTheme(origin.current, () => {
+      applyThemePreference(next, window.matchMedia(DARK_QUERY).matches, document.documentElement);
+      window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: next }));
+    });
     setPref(next);
-    window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: next }));
   }, [pref]);
 
   return (

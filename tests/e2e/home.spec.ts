@@ -173,6 +173,38 @@ test('the desktop and mobile theme toggles stay synchronized', async ({ page }) 
   await expect(toggles.nth(1)).toHaveAttribute('aria-label', 'Dark');
 });
 
+test('the theme switch reveals the new palette in a circle from the button', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('astro-island[component-url*="ThemeToggle"]:not([ssr])')).toHaveCount(2);
+  const result = await page.evaluate(async () => {
+    const root = document.documentElement;
+    const before = root.dataset.theme;
+    document.querySelector<HTMLButtonElement>('.nav-tools .theme-toggle')!.click();
+    // The palette must still be the old one here: the View Transition captures the old page after
+    // this task, and a theme applied synchronously (by the other toggle island, say) leaves the
+    // circle revealing a page that already looks like its own snapshot.
+    const sameTask = root.dataset.theme;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const reveal = document
+      .getAnimations()
+      .find(
+        (animation) =>
+          (animation.effect as KeyframeEffect | null)?.pseudoElement === '::view-transition-new(root)',
+      );
+    const frames = (reveal?.effect as KeyframeEffect | undefined)?.getKeyframes() ?? [];
+    return {
+      before,
+      sameTask,
+      after: root.dataset.theme,
+      clip: frames.map((frame) => String(frame.clipPath)),
+    };
+  });
+  expect(result.sameTask).toBe(result.before);
+  expect(result.after).not.toBe(result.before);
+  expect(result.clip[0]).toMatch(/^circle\(0% at [\d.]+% [\d.]+%\)$/);
+  expect(result.clip.at(-1)).toMatch(/^circle\([\d.]+% at [\d.]+% [\d.]+%\)$/);
+});
+
 test('the chosen theme survives a reload with no flash of the other palette', async ({ page }) => {
   await captureThemeAtParse(page);
   await page.goto('/');
