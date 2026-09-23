@@ -55,7 +55,7 @@ export default {
   'theme.light': 'Light',
   'theme.dark': 'Dark',
 
-  'home.eyebrow': 'programming, explained precisely · en / zh',
+  'home.eyebrow': 'programming, explained precisely',
   'home.h1': 'Master code in the AI era.',
   'home.sub':
     'AI writes more of the code; you still have to read it, review it and say precisely what you need. Every topic here runs in the browser and ends with what to check in generated code.',
